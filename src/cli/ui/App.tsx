@@ -39,6 +39,7 @@ import {
   loadEndpoint,
   loadEngineeringLifecycleMode,
   loadHistoryScrollMode,
+  loadMaxIterPerTurn,
   loadMouseWheelRows,
   loadReasoningEffort,
   loadTheme,
@@ -1029,6 +1030,7 @@ function AppInner({
       hooks: hookList,
       hookCwd: currentRootDir,
       reasoningEffort: initialReasoningEffort ?? loadReasoningEffort(),
+      maxIterPerTurn: loadMaxIterPerTurn(),
       rebuildSystem,
     });
     loopRef.current = l;

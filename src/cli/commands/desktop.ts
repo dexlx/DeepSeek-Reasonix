@@ -29,6 +29,7 @@ import {
   loadEditor,
   loadEndpoint,
   loadExaApiKey,
+  loadMaxIterPerTurn,
   loadMetasoApiKey,
   loadModel,
   loadOllamaApiKey,
@@ -1043,6 +1044,7 @@ function buildRuntimeFor(tab: Tab): RuntimeState {
     budgetUsd: tab.budgetUsd,
     session: tab.currentSession,
     reasoningEffort,
+    maxIterPerTurn: loadMaxIterPerTurn(),
     hooks: tab.hooks,
     hookCwd: tab.rootDir,
   });
