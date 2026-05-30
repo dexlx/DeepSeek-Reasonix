@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, Copy } from "lucide-react";
+import { useT } from "../lib/i18n";
 
 // CopyButton copies `text` to the clipboard on click and briefly flips to a check.
 // navigator.clipboard works in the webview under the click's user gesture; a
@@ -13,6 +14,7 @@ export function CopyButton({
   className?: string;
   label?: string;
 }) {
+  const t = useT();
   const [copied, setCopied] = useState(false);
   const copy = async () => {
     try {
@@ -27,12 +29,12 @@ export function CopyButton({
     <button
       className={`copybtn ${className ?? ""}`}
       onClick={copy}
-      title="Copy"
-      aria-label="Copy"
+      title={t("msg.copy")}
+      aria-label={t("msg.copy")}
       type="button"
     >
       {copied ? <Check size={13} /> : <Copy size={13} />}
-      {label && <span className="copybtn__label">{copied ? "Copied" : label}</span>}
+      {label && <span className="copybtn__label">{copied ? t("msg.copied") : label}</span>}
     </button>
   );
 }

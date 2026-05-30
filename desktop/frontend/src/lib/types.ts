@@ -195,4 +195,5 @@ export interface SettingsView {
   agent: AgentView;
   language: string;
   configPath: string;
+  providerKinds: string[]; // provider implementations the kernel registered (for the kind picker)
 }

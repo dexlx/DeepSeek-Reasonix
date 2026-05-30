@@ -17,6 +17,7 @@ import {
 } from "lucide-react";
 import { CodeViewer } from "./CodeViewer";
 import { DiffView } from "./DiffView";
+import { useT } from "../lib/i18n";
 import { diffsFor, subjectOf, summarize } from "../lib/tools";
 import type { Item } from "../lib/useController";
 
@@ -54,6 +55,7 @@ function StatusGlyph({ status }: { status: ToolItem["status"] }) {
 // `task` card (their ParentID points at this call); they render inline, live, so
 // the sub-agent's work is visible as it happens.
 export function ToolCard({ item, subcalls }: { item: ToolItem; subcalls?: ToolItem[] }) {
+  const t = useT();
   const diffs = diffsFor(item.name, item.args);
   const subject = subjectOf(item.name, item.args);
   const Icon = ICONS[item.name] ?? Wrench;
@@ -65,7 +67,7 @@ export function ToolCard({ item, subcalls }: { item: ToolItem; subcalls?: ToolIt
     item.status === "running"
       ? ""
       : hasNested
-        ? `${nested.length} step${nested.length === 1 ? "" : "s"}`
+        ? t(nested.length === 1 ? "tool.stepOne" : "tool.stepOther", { n: nested.length })
         : summarize(item.name, item.args, item.output, item.error);
 
   // edit diffs are the point of the card, so they're shown inline; everything
@@ -123,7 +125,7 @@ export function ToolCard({ item, subcalls }: { item: ToolItem; subcalls?: ToolIt
           {item.output && (
             <>
               <CodeViewer value={item.output} maxHeight={280} />
-              {item.truncated && <div className="tool__note">output truncated</div>}
+              {item.truncated && <div className="tool__note">{t("tool.truncated")}</div>}
             </>
           )}
         </div>

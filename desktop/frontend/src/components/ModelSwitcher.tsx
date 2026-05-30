@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Check, ChevronsUpDown } from "lucide-react";
 import { app } from "../lib/bridge";
+import { useT } from "../lib/i18n";
 import type { ModelInfo } from "../lib/types";
 
 // ModelSwitcher is the bottom-of-window model picker: the status line's model
@@ -9,6 +10,7 @@ import type { ModelInfo } from "../lib/types";
 // over by the backend, so the chat continues. Mirrors the "switch model, keep the
 // session" behavior of comparable coding agents.
 export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name: string) => void }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   const [models, setModels] = useState<ModelInfo[]>([]);
 
@@ -23,7 +25,7 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
 
   return (
     <div className="modelsw">
-      <button className="modelsw__trigger" onClick={() => setOpen((v) => !v)} title="Switch model">
+      <button className="modelsw__trigger" onClick={() => setOpen((v) => !v)} title={t("status.switchModel")}>
         <span className="modelsw__label">{label}</span>
         <ChevronsUpDown size={11} />
       </button>
@@ -31,7 +33,7 @@ export function ModelSwitcher({ label, onPick }: { label: string; onPick: (name:
         <>
           <div className="modelsw__backdrop" onClick={() => setOpen(false)} />
           <div className="modelsw__menu" role="listbox">
-            {models.length === 0 && <div className="modelsw__empty">no models configured</div>}
+            {models.length === 0 && <div className="modelsw__empty">{t("status.noModels")}</div>}
             {models.map((m) => (
               <button
                 key={m.ref}

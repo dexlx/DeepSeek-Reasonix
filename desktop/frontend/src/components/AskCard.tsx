@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "../lib/i18n";
 import type { QuestionAnswer, WireAsk, WireAskQuestion } from "../lib/types";
 
 // AskCard renders the `ask` tool's question(s) as structured choice cards: each
@@ -14,6 +15,7 @@ export function AskCard({
   onAnswer: (id: string, answers: QuestionAnswer[]) => void;
   onDismiss: () => void;
 }) {
+  const t = useT();
   // Per-question state: selected option labels, and an optional typed answer.
   const [sel, setSel] = useState<Record<string, string[]>>({});
   const [custom, setCustom] = useState<Record<string, string>>({});
@@ -77,7 +79,7 @@ export function AskCard({
             </div>
             <input
               className="ask-q__custom"
-              placeholder="Type your own answer…"
+              placeholder={t("ask.customPlaceholder")}
               value={custom[q.id] ?? ""}
               onChange={(e) => setTyped(q, e.target.value)}
             />
@@ -85,10 +87,10 @@ export function AskCard({
         ))}
         <div className="modal__actions">
           <button className="btn" onClick={onDismiss}>
-            Just chat
+            {t("ask.justChat")}
           </button>
           <button className="btn btn--primary" onClick={submit} disabled={!allAnswered}>
-            Submit
+            {t("common.submit")}
           </button>
         </div>
       </div>

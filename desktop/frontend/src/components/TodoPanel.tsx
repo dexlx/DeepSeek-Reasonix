@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Check, ChevronDown, ChevronRight, Circle, CircleDot, X } from "lucide-react";
+import { useT } from "../lib/i18n";
 import type { Todo } from "../lib/tools";
 
 // TodoPanel is the live task list pinned just above the composer — the kernel's
@@ -10,6 +11,7 @@ import type { Todo } from "../lib/tools";
 // dismisses it (onDismiss) when the user abandons the task; a fresh todo_write
 // brings it back.
 export function TodoPanel({ todos, onDismiss }: { todos: Todo[]; onDismiss: () => void }) {
+  const t = useT();
   const [open, setOpen] = useState(true);
   if (todos.length === 0) return null;
 
@@ -21,7 +23,7 @@ export function TodoPanel({ todos, onDismiss }: { todos: Todo[]; onDismiss: () =
       <div className="todobar__head">
         <button className="todobar__toggle" onClick={() => setOpen((v) => !v)}>
           {open ? <ChevronDown size={13} /> : <ChevronRight size={13} />}
-          <span className="todobar__title">To-dos</span>
+          <span className="todobar__title">{t("todo.title")}</span>
           <span className="todobar__count">
             {done}/{todos.length}
           </span>
@@ -29,7 +31,7 @@ export function TodoPanel({ todos, onDismiss }: { todos: Todo[]; onDismiss: () =
             <span className="todobar__current">{current.activeForm || current.content}</span>
           )}
         </button>
-        <button className="todobar__close" onClick={onDismiss} title="Dismiss the task list">
+        <button className="todobar__close" onClick={onDismiss} title={t("todo.dismiss")}>
           <X size={13} />
         </button>
       </div>

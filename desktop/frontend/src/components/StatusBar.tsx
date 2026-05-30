@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { FolderGit2 } from "lucide-react";
 import { ModelSwitcher } from "./ModelSwitcher";
+import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import type { ContextInfo, Meta } from "../lib/types";
 
 // shortCwd trims a path to its last two segments so the status line stays compact
@@ -10,31 +11,6 @@ function shortCwd(cwd: string): string {
   if (parts.length <= 2) return cwd;
   return "…/" + parts.slice(-2).join("/");
 }
-
-// Whimsical present-participles for the live activity word, cycled by elapsed
-// time so it reads as alive.
-const SPINNER_WORDS = [
-  "Frolicking",
-  "Pondering",
-  "Noodling",
-  "Brewing",
-  "Conjuring",
-  "Cogitating",
-  "Percolating",
-  "Ruminating",
-  "Simmering",
-  "Synthesizing",
-  "Tinkering",
-  "Marinating",
-  "Crunching",
-  "Hatching",
-  "Mulling",
-  "Whirring",
-  "Forging",
-  "Spelunking",
-  "Puttering",
-  "Vibing",
-];
 
 function fmtTokens(n: number): string {
   if (n >= 1000) return (n / 1000).toFixed(1).replace(/\.0$/, "") + "k";
@@ -77,6 +53,7 @@ export function StatusBar({
   onSwitchModel: (name: string) => void;
   onPickFolder: () => void;
 }) {
+  const { t, locale } = useI18n();
   const now = useTick(running);
   const pct = context.window ? Math.min(100, Math.round((context.used / context.window) * 100)) : null;
 
@@ -85,15 +62,16 @@ export function StatusBar({
   let activity: string | null = null;
   if (running && turnStartAt) {
     const elapsedMs = Math.max(0, now - turnStartAt);
-    const word = SPINNER_WORDS[Math.floor(elapsedMs / 3000) % SPINNER_WORDS.length];
-    const tok = turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} tokens` : "";
+    const words = SPINNER_WORDS[locale];
+    const word = words[Math.floor(elapsedMs / 3000) % words.length];
+    const tok = turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
     activity = `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
   }
 
   return (
     <div className="statusbar">
       <span className={`statusbar__dot ${running ? "statusbar__dot--busy" : ""}`} />
-      <ModelSwitcher label={meta?.label ?? "connecting…"} onPick={onSwitchModel} />
+      <ModelSwitcher label={meta?.label ?? t("status.connecting")} onPick={onSwitchModel} />
       {activity ? (
         <>
           <span className="statusbar__sep">·</span>
@@ -103,7 +81,7 @@ export function StatusBar({
         pct !== null && (
           <>
             <span className="statusbar__sep">·</span>
-            <span className="statusbar__ctx">{pct}% ctx</span>
+            <span className="statusbar__ctx">{t("status.ctx", { pct })}</span>
           </>
         )
       )}
@@ -114,7 +92,7 @@ export function StatusBar({
             className="statusbar__cwd"
             onClick={onPickFolder}
             disabled={running}
-            title={running ? "Finish or stop the current turn first" : `${meta.cwd}\nClick to switch project folder`}
+            title={running ? t("common.busyHint") : t("status.switchFolder", { cwd: meta.cwd })}
           >
             <FolderGit2 size={11} />
             {shortCwd(meta.cwd)}
@@ -122,7 +100,7 @@ export function StatusBar({
         </>
       )}
       <span className="statusbar__spacer" />
-      {plan && <span className="statusbar__plan">PLAN</span>}
+      {plan && <span className="statusbar__plan">{t("status.plan")}</span>}
     </div>
   );
 }

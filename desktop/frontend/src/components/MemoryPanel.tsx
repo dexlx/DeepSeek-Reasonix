@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useT } from "../lib/i18n";
 import type { MemoryView } from "../lib/types";
 
 // MemoryPanel is the desktop memory manager: a right-side drawer over the loaded
@@ -18,6 +19,7 @@ export function MemoryPanel({
   onRemember: (scope: string, note: string) => Promise<void> | void;
   onSaveDoc: (path: string, body: string) => Promise<void> | void;
 }) {
+  const t = useT();
   const [note, setNote] = useState("");
   const [scope, setScope] = useState("");
   const [editingPath, setEditingPath] = useState<string | null>(null);
@@ -61,25 +63,25 @@ export function MemoryPanel({
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer__head">
-          <div className="drawer__title">Memory</div>
-          <button className="chip" onClick={onClose} title="Close">
+          <div className="drawer__title">{t("memory.title")}</div>
+          <button className="chip" onClick={onClose} title={t("common.close")}>
             ✕
           </button>
         </header>
 
         {!view?.available ? (
-          <div className="empty">Memory unavailable.</div>
+          <div className="empty">{t("memory.unavailable")}</div>
         ) : (
           <div className="drawer__body">
             {/* Quick-add: scope selector + note, mirroring the "#" shortcut. */}
             <section className="mem-section">
-              <div className="mem-section__title">Quick add</div>
+              <div className="mem-section__title">{t("memory.quickAdd")}</div>
               <div className="mem-add">
                 <select
                   className="mem-select"
                   value={activeScope}
                   onChange={(e) => setScope(e.target.value)}
-                  title="Where to save"
+                  title={t("memory.whereToSave")}
                 >
                   {scopes.map((s) => (
                     <option key={s.scope} value={s.scope}>
@@ -89,7 +91,7 @@ export function MemoryPanel({
                 </select>
                 <input
                   className="mem-input"
-                  placeholder="Remember that…"
+                  placeholder={t("memory.notePlaceholder")}
                   value={note}
                   onChange={(e) => setNote(e.target.value)}
                   onKeyDown={(e) => {
@@ -101,7 +103,7 @@ export function MemoryPanel({
                   onClick={() => void submitNote()}
                   disabled={busy || !note.trim()}
                 >
-                  Remember
+                  {t("memory.remember")}
                 </button>
               </div>
               <div className="mem-hint">
@@ -111,9 +113,9 @@ export function MemoryPanel({
 
             {/* Doc files — editable in place. */}
             <section className="mem-section">
-              <div className="mem-section__title">Instruction files</div>
+              <div className="mem-section__title">{t("memory.instructionFiles")}</div>
               {view.docs.length === 0 && (
-                <div className="mem-empty">No REASONIX.md found. Quick-add one above.</div>
+                <div className="mem-empty">{t("memory.noDocs")}</div>
               )}
               {view.docs.map((d) => {
                 const editing = editingPath === d.path;
@@ -129,7 +131,7 @@ export function MemoryPanel({
                           className="btn btn--small"
                           onClick={() => startEdit(d.path, d.body)}
                         >
-                          Edit
+                          {t("common.edit")}
                         </button>
                       )}
                     </div>
@@ -147,14 +149,14 @@ export function MemoryPanel({
                             onClick={() => setEditingPath(null)}
                             disabled={busy}
                           >
-                            Cancel
+                            {t("common.cancel")}
                           </button>
                           <button
                             className="btn btn--primary btn--small"
                             onClick={() => void saveEdit()}
                             disabled={busy}
                           >
-                            Save
+                            {t("common.save")}
                           </button>
                         </div>
                       </div>
@@ -168,11 +170,9 @@ export function MemoryPanel({
 
             {/* Saved auto-memories — read-only; the model owns these. */}
             <section className="mem-section">
-              <div className="mem-section__title">Saved memories</div>
+              <div className="mem-section__title">{t("memory.savedMemories")}</div>
               {view.facts.length === 0 ? (
-                <div className="mem-empty">
-                  Nothing saved yet. The agent writes these with the remember tool.
-                </div>
+                <div className="mem-empty">{t("memory.noFacts")}</div>
               ) : (
                 view.facts.map((f) => (
                   <div className="mem-fact" key={f.name} title={f.body}>
@@ -186,7 +186,7 @@ export function MemoryPanel({
               )}
               {view.storeDir && (
                 <div className="mem-hint" title={view.storeDir}>
-                  stored under {view.storeDir}
+                  {t("memory.storedUnder", { dir: view.storeDir })}
                 </div>
               )}
             </section>

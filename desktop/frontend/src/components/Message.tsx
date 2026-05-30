@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ChevronRight } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
+import { useT } from "../lib/i18n";
 import type { Item } from "../lib/useController";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -16,6 +17,7 @@ export function UserMessage({ text }: { text: string }) {
 }
 
 export function AssistantMessage({ item }: { item: AssistantItem }) {
+  const t = useT();
   const [open, setOpen] = useState(false);
   return (
     <div className="msg msg--assistant">
@@ -26,7 +28,7 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
               className={`reasoning__chevron ${open ? "reasoning__chevron--open" : ""}`}
               size={12}
             />
-            thinking
+            {t("msg.thinking")}
           </button>
           {open && <div className="reasoning__body">{item.reasoning}</div>}
         </div>
@@ -46,7 +48,7 @@ export function AssistantMessage({ item }: { item: AssistantItem }) {
       </div>
       {!item.streaming && item.text && (
         <div className="msg__actions">
-          <CopyButton text={item.text} label="Copy" />
+          <CopyButton text={item.text} label={t("msg.copy")} />
         </div>
       )}
     </div>

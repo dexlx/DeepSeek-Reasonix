@@ -1,5 +1,6 @@
 import { useCallback, useMemo, useState } from "react";
 import { SquarePen, Brain, History, Settings as SettingsIcon } from "lucide-react";
+import { useT } from "./lib/i18n";
 import { useController } from "./lib/useController";
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
@@ -33,6 +34,7 @@ export default function App() {
     remember,
     saveDoc,
   } = useController();
+  const t = useT();
   const [plan, setPlanLocal] = useState(false);
   const [memView, setMemView] = useState<MemoryView | null>(null);
   const [histView, setHistView] = useState<SessionMeta[] | null>(null);
@@ -144,28 +146,28 @@ export default function App() {
           className="chip chip--icon"
           onClick={() => void openHistory()}
           disabled={state.running}
-          title={state.running ? "Finish or stop the current turn first" : "History"}
+          title={state.running ? t("common.busyHint") : t("topbar.history")}
         >
           <History size={13} />
         </button>
-        <button className="chip chip--icon" onClick={() => void openMemory()} title="Memory">
+        <button className="chip chip--icon" onClick={() => void openMemory()} title={t("topbar.memory")}>
           <Brain size={13} />
         </button>
         <button
           className="chip chip--icon"
           onClick={() => setSettingsOpen(true)}
           disabled={state.running}
-          title={state.running ? "Finish or stop the current turn first" : "Settings"}
+          title={state.running ? t("common.busyHint") : t("topbar.settings")}
         >
           <SettingsIcon size={13} />
         </button>
-        <button className="chip chip--icon" onClick={newSession} title="New session">
+        <button className="chip chip--icon" onClick={newSession} title={t("topbar.newSession")}>
           <SquarePen size={13} />
         </button>
       </header>
 
       {state.meta?.startupErr && (
-        <div className="banner banner--error">startup error: {state.meta.startupErr}</div>
+        <div className="banner banner--error">{t("topbar.startupError", { msg: state.meta.startupErr })}</div>
       )}
 
       <main className="main">

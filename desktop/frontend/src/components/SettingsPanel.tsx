@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { app } from "../lib/bridge";
+import { useI18n, useT } from "../lib/i18n";
 import { applyTheme, getTheme, type Theme } from "../lib/theme";
 import type { ProviderView, SettingsView } from "../lib/types";
 
@@ -8,6 +9,7 @@ import type { ProviderView, SettingsView } from "../lib/types";
 // params, and appearance. Every change writes reasonix.toml (or .env for keys)
 // through the kernel's config edit API and rebuilds the controller live.
 export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onChanged: () => void }) {
+  const t = useT();
   const [s, setS] = useState<SettingsView | null>(null);
   const [busy, setBusy] = useState(false);
   const [err, setErr] = useState<string | null>(null);
@@ -38,14 +40,14 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer drawer--wide" onClick={(e) => e.stopPropagation()}>
         <header className="drawer__head">
-          <div className="drawer__title">Settings</div>
-          <button className="chip" onClick={onClose} title="Close">
+          <div className="drawer__title">{t("settings.title")}</div>
+          <button className="chip" onClick={onClose} title={t("common.close")}>
             ✕
           </button>
         </header>
 
         {!s ? (
-          <div className="empty">Loading…</div>
+          <div className="empty">{t("settings.loading")}</div>
         ) : (
           <div className="drawer__body">
             {err && <div className="banner banner--error">{err}</div>}
@@ -54,17 +56,15 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
             <SandboxSection s={s} busy={busy} apply={apply} />
             <AgentSection s={s} busy={busy} apply={apply} />
             <AppearanceSection
-              s={s}
               theme={theme}
               onTheme={(t) => {
                 applyTheme(t);
                 setThemeState(t);
               }}
-              apply={apply}
             />
             {s.configPath && (
               <div className="mem-hint" title={s.configPath}>
-                config: {s.configPath || "reasonix.toml (new)"}
+                {t("settings.config", { path: s.configPath })}
               </div>
             )}
           </div>
@@ -100,6 +100,7 @@ function toRef(model: string, s: SettingsView): string {
 }
 
 function ModelsSection({ s, busy, apply }: SectionProps) {
+  const t = useT();
   const refs = allRefs(s);
   // The provider backing the default model — can't be deleted (would dangle the
   // default). default_model may be a provider name or a "provider/model" ref.
@@ -108,10 +109,10 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
 
   return (
     <section className="mem-section">
-      <div className="mem-section__title">Models & providers</div>
+      <div className="mem-section__title">{t("settings.modelsProviders")}</div>
 
       <div className="set-row">
-        <label className="set-label">Default model</label>
+        <label className="set-label">{t("settings.defaultModel")}</label>
         <select
           className="mem-select set-grow"
           value={toRef(s.defaultModel, s)}
@@ -127,14 +128,14 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
       </div>
 
       <div className="set-row">
-        <label className="set-label">Planner model</label>
+        <label className="set-label">{t("settings.plannerModel")}</label>
         <select
           className="mem-select set-grow"
           value={toRef(s.plannerModel, s)}
           disabled={busy}
           onChange={(e) => void apply(() => app.SetPlannerModel(e.target.value))}
         >
-          <option value="">(none — single model)</option>
+          <option value="">{t("settings.plannerNone")}</option>
           {refs.map((r) => (
             <option key={r} value={r}>
               {r}
@@ -148,6 +149,7 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
           <ProviderEditor
             key={p.name}
             initial={p}
+            kinds={s.providerKinds}
             busy={busy}
             onCancel={() => setEditing(null)}
             onSave={(pv) => apply(() => app.SaveProvider(pv)).then(() => setEditing(null))}
@@ -157,19 +159,19 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
             <div className="prov-card__head">
               <span className="prov-card__name">{p.name}</span>
               <span className={`badge ${p.keySet ? "badge--project" : "badge--feedback"}`}>
-                {p.keySet ? "key set" : "no key"}
+                {p.keySet ? t("settings.keySet") : t("settings.noKey")}
               </span>
               <span className="prov-card__spacer" />
               <button className="btn btn--small" disabled={busy} onClick={() => setEditing(p.name)}>
-                Edit
+                {t("common.edit")}
               </button>
               <button
                 className="btn btn--small"
                 disabled={busy || defaultProvider === p.name}
-                title={defaultProvider === p.name ? "Can't delete the default provider" : "Delete provider"}
+                title={defaultProvider === p.name ? t("settings.cantDeleteDefault") : t("settings.deleteProvider")}
                 onClick={() => void apply(() => app.DeleteProvider(p.name))}
               >
-                Delete
+                {t("common.delete")}
               </button>
             </div>
             <div className="prov-card__meta">
@@ -182,13 +184,14 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
 
       {editing === "__new__" ? (
         <ProviderEditor
+          kinds={s.providerKinds}
           busy={busy}
           onCancel={() => setEditing(null)}
           onSave={(pv) => apply(() => app.SaveProvider(pv)).then(() => setEditing(null))}
         />
       ) : (
         <button className="btn btn--small" disabled={busy} onClick={() => setEditing("__new__")}>
-          + Add provider
+          {t("settings.addProvider")}
         </button>
       )}
     </section>
@@ -197,21 +200,30 @@ function ModelsSection({ s, busy, apply }: SectionProps) {
 
 function ProviderEditor({
   initial,
+  kinds,
   busy,
   onCancel,
   onSave,
 }: {
   initial?: ProviderView;
+  kinds: string[];
   busy: boolean;
   onCancel: () => void;
   onSave: (p: ProviderView) => void;
 }) {
+  const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
-  const [kind, setKind] = useState(initial?.kind ?? "openai");
+  const [kind, setKind] = useState(initial?.kind ?? kinds[0] ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
-  const [ctx, setCtx] = useState(String(initial?.contextWindow ?? 0));
+  // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
+  // of a bare "0"; saved back as 0.
+  const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
+
+  // Offer the kinds the kernel actually registered; if the stored kind is a
+  // legacy/unknown one, keep it as an option so editing doesn't silently change it.
+  const kindOptions = kind && !kinds.includes(kind) ? [kind, ...kinds] : kinds;
 
   const save = () => {
     const ms = models
@@ -220,7 +232,7 @@ function ProviderEditor({
       .filter(Boolean);
     onSave({
       name: name.trim(),
-      kind: kind.trim() || "openai",
+      kind: kind.trim() || kinds[0] || "openai",
       baseUrl: baseUrl.trim(),
       models: ms,
       default: ms[0] ?? "",
@@ -232,18 +244,27 @@ function ProviderEditor({
 
   return (
     <div className="prov-card prov-card--edit">
-      <input className="mem-input" placeholder="name (e.g. deepseek-flash)" value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
-      <input className="mem-input" placeholder="kind (openai)" value={kind} onChange={(e) => setKind(e.target.value)} />
-      <input className="mem-input" placeholder="base_url (https://…)" value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
-      <input className="mem-input" placeholder="models (comma-separated)" value={models} onChange={(e) => setModels(e.target.value)} />
-      <input className="mem-input" placeholder="api_key_env (e.g. DEEPSEEK_API_KEY)" value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} />
-      <input className="mem-input" placeholder="context_window (tokens)" value={ctx} onChange={(e) => setCtx(e.target.value)} />
+      <input className="mem-input" placeholder={t("settings.providerName")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
+      <label className="set-label">{t("settings.providerKind")}</label>
+      <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
+        {kindOptions.map((k) => (
+          <option key={k} value={k}>
+            {k}
+          </option>
+        ))}
+      </select>
+      <input className="mem-input" placeholder={t("settings.providerBaseUrl")} value={baseUrl} onChange={(e) => setBaseUrl(e.target.value)} />
+      <input className="mem-input" placeholder={t("settings.providerModels")} value={models} onChange={(e) => setModels(e.target.value)} />
+      <input className="mem-input" placeholder={t("settings.providerApiKeyEnv")} value={apiKeyEnv} onChange={(e) => setApiKeyEnv(e.target.value)} />
+      <label className="set-label">{t("settings.providerContextWindow")}</label>
+      <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
+      <div className="mem-hint">{t("settings.contextWindowHint")}</div>
       <div className="prov-card__actions">
         <button className="btn btn--small" onClick={onCancel} disabled={busy}>
-          Cancel
+          {t("common.cancel")}
         </button>
         <button className="btn btn--primary btn--small" onClick={save} disabled={busy || !name.trim() || !baseUrl.trim()}>
-          Save
+          {t("common.save")}
         </button>
       </div>
     </div>
@@ -251,6 +272,7 @@ function ProviderEditor({
 }
 
 function KeyField({ apiKeyEnv, busy, onSet }: { apiKeyEnv: string; busy: boolean; onSet: (v: string) => Promise<void> }) {
+  const t = useT();
   const [val, setVal] = useState("");
   if (!apiKeyEnv) return null;
   return (
@@ -258,7 +280,7 @@ function KeyField({ apiKeyEnv, busy, onSet }: { apiKeyEnv: string; busy: boolean
       <input
         className="mem-input"
         type="password"
-        placeholder={`set ${apiKeyEnv} (→ .env)`}
+        placeholder={t("settings.setKey", { env: apiKeyEnv })}
         value={val}
         onChange={(e) => setVal(e.target.value)}
       />
@@ -270,27 +292,28 @@ function KeyField({ apiKeyEnv, busy, onSet }: { apiKeyEnv: string; busy: boolean
           setVal("");
         }}
       >
-        Save key
+        {t("settings.saveKey")}
       </button>
     </div>
   );
 }
 
 function PermissionsSection({ s, busy, apply }: SectionProps) {
+  const t = useT();
   return (
     <section className="mem-section">
-      <div className="mem-section__title">Permissions</div>
+      <div className="mem-section__title">{t("settings.permissions")}</div>
       <div className="set-row">
-        <label className="set-label">Writer mode</label>
+        <label className="set-label">{t("settings.writerMode")}</label>
         <select
           className="mem-select set-grow"
           value={s.permissions.mode}
           disabled={busy}
           onChange={(e) => void apply(() => app.SetPermissionMode(e.target.value))}
         >
-          <option value="ask">ask (prompt before writers)</option>
-          <option value="allow">allow (auto-run writers)</option>
-          <option value="deny">deny (block writers)</option>
+          <option value="ask">{t("settings.modeAsk")}</option>
+          <option value="allow">{t("settings.modeAllow")}</option>
+          <option value="deny">{t("settings.modeDeny")}</option>
         </select>
       </div>
       {(["deny", "ask", "allow"] as const).map((list) => (
@@ -303,7 +326,7 @@ function PermissionsSection({ s, busy, apply }: SectionProps) {
           onRemove={(rule) => apply(() => app.RemovePermissionRule(list, rule))}
         />
       ))}
-      <div className="mem-hint">Rule form: ToolName or ToolName(glob). Precedence: deny &gt; ask &gt; allow.</div>
+      <div className="mem-hint">{t("settings.ruleForm")}</div>
     </section>
   );
 }
@@ -321,6 +344,7 @@ function RuleList({
   onAdd: (rule: string) => Promise<void>;
   onRemove: (rule: string) => Promise<void>;
 }) {
+  const t = useT();
   const [draft, setDraft] = useState("");
   const add = () => {
     const r = draft.trim();
@@ -333,11 +357,11 @@ function RuleList({
     <div className="set-rules">
       <div className="set-rules__label">{list}</div>
       <div className="set-rules__chips">
-        {rules.length === 0 && <span className="mem-empty">none</span>}
+        {rules.length === 0 && <span className="mem-empty">{t("common.none")}</span>}
         {rules.map((r) => (
           <span className="set-rule" key={r}>
             {r}
-            <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)} title="Remove">
+            <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)} title={t("common.delete")}>
               ✕
             </button>
           </span>
@@ -346,7 +370,7 @@ function RuleList({
       <div className="set-rules__add">
         <input
           className="mem-input"
-          placeholder={`add ${list} rule…`}
+          placeholder={t("settings.addRule", { list })}
           value={draft}
           onChange={(e) => setDraft(e.target.value)}
           onKeyDown={(e) => {
@@ -354,7 +378,7 @@ function RuleList({
           }}
         />
         <button className="btn btn--small" disabled={busy || !draft.trim()} onClick={add}>
-          Add
+          {t("common.add")}
         </button>
       </div>
     </div>
@@ -362,6 +386,7 @@ function RuleList({
 }
 
 function SandboxSection({ s, busy, apply }: SectionProps) {
+  const t = useT();
   const sb = s.sandbox;
   const [root, setRoot] = useState(sb.workspaceRoot);
   const set = (next: Partial<typeof sb>) =>
@@ -369,23 +394,23 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
 
   return (
     <section className="mem-section">
-      <div className="mem-section__title">Sandbox & workspace</div>
+      <div className="mem-section__title">{t("settings.sandboxTitle")}</div>
       <div className="set-row">
-        <label className="set-label">Bash sandbox</label>
+        <label className="set-label">{t("settings.bashSandbox")}</label>
         <select className="mem-select set-grow" value={sb.bash} disabled={busy} onChange={(e) => void set({ bash: e.target.value })}>
-          <option value="enforce">enforce (jail bash)</option>
-          <option value="off">off (run unconfined)</option>
+          <option value="enforce">{t("settings.bashEnforce")}</option>
+          <option value="off">{t("settings.bashOff")}</option>
         </select>
       </div>
       <label className="set-check">
         <input type="checkbox" checked={sb.network} disabled={busy} onChange={(e) => void set({ network: e.target.checked })} />
-        Allow network egress from sandboxed bash
+        {t("settings.allowNetwork")}
       </label>
       <div className="set-row">
-        <label className="set-label">Workspace root</label>
+        <label className="set-label">{t("settings.workspaceRoot")}</label>
         <input
           className="mem-input set-grow"
-          placeholder="(default: cwd)"
+          placeholder={t("settings.workspaceDefault")}
           value={root}
           disabled={busy}
           onChange={(e) => setRoot(e.target.value)}
@@ -404,6 +429,7 @@ function SandboxSection({ s, busy, apply }: SectionProps) {
 }
 
 function AgentSection({ s, busy, apply }: SectionProps) {
+  const t = useT();
   const [temp, setTemp] = useState(String(s.agent.temperature));
   const [steps, setSteps] = useState(String(s.agent.maxSteps));
   const [prompt, setPrompt] = useState(s.agent.systemPrompt);
@@ -411,15 +437,15 @@ function AgentSection({ s, busy, apply }: SectionProps) {
 
   return (
     <section className="mem-section">
-      <div className="mem-section__title">Agent</div>
+      <div className="mem-section__title">{t("settings.agent")}</div>
       <div className="set-row">
-        <label className="set-label">Temperature</label>
-        <input className="mem-input set-narrow" value={temp} onChange={(e) => setTemp(e.target.value)} disabled={busy} />
-        <label className="set-label">Max steps</label>
-        <input className="mem-input set-narrow" value={steps} onChange={(e) => setSteps(e.target.value)} disabled={busy} />
-        <span className="mem-hint">0 = unlimited</span>
+        <label className="set-label">{t("settings.temperature")}</label>
+        <input className="mem-input set-narrow" value={temp} onChange={(e) => setTemp(e.target.value)} disabled={busy} inputMode="decimal" />
+        <label className="set-label">{t("settings.maxSteps")}</label>
+        <input className="mem-input set-narrow" value={steps} onChange={(e) => setSteps(e.target.value)} disabled={busy} inputMode="numeric" />
+        <span className="mem-hint">{t("settings.unlimited")}</span>
       </div>
-      <div className="set-rules__label">System prompt</div>
+      <div className="set-rules__label">{t("settings.systemPrompt")}</div>
       <textarea className="mem-textarea" value={prompt} onChange={(e) => setPrompt(e.target.value)} disabled={busy} spellCheck={false} />
       <div className="prov-card__actions">
         <button
@@ -427,41 +453,37 @@ function AgentSection({ s, busy, apply }: SectionProps) {
           disabled={busy || !dirty}
           onClick={() => void apply(() => app.SetAgentParams(Number(temp) || 0, Number(steps) || 0, prompt))}
         >
-          Save agent settings
+          {t("settings.saveAgent")}
         </button>
       </div>
     </section>
   );
 }
 
-function AppearanceSection({
-  s,
-  theme,
-  onTheme,
-  apply,
-}: {
-  s: SettingsView;
-  theme: Theme;
-  onTheme: (t: Theme) => void;
-  apply: (fn: () => Promise<void>) => Promise<void>;
-}) {
+function AppearanceSection({ theme, onTheme }: { theme: Theme; onTheme: (t: Theme) => void }) {
+  const { t, pref, setPref } = useI18n();
+  const themeLabel: Record<Theme, string> = {
+    auto: t("settings.themeAuto"),
+    light: t("settings.themeLight"),
+    dark: t("settings.themeDark"),
+  };
   return (
     <section className="mem-section">
-      <div className="mem-section__title">Appearance & language</div>
+      <div className="mem-section__title">{t("settings.appearance")}</div>
       <div className="set-row">
-        <label className="set-label">Theme</label>
+        <label className="set-label">{t("settings.theme")}</label>
         <div className="set-seg">
-          {(["auto", "light", "dark"] as const).map((t) => (
-            <button key={t} className={`set-seg__btn ${theme === t ? "set-seg__btn--on" : ""}`} onClick={() => onTheme(t)}>
-              {t}
+          {(["auto", "light", "dark"] as const).map((opt) => (
+            <button key={opt} className={`set-seg__btn ${theme === opt ? "set-seg__btn--on" : ""}`} onClick={() => onTheme(opt)}>
+              {themeLabel[opt]}
             </button>
           ))}
         </div>
       </div>
       <div className="set-row">
-        <label className="set-label">Language</label>
-        <select className="mem-select set-grow" value={s.language} onChange={(e) => void apply(() => app.SetLanguage(e.target.value))}>
-          <option value="">Auto (system)</option>
+        <label className="set-label">{t("settings.language")}</label>
+        <select className="mem-select set-grow" value={pref} onChange={(e) => setPref(e.target.value as "" | "en" | "zh")}>
+          <option value="">{t("settings.langAuto")}</option>
           <option value="zh">中文</option>
           <option value="en">English</option>
         </select>

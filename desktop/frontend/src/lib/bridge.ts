@@ -170,6 +170,7 @@ function makeMockApp(): AppBindings {
     agent: { temperature: 0.2, maxSteps: 0, systemPrompt: "You are Reasonix, a coding agent." },
     language: "",
     configPath: "~/projects/reasonix/reasonix.toml",
+    providerKinds: ["openai"],
   };
   return {
     async Submit(input) {

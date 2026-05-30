@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import type { KeyboardEvent } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import { app } from "../lib/bridge";
+import { useT } from "../lib/i18n";
 import type { CommandInfo, DirEntry } from "../lib/types";
 import { SlashMenu } from "./SlashMenu";
 import { FileMenu } from "./FileMenu";
@@ -21,6 +22,7 @@ export function Composer({
   onCancel: () => string | undefined;
   onTogglePlan: () => void;
 }) {
+  const t = useT();
   const [text, setText] = useState("");
   const [active, setActive] = useState(0);
   const [dismissed, setDismissed] = useState(false);
@@ -194,15 +196,11 @@ export function Composer({
       <button
         className={`composer__mode ${plan ? "composer__mode--on" : ""}`}
         onClick={onTogglePlan}
-        title={
-          plan
-            ? "Exit plan mode (shift+tab)"
-            : "Enter plan mode (shift+tab) — read-only; propose a plan before writing"
-        }
+        title={plan ? t("composer.exitPlanTitle") : t("composer.enterPlanTitle")}
       >
         <span className="composer__mode-dot" />
-        {plan ? "plan mode on" : "plan mode"}
-        <span className="composer__mode-hint">{plan ? "shift+tab to exit" : "shift+tab"}</span>
+        {plan ? t("composer.planModeOn") : t("composer.planMode")}
+        <span className="composer__mode-hint">{plan ? t("composer.planHintExit") : t("composer.planHint")}</span>
       </button>
       <div className="composer">
         <span className="composer__caret">›</span>
@@ -212,11 +210,11 @@ export function Composer({
           value={text}
           onChange={(e) => setText(e.target.value)}
           onKeyDown={onKeyDown}
-          placeholder="Message Reasonix…  ( / commands · @ files )"
+          placeholder={t("composer.placeholder")}
           rows={1}
         />
         {running ? (
-          <button className="composer__btn composer__btn--stop" onClick={handleCancel} title="Stop (Esc)">
+          <button className="composer__btn composer__btn--stop" onClick={handleCancel} title={t("composer.stop")}>
             <Square size={14} fill="currentColor" />
           </button>
         ) : (
@@ -224,7 +222,7 @@ export function Composer({
             className="composer__btn composer__btn--send"
             onClick={submit}
             disabled={!text.trim()}
-            title="Send (Enter)"
+            title={t("composer.send")}
           >
             <ArrowUp size={16} />
           </button>

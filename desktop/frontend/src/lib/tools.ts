@@ -5,7 +5,9 @@
 // highlight.js) so ToolCard stays a renderer and the main bundle stays light.
 
 import { diffLines } from "./diff";
+import { t } from "./i18n";
 import { extToLang } from "./lang";
+import type { DictKey } from "../locales/en";
 
 export interface ToolDiff {
   original: string;
@@ -118,8 +120,11 @@ function nonEmptyLines(s: string): number {
   return s.split("\n").filter((l) => l.trim() !== "").length;
 }
 
-function plural(n: number, one: string, many: string): string {
-  return `${n} ${n === 1 ? one : many}`;
+// countOf renders a localized "N <noun>" using the singular/plural key pair (zh
+// collapses both to one form). Lives here, not the dict, so the counted phrasing
+// stays a translation concern.
+function countOf(n: number, one: DictKey, other: DictKey): string {
+  return t(n === 1 ? one : other, { n });
 }
 
 // summarize derives the one-line outcome shown under a finished card (the "⎿"
@@ -130,7 +135,7 @@ export function summarize(name: string, args: string, output?: string, error?: s
   const a = parse(args);
   switch (name) {
     case "write_file":
-      return plural(lineCount(str(a, "content")), "line", "lines");
+      return countOf(lineCount(str(a, "content")), "tool.lineOne", "tool.lineOther");
     case "edit_file": {
       if (typeof a.old_string === "string" && typeof a.new_string === "string") {
         const { add, del } = plusMinus(a.old_string, a.new_string);
@@ -149,27 +154,27 @@ export function summarize(name: string, args: string, output?: string, error?: s
           del += pm.del;
         }
       }
-      return `${plural(edits.length, "edit", "edits")} · +${add} -${del}`;
+      return `${countOf(edits.length, "tool.editOne", "tool.editOther")} · +${add} -${del}`;
     }
   }
 
   if (!output) return "";
   switch (name) {
     case "read_file": {
-      if (output.startsWith("(empty file)")) return "empty file";
+      if (output.startsWith("(empty file)")) return t("tool.emptyFile");
       const arrows = (output.match(/→/g) || []).length;
-      return plural(arrows || lineCount(output), "line", "lines");
+      return countOf(arrows || lineCount(output), "tool.lineOne", "tool.lineOther");
     }
     case "grep":
-      return plural(nonEmptyLines(output), "match", "matches");
+      return countOf(nonEmptyLines(output), "tool.matchOne", "tool.matchOther");
     case "glob":
-      return plural(nonEmptyLines(output), "file", "files");
+      return countOf(nonEmptyLines(output), "tool.fileOne", "tool.fileOther");
     case "ls":
-      return `${nonEmptyLines(output)} ${nonEmptyLines(output) === 1 ? "entry" : "entries"}`;
+      return countOf(nonEmptyLines(output), "tool.entryOne", "tool.entryOther");
     case "web_fetch":
       return output.split("\n", 1)[0].slice(0, 80);
     case "bash":
-      return output.trim() === "" ? "no output" : plural(lineCount(output), "line", "lines");
+      return output.trim() === "" ? t("tool.noOutput") : countOf(lineCount(output), "tool.lineOne", "tool.lineOther");
     default:
       return "";
   }

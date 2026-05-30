@@ -1,0 +1,175 @@
+// 简体中文 UI 文案。键集必须与 en.ts 完全一致 —— 下面的 `Record<DictKey, string>`
+// 注解会在编译期强制这一点：缺键或多键都会让 tsc 报错。{placeholder} 占位符在
+// 调用时由 lib/i18n.tsx 填充，需与英文保持同名。
+
+import type { DictKey } from "./en";
+
+export const zh: Record<DictKey, string> = {
+  // 通用动词 / 框架
+  "common.close": "关闭",
+  "common.cancel": "取消",
+  "common.save": "保存",
+  "common.edit": "编辑",
+  "common.delete": "删除",
+  "common.add": "添加",
+  "common.submit": "提交",
+  "common.none": "无",
+  "common.busyHint": "请先完成或停止当前回合",
+
+  // 顶栏
+  "topbar.history": "历史",
+  "topbar.memory": "记忆",
+  "topbar.settings": "设置",
+  "topbar.newSession": "新建会话",
+  "topbar.startupError": "启动错误：{msg}",
+
+  // 欢迎 / 空状态
+  "welcome.tagline": "一个编码智能体 —— 描述任务或随便问点什么。",
+  "welcome.hintCommands": "命令",
+  "welcome.hintFiles": "引用文件",
+  "welcome.hintSend": "发送",
+  "welcome.ex1": "讲讲这个代码库的架构",
+  "welcome.ex2": "总结最近的 git 改动",
+  "welcome.ex3": "智能体的运行主循环在哪，它做了什么？",
+
+  // 输入框
+  "composer.placeholder": "给 Reasonix 发消息…  ( / 命令 · @ 文件 )",
+  "composer.planMode": "计划模式",
+  "composer.planModeOn": "计划模式已开",
+  "composer.planHint": "shift+tab",
+  "composer.planHintExit": "shift+tab 退出",
+  "composer.enterPlanTitle": "进入计划模式（shift+tab）—— 只读；先给出计划再动手",
+  "composer.exitPlanTitle": "退出计划模式（shift+tab）",
+  "composer.send": "发送（Enter）",
+  "composer.stop": "停止（Esc）",
+
+  // 状态栏
+  "status.connecting": "连接中…",
+  "status.ctx": "{pct}% 上下文",
+  "status.plan": "计划",
+  "status.switchModel": "切换模型",
+  "status.noModels": "未配置任何模型",
+  "status.switchFolder": "{cwd}\n点击切换项目目录",
+  "status.tokens": "tokens",
+
+  // 审批弹窗
+  "approval.planTitle": "可以开始写代码了吗？",
+  "approval.planNote": "查看上面的计划。批准将退出计划模式并开始动手。",
+  "approval.keepPlanning": "继续规划",
+  "approval.proceed": "继续",
+  "approval.toolTitle": "允许这次工具调用吗？",
+  "approval.deny": "拒绝",
+  "approval.allowOnce": "允许一次",
+  "approval.allowSession": "本会话内允许",
+
+  // 提问卡片
+  "ask.customPlaceholder": "输入你自己的答案…",
+  "ask.justChat": "只是聊聊",
+
+  // 历史抽屉
+  "history.title": "历史",
+  "history.empty": "还没有已保存的会话。",
+  "history.namePlaceholder": "会话名称…",
+  "history.emptySession": "（空会话）",
+  "history.current": "当前",
+  "history.turnOne": "{n} 轮",
+  "history.turnOther": "{n} 轮",
+  "history.confirmDelete": "确认删除",
+  "history.rename": "重命名",
+  "history.today": "今天",
+  "history.yesterday": "昨天",
+
+  // 记忆抽屉
+  "memory.title": "记忆",
+  "memory.unavailable": "记忆功能不可用。",
+  "memory.quickAdd": "快速添加",
+  "memory.whereToSave": "保存到哪里",
+  "memory.notePlaceholder": "记住…",
+  "memory.remember": "记住",
+  "memory.instructionFiles": "指令文件",
+  "memory.noDocs": "未找到 REASONIX.md。可在上方快速添加一条。",
+  "memory.savedMemories": "已保存的记忆",
+  "memory.noFacts": "还没有保存任何内容。智能体会通过 remember 工具写入这些。",
+  "memory.storedUnder": "存放于 {dir}",
+
+  // 设置抽屉
+  "settings.title": "设置",
+  "settings.loading": "加载中…",
+  "settings.modelsProviders": "模型与 Provider",
+  "settings.defaultModel": "默认模型",
+  "settings.plannerModel": "规划模型",
+  "settings.plannerNone": "（无 —— 单模型）",
+  "settings.keySet": "已设密钥",
+  "settings.noKey": "无密钥",
+  "settings.cantDeleteDefault": "无法删除默认 Provider",
+  "settings.deleteProvider": "删除 Provider",
+  "settings.addProvider": "+ 添加 Provider",
+  "settings.providerName": "名称（如 deepseek-flash）",
+  "settings.providerKind": "类型",
+  "settings.providerBaseUrl": "base_url（https://…）",
+  "settings.providerModels": "模型（逗号分隔）",
+  "settings.providerApiKeyEnv": "api_key_env（如 DEEPSEEK_API_KEY）",
+  "settings.providerContextWindow": "上下文窗口",
+  "settings.contextWindowPlaceholder": "token 数（0 = Provider 默认值）",
+  "settings.contextWindowHint": "该 Provider 在上下文中保留的最大 token 数。填 0 表示使用 Provider 默认值。",
+  "settings.setKey": "设置 {env}（→ .env）",
+  "settings.saveKey": "保存密钥",
+  "settings.permissions": "权限",
+  "settings.writerMode": "写操作模式",
+  "settings.modeAsk": "ask（写操作前询问）",
+  "settings.modeAllow": "allow（自动执行写操作）",
+  "settings.modeDeny": "deny（阻止写操作）",
+  "settings.ruleForm": "规则格式：ToolName 或 ToolName(glob)。优先级：deny > ask > allow。",
+  "settings.addRule": "添加 {list} 规则…",
+  "settings.sandboxTitle": "沙箱与工作区",
+  "settings.bashSandbox": "Bash 沙箱",
+  "settings.bashEnforce": "enforce（隔离 bash）",
+  "settings.bashOff": "off（不受限运行）",
+  "settings.allowNetwork": "允许沙箱内 bash 访问网络",
+  "settings.workspaceRoot": "工作区根目录",
+  "settings.workspaceDefault": "（默认：当前目录）",
+  "settings.agent": "智能体",
+  "settings.temperature": "采样温度",
+  "settings.maxSteps": "最大步数",
+  "settings.unlimited": "0 = 不限",
+  "settings.systemPrompt": "系统提示词",
+  "settings.saveAgent": "保存智能体设置",
+  "settings.appearance": "外观与语言",
+  "settings.theme": "主题",
+  "settings.themeAuto": "自动",
+  "settings.themeLight": "浅色",
+  "settings.themeDark": "深色",
+  "settings.language": "语言",
+  "settings.langAuto": "自动（跟随系统）",
+  "settings.config": "配置文件：{path}",
+
+  // 待办栏
+  "todo.title": "待办",
+  "todo.dismiss": "关闭待办列表",
+
+  // 斜杠菜单标签
+  "slash.project": "项目",
+  "slash.mcp": "mcp",
+
+  // 助手消息
+  "msg.thinking": "思考过程",
+  "msg.copy": "复制",
+  "msg.copied": "已复制",
+
+  // 工具卡片摘要
+  "tool.stepOne": "{n} 步",
+  "tool.stepOther": "{n} 步",
+  "tool.truncated": "输出已截断",
+  "tool.lineOne": "{n} 行",
+  "tool.lineOther": "{n} 行",
+  "tool.matchOne": "{n} 处匹配",
+  "tool.matchOther": "{n} 处匹配",
+  "tool.fileOne": "{n} 个文件",
+  "tool.fileOther": "{n} 个文件",
+  "tool.entryOne": "{n} 项",
+  "tool.entryOther": "{n} 项",
+  "tool.editOne": "{n} 处编辑",
+  "tool.editOther": "{n} 处编辑",
+  "tool.emptyFile": "空文件",
+  "tool.noOutput": "无输出",
+};

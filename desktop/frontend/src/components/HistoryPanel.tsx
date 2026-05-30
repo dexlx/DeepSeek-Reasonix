@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Pencil, Trash2, Check, X } from "lucide-react";
+import { t, useT } from "../lib/i18n";
 import type { SessionMeta } from "../lib/types";
 
 // HistoryPanel is the desktop session switcher: a right-side drawer listing saved
@@ -20,6 +21,7 @@ export function HistoryPanel({
   onRename: (path: string, title: string) => void;
   onClose: () => void;
 }) {
+  const tr = useT();
   const [editing, setEditing] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [confirming, setConfirming] = useState<string | null>(null);
@@ -48,15 +50,15 @@ export function HistoryPanel({
     <div className="drawer-backdrop" onClick={onClose}>
       <aside className="drawer" onClick={(e) => e.stopPropagation()}>
         <header className="drawer__head">
-          <div className="drawer__title">History</div>
-          <button className="chip" onClick={onClose} title="Close">
+          <div className="drawer__title">{tr("history.title")}</div>
+          <button className="chip" onClick={onClose} title={tr("common.close")}>
             ✕
           </button>
         </header>
 
         <div className="drawer__body">
           {sessions.length === 0 ? (
-            <div className="mem-empty">No saved sessions yet.</div>
+            <div className="mem-empty">{tr("history.empty")}</div>
           ) : (
             groups.map((g) => (
               <section className="mem-section" key={g.label}>
@@ -74,16 +76,14 @@ export function HistoryPanel({
                           if (e.key === "Escape") setEditing(null);
                         }}
                         onBlur={() => commitRename(s.path)}
-                        placeholder="Session name…"
+                        placeholder={tr("history.namePlaceholder")}
                       />
                     ) : (
                       <button className="hist-item__main" onClick={() => onResume(s.path)} title={s.path}>
-                        <div className="hist-item__preview">{s.title || s.preview || "(empty session)"}</div>
+                        <div className="hist-item__preview">{s.title || s.preview || tr("history.emptySession")}</div>
                         <div className="hist-item__meta">
-                          {s.current && <span className="hist-item__badge">current</span>}
-                          <span>
-                            {s.turns} turn{s.turns === 1 ? "" : "s"}
-                          </span>
+                          {s.current && <span className="hist-item__badge">{tr("history.current")}</span>}
+                          <span>{tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}</span>
                           <span>·</span>
                           <span>{timeLabel(s.modTime)}</span>
                         </div>
@@ -96,7 +96,7 @@ export function HistoryPanel({
                           <>
                             <button
                               className="hist-act hist-act--danger"
-                              title="Confirm delete"
+                              title={tr("history.confirmDelete")}
                               onClick={() => {
                                 onDelete(s.path);
                                 setConfirming(null);
@@ -104,17 +104,17 @@ export function HistoryPanel({
                             >
                               <Check size={14} />
                             </button>
-                            <button className="hist-act" title="Cancel" onClick={() => setConfirming(null)}>
+                            <button className="hist-act" title={tr("common.cancel")} onClick={() => setConfirming(null)}>
                               <X size={14} />
                             </button>
                           </>
                         ) : (
                           <>
-                            <button className="hist-act" title="Rename" onClick={() => startRename(s)}>
+                            <button className="hist-act" title={tr("history.rename")} onClick={() => startRename(s)}>
                               <Pencil size={13} />
                             </button>
                             {!s.current && (
-                              <button className="hist-act" title="Delete" onClick={() => setConfirming(s.path)}>
+                              <button className="hist-act" title={tr("common.delete")} onClick={() => setConfirming(s.path)}>
                                 <Trash2 size={13} />
                               </button>
                             )}
@@ -133,12 +133,14 @@ export function HistoryPanel({
   );
 }
 
-// dayLabel buckets a timestamp into "Today", "Yesterday", or a locale date.
+// dayLabel buckets a timestamp into "Today", "Yesterday", or a locale date. It's
+// module-level (not a component), so it uses the non-reactive translator; the
+// panel re-renders on a locale switch via its parent, picking up the new strings.
 function dayLabel(ms: number): string {
   const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
   const days = Math.round((startOfDay(new Date()) - startOfDay(new Date(ms))) / 86_400_000);
-  if (days <= 0) return "Today";
-  if (days === 1) return "Yesterday";
+  if (days <= 0) return t("history.today");
+  if (days === 1) return t("history.yesterday");
   return new Date(ms).toLocaleDateString();
 }
 

@@ -1,0 +1,176 @@
+// English UI strings — the canonical dictionary. Keys are dotted by area; values
+// may contain {placeholders} filled at call time (see lib/i18n.tsx). zh.ts must
+// mirror this key set exactly (its `Record<DictKey, string>` annotation enforces
+// it at compile time), so adding a key here makes the build fail until zh has it.
+
+export const en = {
+  // shared verbs / chrome
+  "common.close": "Close",
+  "common.cancel": "Cancel",
+  "common.save": "Save",
+  "common.edit": "Edit",
+  "common.delete": "Delete",
+  "common.add": "Add",
+  "common.submit": "Submit",
+  "common.none": "none",
+  "common.busyHint": "Finish or stop the current turn first",
+
+  // top bar
+  "topbar.history": "History",
+  "topbar.memory": "Memory",
+  "topbar.settings": "Settings",
+  "topbar.newSession": "New session",
+  "topbar.startupError": "startup error: {msg}",
+
+  // welcome / empty state
+  "welcome.tagline": "A coding agent — describe a task or ask anything.",
+  "welcome.hintCommands": "commands",
+  "welcome.hintFiles": "reference files",
+  "welcome.hintSend": "send",
+  "welcome.ex1": "Explain this codebase's architecture",
+  "welcome.ex2": "Summarize the recent git changes",
+  "welcome.ex3": "Where is the agent run loop, and what does it do?",
+
+  // composer
+  "composer.placeholder": "Message Reasonix…  ( / commands · @ files )",
+  "composer.planMode": "plan mode",
+  "composer.planModeOn": "plan mode on",
+  "composer.planHint": "shift+tab",
+  "composer.planHintExit": "shift+tab to exit",
+  "composer.enterPlanTitle": "Enter plan mode (shift+tab) — read-only; propose a plan before writing",
+  "composer.exitPlanTitle": "Exit plan mode (shift+tab)",
+  "composer.send": "Send (Enter)",
+  "composer.stop": "Stop (Esc)",
+
+  // status bar
+  "status.connecting": "connecting…",
+  "status.ctx": "{pct}% ctx",
+  "status.plan": "PLAN",
+  "status.switchModel": "Switch model",
+  "status.noModels": "no models configured",
+  "status.switchFolder": "{cwd}\nClick to switch project folder",
+  "status.tokens": "tokens",
+
+  // approval modal
+  "approval.planTitle": "Ready to start coding?",
+  "approval.planNote": "Review the plan above. Approving exits plan mode and starts the work.",
+  "approval.keepPlanning": "Keep planning",
+  "approval.proceed": "Proceed",
+  "approval.toolTitle": "Allow this tool call?",
+  "approval.deny": "Deny",
+  "approval.allowOnce": "Allow once",
+  "approval.allowSession": "Allow for session",
+
+  // ask card
+  "ask.customPlaceholder": "Type your own answer…",
+  "ask.justChat": "Just chat",
+
+  // history drawer
+  "history.title": "History",
+  "history.empty": "No saved sessions yet.",
+  "history.namePlaceholder": "Session name…",
+  "history.emptySession": "(empty session)",
+  "history.current": "current",
+  "history.turnOne": "{n} turn",
+  "history.turnOther": "{n} turns",
+  "history.confirmDelete": "Confirm delete",
+  "history.rename": "Rename",
+  "history.today": "Today",
+  "history.yesterday": "Yesterday",
+
+  // memory drawer
+  "memory.title": "Memory",
+  "memory.unavailable": "Memory unavailable.",
+  "memory.quickAdd": "Quick add",
+  "memory.whereToSave": "Where to save",
+  "memory.notePlaceholder": "Remember that…",
+  "memory.remember": "Remember",
+  "memory.instructionFiles": "Instruction files",
+  "memory.noDocs": "No REASONIX.md found. Quick-add one above.",
+  "memory.savedMemories": "Saved memories",
+  "memory.noFacts": "Nothing saved yet. The agent writes these with the remember tool.",
+  "memory.storedUnder": "stored under {dir}",
+
+  // settings drawer
+  "settings.title": "Settings",
+  "settings.loading": "Loading…",
+  "settings.modelsProviders": "Models & providers",
+  "settings.defaultModel": "Default model",
+  "settings.plannerModel": "Planner model",
+  "settings.plannerNone": "(none — single model)",
+  "settings.keySet": "key set",
+  "settings.noKey": "no key",
+  "settings.cantDeleteDefault": "Can't delete the default provider",
+  "settings.deleteProvider": "Delete provider",
+  "settings.addProvider": "+ Add provider",
+  "settings.providerName": "name (e.g. deepseek-flash)",
+  "settings.providerKind": "Kind",
+  "settings.providerBaseUrl": "base_url (https://…)",
+  "settings.providerModels": "models (comma-separated)",
+  "settings.providerApiKeyEnv": "api_key_env (e.g. DEEPSEEK_API_KEY)",
+  "settings.providerContextWindow": "Context window",
+  "settings.contextWindowPlaceholder": "tokens (0 = provider default)",
+  "settings.contextWindowHint": "Max tokens to keep in context for this provider. Leave 0 to use the provider's default.",
+  "settings.setKey": "set {env} (→ .env)",
+  "settings.saveKey": "Save key",
+  "settings.permissions": "Permissions",
+  "settings.writerMode": "Writer mode",
+  "settings.modeAsk": "ask (prompt before writers)",
+  "settings.modeAllow": "allow (auto-run writers)",
+  "settings.modeDeny": "deny (block writers)",
+  "settings.ruleForm": "Rule form: ToolName or ToolName(glob). Precedence: deny > ask > allow.",
+  "settings.addRule": "add {list} rule…",
+  "settings.sandboxTitle": "Sandbox & workspace",
+  "settings.bashSandbox": "Bash sandbox",
+  "settings.bashEnforce": "enforce (jail bash)",
+  "settings.bashOff": "off (run unconfined)",
+  "settings.allowNetwork": "Allow network egress from sandboxed bash",
+  "settings.workspaceRoot": "Workspace root",
+  "settings.workspaceDefault": "(default: cwd)",
+  "settings.agent": "Agent",
+  "settings.temperature": "Temperature",
+  "settings.maxSteps": "Max steps",
+  "settings.unlimited": "0 = unlimited",
+  "settings.systemPrompt": "System prompt",
+  "settings.saveAgent": "Save agent settings",
+  "settings.appearance": "Appearance & language",
+  "settings.theme": "Theme",
+  "settings.themeAuto": "auto",
+  "settings.themeLight": "light",
+  "settings.themeDark": "dark",
+  "settings.language": "Language",
+  "settings.langAuto": "Auto (system)",
+  "settings.config": "config: {path}",
+
+  // todo bar
+  "todo.title": "To-dos",
+  "todo.dismiss": "Dismiss the task list",
+
+  // slash menu tags
+  "slash.project": "project",
+  "slash.mcp": "mcp",
+
+  // assistant message
+  "msg.thinking": "thinking",
+  "msg.copy": "Copy",
+  "msg.copied": "Copied",
+
+  // tool card summaries
+  "tool.stepOne": "{n} step",
+  "tool.stepOther": "{n} steps",
+  "tool.truncated": "output truncated",
+  "tool.lineOne": "{n} line",
+  "tool.lineOther": "{n} lines",
+  "tool.matchOne": "{n} match",
+  "tool.matchOther": "{n} matches",
+  "tool.fileOne": "{n} file",
+  "tool.fileOther": "{n} files",
+  "tool.entryOne": "{n} entry",
+  "tool.entryOther": "{n} entries",
+  "tool.editOne": "{n} edit",
+  "tool.editOther": "{n} edits",
+  "tool.emptyFile": "empty file",
+  "tool.noOutput": "no output",
+};
+
+export type DictKey = keyof typeof en;

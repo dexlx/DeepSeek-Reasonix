@@ -61,6 +61,10 @@ type SettingsView struct {
 	Agent        AgentView       `json:"agent"`
 	Language     string          `json:"language"`
 	ConfigPath   string          `json:"configPath"`
+	// ProviderKinds lists the provider implementations the kernel actually
+	// registered (provider.Kinds()), so the editor's "kind" picker offers only
+	// kinds that resolve — selecting an unregistered one would fail the rebuild.
+	ProviderKinds []string `json:"providerKinds"`
 }
 
 func nonNil(s []string) []string {
@@ -94,9 +98,10 @@ func (a *App) Settings() SettingsView {
 			Bash: bash, Network: cfg.Sandbox.Network,
 			WorkspaceRoot: cfg.Sandbox.WorkspaceRoot, AllowWrite: nonNil(cfg.Sandbox.AllowWrite),
 		},
-		Agent:      AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, SystemPrompt: cfg.Agent.SystemPrompt},
-		Language:   cfg.Language,
-		ConfigPath: config.SourcePath(),
+		Agent:         AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, SystemPrompt: cfg.Agent.SystemPrompt},
+		Language:      cfg.Language,
+		ConfigPath:    config.SourcePath(),
+		ProviderKinds: provider.Kinds(),
 	}
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
