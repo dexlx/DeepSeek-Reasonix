@@ -211,8 +211,8 @@ func newChatTUI(ctrl *control.Controller, missing string, eventCh chan event.Eve
 	// it at the insertion point and IME candidate windows anchor to the input.
 	ti.SetVirtualCursor(false)
 	// Plain Enter submits (the chatTUI handler intercepts it), so the textarea's
-	// own InsertNewline binding moves to Alt+Enter / Ctrl+J.
-	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j"))
+	// own InsertNewline binding moves to Alt+Enter / Ctrl+J / Shift+Enter.
+	ti.KeyMap.InsertNewline = key.NewBinding(key.WithKeys("alt+enter", "ctrl+j", "shift+enter"))
 	ti.Focus()
 
 	sp := spinner.New()
