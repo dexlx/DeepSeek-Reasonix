@@ -15,6 +15,7 @@ import {
 } from "../lib/theme";
 import type { NetworkView, ProviderView, SettingsView } from "../lib/types";
 import { ResizableDrawer } from "./ResizableDrawer";
+import { Tooltip } from "./Tooltip";
 
 type SettingsTab = "models" | "providers" | "network" | "permissions" | "sandbox" | "agent" | "appearance" | "updates";
 
@@ -58,9 +59,11 @@ export function SettingsPanel({ onClose, onChanged }: { onClose: () => void; onC
     <ResizableDrawer onClose={onClose} wide>
         <header className="drawer__head">
           <div className="drawer__title">{t("settings.title")}</div>
-          <button className="chip" onClick={onClose} title={t("common.close")}>
-            ✕
-          </button>
+          <Tooltip label={t("common.close")}>
+            <button className="chip" onClick={onClose}>
+              ✕
+            </button>
+          </Tooltip>
         </header>
 
         {!s ? (
@@ -450,14 +453,15 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
                 <button className="btn btn--small" disabled={busy} onClick={() => setEditing(p.name)}>
                   {t("common.edit")}
                 </button>
-                <button
-                  className="btn btn--small"
-                  disabled={busy || defaultProvider === p.name}
-                  title={defaultProvider === p.name ? t("settings.cantDeleteDefault") : t("settings.deleteProvider")}
-                  onClick={() => void apply(() => app.DeleteProvider(p.name))}
-                >
-                  {t("common.delete")}
-                </button>
+                <Tooltip label={defaultProvider === p.name ? t("settings.cantDeleteDefault") : t("settings.deleteProvider")}>
+                  <button
+                    className="btn btn--small"
+                    disabled={busy || defaultProvider === p.name}
+                    onClick={() => void apply(() => app.DeleteProvider(p.name))}
+                  >
+                    {t("common.delete")}
+                  </button>
+                </Tooltip>
               </div>
               <div className="prov-card__meta">
                 <span>{p.kind}</span>
@@ -652,9 +656,11 @@ function RuleList({
         {rules.map((r) => (
           <span className="set-rule" key={r}>
             {r}
-            <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)} title={t("common.delete")}>
-              ✕
-            </button>
+            <Tooltip label={t("common.delete")}>
+              <button className="set-rule__x" disabled={busy} onClick={() => void onRemove(r)}>
+                ✕
+              </button>
+            </Tooltip>
           </span>
         ))}
       </div>
@@ -873,9 +879,9 @@ function UpdatesSection({ configPath }: { configPath: string }) {
       {status.kind === "done" && <div className="mem-hint">{t("updater.done")}</div>}
       {status.kind === "error" && <div className="banner banner--error">{t("updater.failed", { msg: status.message })}</div>}
       {configPath && (
-        <div className="mem-hint settings-config-path" title={configPath}>
+        <Tooltip label={configPath} fill block className="mem-hint settings-config-path">
           {t("settings.config", { path: configPath })}
-        </div>
+        </Tooltip>
       )}
     </section>
   );

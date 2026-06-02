@@ -5,6 +5,7 @@ import { sessionActivityTime } from "../lib/session";
 import type { HistoryMessage, SessionMeta } from "../lib/types";
 import type { Item } from "../lib/useController";
 import { ResizableDrawer } from "./ResizableDrawer";
+import { Tooltip } from "./Tooltip";
 import { Transcript } from "./Transcript";
 
 // HistoryPanel lists saved sessions newest-first. Idle clicks resume a session;
@@ -114,9 +115,11 @@ export function HistoryPanel({
           <div className="drawer__title">{tr("history.title")}</div>
           {running && <div className="drawer__summary">{tr("history.readOnlyHint")}</div>}
         </div>
-        <button className="chip" onClick={onClose} title={tr("common.close")}>
-          ✕
-        </button>
+        <Tooltip label={tr("common.close")}>
+          <button className="chip" onClick={onClose}>
+            ✕
+          </button>
+        </Tooltip>
       </header>
 
       <div className={`drawer__body history-drawer${showPreview ? " history-drawer--preview" : ""}`}>
@@ -156,69 +159,75 @@ export function HistoryPanel({
                           placeholder={tr("history.namePlaceholder")}
                         />
                       ) : (
-                        <button
-                          className="hist-item__main"
-                          onClick={() => {
-                            if (running) void loadPreview(s);
-                            else onResume(s.path);
-                          }}
-                          title={s.path}
-                        >
-                          <div className="hist-item__preview">{sessionDisplayTitle(s, tr("history.emptySession"))}</div>
-                          <div className="hist-item__meta">
-                            {s.current && <span className="hist-item__badge">{tr("history.current")}</span>}
-                            <span>{tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}</span>
-                            <span>·</span>
-                            <span>{timeLabel(sessionActivityTime(s))}</span>
-                            {running && (
-                              <>
-                                <span>·</span>
-                                <span>{tr("history.preview")}</span>
-                              </>
-                            )}
-                          </div>
-                        </button>
+                        <Tooltip label={s.path} fill>
+                          <button
+                            className="hist-item__main"
+                            onClick={() => {
+                              if (running) void loadPreview(s);
+                              else onResume(s.path);
+                            }}
+                          >
+                            <div className="hist-item__preview">{sessionDisplayTitle(s, tr("history.emptySession"))}</div>
+                            <div className="hist-item__meta">
+                              {s.current && <span className="hist-item__badge">{tr("history.current")}</span>}
+                              <span>{tr(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns })}</span>
+                              <span>·</span>
+                              <span>{timeLabel(sessionActivityTime(s))}</span>
+                              {running && (
+                                <>
+                                  <span>·</span>
+                                  <span>{tr("history.preview")}</span>
+                                </>
+                              )}
+                            </div>
+                          </button>
+                        </Tooltip>
                       )}
 
                       {editing !== s.path && (
                         <div className="hist-item__actions">
                           {confirming === s.path ? (
                             <>
-                              <button
-                                className="hist-act hist-act--danger"
-                                title={tr("history.confirmDelete")}
-                                disabled={running}
-                                onClick={() => {
-                                  if (running) return;
-                                  onDelete(s.path);
-                                  setConfirming(null);
-                                }}
-                              >
-                                <Check size={14} />
-                              </button>
-                              <button className="hist-act" title={tr("common.cancel")} onClick={() => setConfirming(null)}>
-                                <X size={14} />
-                              </button>
+                              <Tooltip label={tr("history.confirmDelete")}>
+                                <button
+                                  className="hist-act hist-act--danger"
+                                  disabled={running}
+                                  onClick={() => {
+                                    if (running) return;
+                                    onDelete(s.path);
+                                    setConfirming(null);
+                                  }}
+                                >
+                                  <Check size={14} />
+                                </button>
+                              </Tooltip>
+                              <Tooltip label={tr("common.cancel")}>
+                                <button className="hist-act" onClick={() => setConfirming(null)}>
+                                  <X size={14} />
+                                </button>
+                              </Tooltip>
                             </>
                           ) : (
                             <>
-                              <button
-                                className="hist-act"
-                                title={tr("history.rename")}
-                                disabled={running}
-                                onClick={() => startRename(s)}
-                              >
-                                <Pencil size={13} />
-                              </button>
-                              {!s.current && (
+                              <Tooltip label={tr("history.rename")}>
                                 <button
                                   className="hist-act"
-                                  title={tr("common.delete")}
                                   disabled={running}
-                                  onClick={() => setConfirming(s.path)}
+                                  onClick={() => startRename(s)}
                                 >
-                                  <Trash2 size={13} />
+                                  <Pencil size={13} />
                                 </button>
+                              </Tooltip>
+                              {!s.current && (
+                                <Tooltip label={tr("common.delete")}>
+                                  <button
+                                    className="hist-act"
+                                    disabled={running}
+                                    onClick={() => setConfirming(s.path)}
+                                  >
+                                    <Trash2 size={13} />
+                                  </button>
+                                </Tooltip>
                               )}
                             </>
                           )}

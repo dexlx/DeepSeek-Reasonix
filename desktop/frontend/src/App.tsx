@@ -32,10 +32,11 @@ import { SettingsPanel } from "./components/SettingsPanel";
 import { CapabilitiesPanel } from "./components/CapabilitiesPanel";
 import { UpdateBanner } from "./components/UpdateBanner";
 import { WorkspacePanel } from "./components/WorkspacePanel";
+import { Tooltip } from "./components/Tooltip";
 import { OnboardingOverlay } from "./components/OnboardingOverlay";
 import { parseTodos } from "./lib/tools";
 import { sessionActivityTime } from "./lib/session";
-import type { MemoryView, Mode, SessionMeta } from "./lib/types";
+import type { ComposerInsertRequest, MemoryView, Mode, SessionMeta } from "./lib/types";
 import { loadLayoutSize, saveLayoutSize } from "./lib/layoutPreferences";
 import { applyTheme, getTheme, getThemeStyle, isThemeStyle, themeForStyle, type Theme } from "./lib/theme";
 
@@ -180,13 +181,16 @@ export default function App() {
   const [workspacePanelResizing, setWorkspacePanelResizing] = useState(false);
   const [workspacePanelMaximized, setWorkspacePanelMaximized] = useState(false);
   const [workspacePreviewModeActive, setWorkspacePreviewModeActive] = useState(false);
+  const [workspaceChangesRefreshKey, setWorkspaceChangesRefreshKey] = useState(0);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [capsOpen, setCapsOpen] = useState(false);
+  const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
   const [pendingPlanRevision, setPendingPlanRevision] = useState<string | null>(null);
   const [viewportWidth, setViewportWidth] = useState(() => (typeof window === "undefined" ? 1440 : window.innerWidth));
   const [footerHeight, setFooterHeight] = useState(0);
   const footerRef = useRef<HTMLElement>(null);
   const sidebarBeforeWorkspacePreviewRef = useRef<boolean | null>(null);
+  const wasRunningForWorkspaceChangesRef = useRef(false);
   const effectiveSidebarWidth = sidebarCollapsed ? SIDEBAR_COLLAPSED_WIDTH : sidebarWidth;
   const effectiveWorkspacePanelWidth = useMemo(
     () =>
@@ -251,6 +255,13 @@ export default function App() {
     send(text);
   }, [pendingPlanRevision, send, state.running]);
 
+  useEffect(() => {
+    if (wasRunningForWorkspaceChangesRef.current && !state.running) {
+      setWorkspaceChangesRefreshKey((key) => key + 1);
+    }
+    wasRunningForWorkspaceChangesRef.current = state.running;
+  }, [state.running]);
+
   // Memory drawer: opening fetches a fresh snapshot; writes re-fetch so the
   // panel reflects what landed on disk.
   const openMemory = useCallback(async () => {
@@ -306,6 +317,10 @@ export default function App() {
     [switchModel, openMemory, send, notice, t],
   );
 
+  const addToChat = useCallback((text: string) => {
+    setComposerInsertRequest((prev) => ({ id: (prev?.id ?? 0) + 1, text }));
+  }, []);
+
   const refreshSessions = useCallback(async () => {
     const sessions = await listSessions();
     setSidebarSessions(sessions.slice(0, 10));
@@ -356,6 +371,7 @@ export default function App() {
   const startNewSession = useCallback(async () => {
     await newSession();
     await refreshSessions();
+    setWorkspaceChangesRefreshKey((key) => key + 1);
   }, [newSession, refreshSessions]);
 
   const toggleSidebar = useCallback(() => {
@@ -541,6 +557,7 @@ export default function App() {
       setHistView(null);
       await resumeSession(path);
       await refreshSessions();
+      setWorkspaceChangesRefreshKey((key) => key + 1);
     },
     [state.running, resumeSession, refreshSessions],
   );
@@ -595,7 +612,10 @@ export default function App() {
   // the recent list belongs to the newly selected workspace. A cancel is a no-op.
   const switchFolder = useCallback(async (path?: string) => {
     const picked = path === undefined ? await pickWorkspace() : await switchWorkspace(path);
-    if (picked) await refreshSessions();
+    if (picked) {
+      await refreshSessions();
+      setWorkspaceChangesRefreshKey((key) => key + 1);
+    }
     return picked;
   }, [pickWorkspace, switchWorkspace, refreshSessions]);
 
@@ -649,149 +669,167 @@ export default function App() {
           <div className="sidebar__brand">
             <img src={logo} alt="" className="sidebar__logo" />
             <span>Reasonix</span>
-            <button
-              className={`sidebar__toggle${sidebarExpandBlocked ? " sidebar__toggle--blocked" : ""}`}
-              onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
-              title={sidebarToggleTitle}
-              aria-label={sidebarToggleTitle}
-              aria-disabled={sidebarExpandBlocked}
-            >
-              {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
-            </button>
+            <Tooltip label={sidebarToggleTitle}>
+              <button
+                className={`sidebar__toggle${sidebarExpandBlocked ? " sidebar__toggle--blocked" : ""}`}
+                onClick={sidebarExpandBlocked ? undefined : toggleSidebar}
+                aria-label={sidebarToggleTitle}
+                aria-disabled={sidebarExpandBlocked}
+              >
+                {sidebarCollapsed ? <PanelLeftOpen size={15} /> : <PanelLeftClose size={15} />}
+              </button>
+            </Tooltip>
           </div>
 
-          <button
-            className="sidebar__new"
-            onClick={() => void startNewSession()}
-            disabled={state.running}
-            title={state.running ? t("common.busyHint") : t("topbar.newSession")}
-          >
-            <SquarePen size={15} />
-            <span>{t("topbar.newSession")}</span>
-          </button>
+          <Tooltip label={state.running ? t("common.busyHint") : t("topbar.newSession")} fill>
+            <button
+              className="sidebar__new"
+              onClick={() => void startNewSession()}
+              disabled={state.running}
+            >
+              <SquarePen size={15} />
+              <span>{t("topbar.newSession")}</span>
+            </button>
+          </Tooltip>
 
           <section className="sidebar__section">
             <div className="sidebar__section-head">
               <div className="sidebar__section-title">{t("sidebar.conversations")}</div>
-              <button className="sidebar__view-all" onClick={() => void openHistory()} title={t("topbar.history")}>
-                {t("sidebar.viewAll")}
-              </button>
+              <Tooltip label={t("topbar.history")}>
+                <button
+                  className="sidebar__view-all"
+                  onClick={() => void openHistory()}
+                >
+                  {t("sidebar.viewAll")}
+                </button>
+              </Tooltip>
             </div>
             <div className="sidebar__sessions">
               {sidebarSessions.length === 0 ? (
                 <div className="sidebar__empty">{t("sidebar.noRecent")}</div>
               ) : (
-                sidebarSessions.map((session) => (
-                  <div
-                    className={`sidebar-session${session.current ? " sidebar-session--current" : ""}`}
-                    key={session.path}
-                    title={session.path}
-                  >
-                    {sidebarEditing === session.path ? (
-                      <input
-                        className="sidebar-session__rename"
-                        autoFocus
-                        value={sidebarDraft}
-                        onChange={(e) => setSidebarDraft(e.target.value)}
-                        onKeyDown={(e) => {
-                          if (e.key === "Enter") void commitSidebarRename(session.path);
-                          if (e.key === "Escape") setSidebarEditing(null);
-                        }}
-                        onBlur={() => void commitSidebarRename(session.path)}
-                        placeholder={t("history.namePlaceholder")}
-                      />
-                    ) : (
-                      <button
-                        className="sidebar-session__main"
-                        onClick={() => void onResumeSession(session.path)}
-                        disabled={state.running || session.current}
-                        title={session.path}
-                      >
-                        <MessageSquare size={14} />
-                        <span className="sidebar-session__body">
-                          <span className="sidebar-session__title">{sessionTitle(session, t("history.emptySession"))}</span>
-                          <span className="sidebar-session__meta">
-                            {session.current ? t("history.current") : sessionTime(sessionActivityTime(session))}
+                sidebarSessions.map((session) => {
+                  const title = sessionTitle(session, t("history.emptySession"));
+                  return (
+                    <div
+                      className={`sidebar-session${session.current ? " sidebar-session--current" : ""}`}
+                      key={session.path}
+                    >
+                      {sidebarEditing === session.path ? (
+                        <input
+                          className="sidebar-session__rename"
+                          autoFocus
+                          value={sidebarDraft}
+                          onChange={(e) => setSidebarDraft(e.target.value)}
+                          onKeyDown={(e) => {
+                            if (e.key === "Enter") void commitSidebarRename(session.path);
+                            if (e.key === "Escape") setSidebarEditing(null);
+                          }}
+                          onBlur={() => void commitSidebarRename(session.path)}
+                          placeholder={t("history.namePlaceholder")}
+                        />
+                      ) : (
+                        <button
+                          className="sidebar-session__main"
+                          onClick={() => void onResumeSession(session.path)}
+                          disabled={state.running || session.current}
+                        >
+                          <MessageSquare size={14} />
+                          <span className="sidebar-session__body">
+                            <Tooltip className="sidebar-session__title" label={`${title}\n${session.path}`}>{title}</Tooltip>
+                            <span className="sidebar-session__meta">
+                              {session.current ? t("history.current") : sessionTime(sessionActivityTime(session))}
+                            </span>
                           </span>
+                        </button>
+                      )}
+                      {sidebarEditing !== session.path && (
+                        <span className="sidebar-session__actions">
+                          {sidebarConfirming === session.path ? (
+                            <>
+                              <Tooltip label={t("history.confirmDelete")}>
+                                <button
+                                  className="sidebar-session__act sidebar-session__act--danger"
+                                  disabled={state.running}
+                                  onClick={() => void confirmSidebarDelete(session.path)}
+                                >
+                                  <Check size={13} />
+                                </button>
+                              </Tooltip>
+                              <Tooltip label={t("common.cancel")}>
+                                <button
+                                  className="sidebar-session__act"
+                                  onClick={() => setSidebarConfirming(null)}
+                                >
+                                  <X size={13} />
+                                </button>
+                              </Tooltip>
+                            </>
+                          ) : (
+                            <>
+                              <Tooltip label={t("history.rename")}>
+                                <button
+                                  className="sidebar-session__act"
+                                  disabled={state.running}
+                                  onClick={() => startSidebarRename(session)}
+                                >
+                                  <Pencil size={12} />
+                                </button>
+                              </Tooltip>
+                              {!session.current && (
+                                <Tooltip label={t("common.delete")}>
+                                  <button
+                                    className="sidebar-session__act"
+                                    disabled={state.running}
+                                    onClick={() => setSidebarConfirming(session.path)}
+                                  >
+                                    <Trash2 size={12} />
+                                  </button>
+                                </Tooltip>
+                              )}
+                            </>
+                          )}
                         </span>
-                      </button>
-                    )}
-                    {sidebarEditing !== session.path && (
-                      <span className="sidebar-session__actions">
-                        {sidebarConfirming === session.path ? (
-                          <>
-                            <button
-                              className="sidebar-session__act sidebar-session__act--danger"
-                              title={t("history.confirmDelete")}
-                              disabled={state.running}
-                              onClick={() => void confirmSidebarDelete(session.path)}
-                            >
-                              <Check size={13} />
-                            </button>
-                            <button
-                              className="sidebar-session__act"
-                              title={t("common.cancel")}
-                              onClick={() => setSidebarConfirming(null)}
-                            >
-                              <X size={13} />
-                            </button>
-                          </>
-                        ) : (
-                          <>
-                            <button
-                              className="sidebar-session__act"
-                              title={t("history.rename")}
-                              disabled={state.running}
-                              onClick={() => startSidebarRename(session)}
-                            >
-                              <Pencil size={12} />
-                            </button>
-                            {!session.current && (
-                              <button
-                                className="sidebar-session__act"
-                                title={t("common.delete")}
-                                disabled={state.running}
-                                onClick={() => setSidebarConfirming(session.path)}
-                              >
-                                <Trash2 size={12} />
-                              </button>
-                            )}
-                          </>
-                        )}
-                      </span>
-                    )}
-                  </div>
-                ))
+                      )}
+                    </div>
+                  );
+                })
               )}
             </div>
           </section>
 
           <nav className="sidebar__nav">
-            <button
-              className="sidebar__navitem sidebar__navitem--sessions"
-              onClick={() => void openHistory()}
-              title={t("topbar.history")}
-            >
-              <History size={15} />
-              <span>{t("topbar.history")}</span>
-            </button>
-            <button className="sidebar__navitem" onClick={() => void openMemory()} title={t("topbar.memory")}>
-              <Brain size={15} />
-              <span>{t("topbar.memory")}</span>
-            </button>
-            <button className="sidebar__navitem" onClick={() => setCapsOpen(true)} title={t("caps.title")}>
-              <Blocks size={15} />
-              <span>{t("caps.title")}</span>
-            </button>
-            <button
-              className="sidebar__navitem"
-              onClick={() => setSettingsOpen(true)}
-              disabled={state.running}
-              title={state.running ? t("common.busyHint") : t("topbar.settings")}
-            >
-              <SettingsIcon size={15} />
-              <span>{t("topbar.settings")}</span>
-            </button>
+            <Tooltip label={t("topbar.history")} fill>
+              <button
+                className="sidebar__navitem sidebar__navitem--sessions"
+                onClick={() => void openHistory()}
+              >
+                <History size={15} />
+                <span>{t("topbar.history")}</span>
+              </button>
+            </Tooltip>
+            <Tooltip label={t("topbar.memory")} fill>
+              <button className="sidebar__navitem" onClick={() => void openMemory()}>
+                <Brain size={15} />
+                <span>{t("topbar.memory")}</span>
+              </button>
+            </Tooltip>
+            <Tooltip label={t("caps.title")} fill>
+              <button className="sidebar__navitem" onClick={() => setCapsOpen(true)}>
+                <Blocks size={15} />
+                <span>{t("caps.title")}</span>
+              </button>
+            </Tooltip>
+            <Tooltip label={state.running ? t("common.busyHint") : t("topbar.settings")} fill>
+              <button
+                className="sidebar__navitem"
+                onClick={() => setSettingsOpen(true)}
+                disabled={state.running}
+              >
+                <SettingsIcon size={15} />
+                <span>{t("topbar.settings")}</span>
+              </button>
+            </Tooltip>
           </nav>
 
         </aside>
@@ -807,7 +845,6 @@ export default function App() {
           onPointerDown={startSidebarResize}
           onKeyDown={resizeSidebarWithKeyboard}
           onDoubleClick={() => setExpandedSidebarWidth(SIDEBAR_DEFAULT_WIDTH)}
-          title={t("sidebar.resize")}
         />
 
         <section className="chat-pane">
@@ -817,39 +854,51 @@ export default function App() {
               <span className="topbar__model">{state.meta?.label ?? "…"}</span>
             </div>
             <div className="topbar__spacer" />
-            <button
-              className="chip chip--icon topbar__workspace-toggle"
-              onClick={toggleWorkspacePanel}
-              title={workspacePanelOpen ? t("workspace.close") : t("workspace.open")}
-            >
-              {workspacePanelOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
-            </button>
+            <Tooltip label={workspacePanelOpen ? t("workspace.close") : t("workspace.open")}>
+              <button
+                className="chip chip--icon topbar__workspace-toggle"
+                onClick={toggleWorkspacePanel}
+              >
+                {workspacePanelOpen ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+              </button>
+            </Tooltip>
             <div className="topbar__actions">
-              <button className="chip chip--icon" onClick={() => void openHistory()} title={t("topbar.history")}>
-                <History size={13} />
-              </button>
-              <button className="chip chip--icon" onClick={() => void openMemory()} title={t("topbar.memory")}>
-                <Brain size={13} />
-              </button>
-              <button className="chip chip--icon" onClick={() => setCapsOpen(true)} title={t("caps.title")}>
-                <Blocks size={13} />
-              </button>
-              <button
-                className="chip chip--icon"
-                onClick={() => setSettingsOpen(true)}
-                disabled={state.running}
-                title={state.running ? t("common.busyHint") : t("topbar.settings")}
-              >
-                <SettingsIcon size={13} />
-              </button>
-              <button
-                className="chip chip--icon"
-                onClick={() => void startNewSession()}
-                disabled={state.running}
-                title={state.running ? t("common.busyHint") : t("topbar.newSession")}
-              >
-                <SquarePen size={13} />
-              </button>
+              <Tooltip label={t("topbar.history")}>
+                <button
+                  className="chip chip--icon"
+                  onClick={() => void openHistory()}
+                >
+                  <History size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip label={t("topbar.memory")}>
+                <button className="chip chip--icon" onClick={() => void openMemory()}>
+                  <Brain size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip label={t("caps.title")}>
+                <button className="chip chip--icon" onClick={() => setCapsOpen(true)}>
+                  <Blocks size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip label={state.running ? t("common.busyHint") : t("topbar.settings")}>
+                <button
+                  className="chip chip--icon"
+                  onClick={() => setSettingsOpen(true)}
+                  disabled={state.running}
+                >
+                  <SettingsIcon size={13} />
+                </button>
+              </Tooltip>
+              <Tooltip label={state.running ? t("common.busyHint") : t("topbar.newSession")}>
+                <button
+                  className="chip chip--icon"
+                  onClick={() => void startNewSession()}
+                  disabled={state.running}
+                >
+                  <SquarePen size={13} />
+                </button>
+              </Tooltip>
             </div>
           </header>
 
@@ -900,6 +949,7 @@ export default function App() {
               onCancel={cancel}
               onCycleMode={cycleMode}
               onPickFolder={switchFolder}
+              insertRequest={composerInsertRequest}
               disabled={state.meta?.ready === false || state.approval != null}
             />
             <StatusBar
@@ -936,7 +986,6 @@ export default function App() {
                 workspacePreviewModeActive ? WORKSPACE_PANEL_DEFAULT_WIDTH : WORKSPACE_FILE_TREE_PANEL_DEFAULT_WIDTH,
               )
             }
-            title={t("workspace.resizePanel")}
           />
         )}
 
@@ -948,6 +997,8 @@ export default function App() {
           onClose={() => setWorkspacePanel(false)}
           onToggleMaximized={() => setWorkspacePanelMaximized((value) => !value)}
           onPreviewModeChange={handleWorkspacePreviewModeChange}
+          onAddToChat={addToChat}
+          changesRefreshKey={workspaceChangesRefreshKey}
         />
       </div>
 

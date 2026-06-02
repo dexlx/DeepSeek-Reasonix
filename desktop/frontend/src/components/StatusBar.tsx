@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Cpu, Wallet } from "lucide-react";
 import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
+import { Tooltip } from "./Tooltip";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import type { BalanceInfo, ContextInfo, EffortInfo, JobView, Meta, Mode, WireUsage } from "../lib/types";
 
@@ -14,10 +15,12 @@ function JobsChip({ jobs }: { jobs: JobView[] }) {
   const [open, setOpen] = useState(false);
   return (
     <div className="statusbar__jobswrap">
-      <button className="statusbar__jobs" onClick={() => setOpen((v) => !v)} title={t("status.jobsTitle")}>
-        <Cpu size={11} />
-        {t("status.jobs", { n: jobs.length })}
-      </button>
+      <Tooltip label={t("status.jobsTitle")}>
+        <button className="statusbar__jobs" onClick={() => setOpen((v) => !v)}>
+          <Cpu size={11} />
+          {t("status.jobs", { n: jobs.length })}
+        </button>
+      </Tooltip>
       {open && (
         <>
           <div className="modelsw__backdrop" onClick={() => setOpen(false)} />
@@ -168,10 +171,12 @@ export function StatusBar({
       {balance?.available && balance.display && (
         <>
           <span className="statusbar__sep">·</span>
-          <span className="statusbar__balance" title={t("status.balanceTitle")}>
-            <Wallet size={11} />
-            {balance.display}
-          </span>
+          <Tooltip label={t("status.balanceTitle")}>
+            <span className="statusbar__balance">
+              <Wallet size={11} />
+              {balance.display}
+            </span>
+          </Tooltip>
         </>
       )}
       <span className="statusbar__spacer" />
