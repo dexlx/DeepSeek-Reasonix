@@ -323,6 +323,7 @@ export function Composer({
   const [pastChatQuery, setPastChatQuery] = useState("");
   const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
   const [loadingPastChats, setLoadingPastChats] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
   const taRef = useRef<HTMLTextAreaElement>(null);
   const composerCardRef = useRef<HTMLDivElement>(null);
   const workspaceAnchorRef = useRef<HTMLDivElement>(null);
@@ -485,16 +486,16 @@ export function Composer({
       ? "slash"
       : argRes && argRes.items.length > 0 && !dismissed
         ? "slasharg"
-        : atMatches.length > 0 && !dismissed
+        : atRaw !== null && !dismissed
           ? "at"
           : null;
-  const count =
+  const countBase =
     menuMode === "slash"
       ? slashMatches.length
       : menuMode === "slasharg"
         ? argRes!.items.length
         : menuMode === "at"
-          ? atMatches.length
+          ? atMatches.length + 1
           : 0;
 
   // Reset highlight + un-dismiss whenever the active query changes.
@@ -573,9 +574,11 @@ export function Composer({
   };
 
   const submit = async () => {
-    if (disabled) return;
+    if (disabled || submitting) return;
     const t = text.trim();
     if ((!t && attachments.length === 0 && workspaceRefs.length === 0) || pendingPaste > 0) return;
+    setSubmitting(true);
+    try {
     const refs = [
       ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
       ...attachments.map((a) => `@${a.path}`),
@@ -593,6 +596,9 @@ export function Composer({
     setAttachments([]);
     setWorkspaceRefs([]);
     setSessionRefs([]);
+    } finally {
+      setSubmitting(false);
+    }
   };
 
   const readFileAsDataURL = (file: File) =>
@@ -1004,6 +1010,12 @@ export function Composer({
     );
   }, [pastChats, pastChatQuery]);
 
+  // Final menu item count: when the past:chats list is open, count the
+  // filtered sessions instead of file entries + the "past:chats" row.
+  const count = menuMode === "at" && showPastChats
+    ? filteredPastChats.length
+    : countBase;
+
   const removeAtToken = (value: string) => {
     return value.replace(/(?:^|\s)@[^\s]*$/, "").trimEnd();
   };
@@ -1045,7 +1057,16 @@ export function Composer({
   const pickActive = () => {
     if (menuMode === "slash") pickCommand(slashMatches[active]);
     else if (menuMode === "slasharg" && argRes) pickArg(argRes.items[active]);
-    else if (menuMode === "at") pickEntry(atMatches[active]);
+    else if (menuMode === "at") {
+      if (showPastChats) {
+        const session = filteredPastChats[active];
+        if (session) pickSession(session);
+      } else if (active === 0) {
+        openPastChats();
+      } else {
+        pickEntry(atMatches[active - 1]);
+      }
+    }
   };
 
   const onKeyDown = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -1060,6 +1081,14 @@ export function Composer({
       return;
     }
 
+    const target = e.target as HTMLElement;
+
+    // When the past:chats search box has focus, ArrowDown/Up/Enter/Tab/Escape
+    // should still drive menu navigation (the search box only handles typing
+    // and Backspace). Without this the keyboard is trapped in the input.
+    const inPastChatsSearch =
+      showPastChats && menuMode === "at" && target !== e.currentTarget && target.tagName === "INPUT";
+
     if (menuMode && !composing) {
       if (e.key === "ArrowDown") {
         e.preventDefault();
@@ -1072,16 +1101,28 @@ export function Composer({
         return;
       }
       if (e.key === "Enter" || e.key === "Tab") {
-        e.preventDefault();
-        pickActive();
-        return;
+        if (inPastChatsSearch || target === e.currentTarget) {
+          e.preventDefault();
+          pickActive();
+          return;
+        }
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        setDismissed(true);
+        if (showPastChats) {
+          setPastChatQuery("");
+          setShowPastChats(false);
+          setActive(0);
+        } else {
+          setDismissed(true);
+        }
         return;
       }
     }
+
+    // Guard: don't handle remaining keys when focus is in a child input
+    // (e.g. the past:chats search box); let the child handle them.
+    if (target !== e.currentTarget) return;
 
     // Enter sends; Shift+Enter newline. `composing` guards IME confirms.
     if (e.key === "Enter" && !e.shiftKey && !composing) {
@@ -1221,8 +1262,6 @@ export function Composer({
               </div>
             ) : (
               <>
-                {/* PR-C1: search input is only meaningful when there are sessions
-                    to filter; rendering it in the other states would be noise. */}
                 <div className="slashmenu__item slashmenu__item--search" onMouseDown={(ev) => ev.preventDefault()}>
                   <Search size={13} className="filemenu__icon" />
                   <input
@@ -1235,7 +1274,6 @@ export function Composer({
                       setPastChatQuery(ev.target.value);
                       setActive(0);
                     }}
-                    onKeyDown={(ev) => ev.stopPropagation()}
                   />
                 </div>
                 {filteredPastChats.length === 0 ? (
@@ -1302,17 +1340,18 @@ export function Composer({
         ) : (
           <div className="slashmenu" role="listbox">
             <button
-              className="slashmenu__item slashmenu__item--special"
+              className={`slashmenu__item slashmenu__item--special${active === 0 ? " slashmenu__item--active" : ""}`}
               onMouseDown={(ev) => {
                 ev.preventDefault();
                 openPastChats();
               }}
+              onMouseMove={() => setActive(0)}
             >
               <MessageSquare size={13} className="filemenu__icon" />
               <span className="slashmenu__name">past:chats</span>
               <span className="slashmenu__desc">引用历史会话</span>
             </button>
-            <FileMenu items={atMatches} activeIndex={active} onPick={pickEntry} onHover={setActive} />
+            <FileMenu items={atMatches} activeIndex={active - 1} onPick={pickEntry} onHover={(i) => setActive(i + 1)} />
           </div>
         )
       )}
@@ -1495,7 +1534,7 @@ export function Composer({
               <button
                 className="composer__btn composer__btn--send"
                 onClick={submit}
-                disabled={pendingPaste > 0 || (!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) || disabled}
+                disabled={submitting || pendingPaste > 0 || (!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) || disabled}
               >
                 <ArrowUp size={16} />
               </button>
