@@ -1677,6 +1677,7 @@ export default function App() {
   const workspacePanelResetWidth = rightDockDetailActive
     ? RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH
     : defaultRightDockTreeWidth();
+  const workspacePanelAriaMinWidth = Math.min(workspacePanelMinWidth, workspacePanelRenderWidth);
   const workspacePanelMaxWidth = rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH;
   const topicbarTitle = topicDisplayTitle(activeTab);
   const topicbarWorkspaceLabel = activeTab ? tabWorkspaceTitle(activeTab) : "";
@@ -2028,7 +2029,7 @@ export default function App() {
             role="separator"
             aria-orientation="vertical"
             aria-label={t("rightDock.resize")}
-            aria-valuemin={workspacePanelMinWidth}
+            aria-valuemin={workspacePanelAriaMinWidth}
             aria-valuemax={Math.max(workspacePanelMaxWidth, workspacePanelRenderWidth)}
             aria-valuenow={workspacePanelRenderWidth}
             onPointerDown={startWorkspacePanelResize}
