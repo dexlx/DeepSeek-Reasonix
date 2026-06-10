@@ -2335,6 +2335,20 @@ a[href] {
   height: var(--welcome-brand-height);
   object-fit: contain;
 }
+
+:root[data-theme="dark"] .sidebar__brand-logo,
+:root[data-theme="dark"] .welcome__brand-logo {
+  filter: brightness(0) invert(1);
+  opacity: 0.94;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme]) .sidebar__brand-logo,
+  :root:not([data-theme]) .welcome__brand-logo {
+    filter: brightness(0) invert(1);
+    opacity: 0.94;
+  }
+}
 .welcome__title {
   font-size: 22px;
   font-weight: 650;
