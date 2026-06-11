@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import type { ReactNode } from "react";
 import { Command, Search } from "lucide-react";
 import { useMountTransition } from "../lib/useMountTransition";
 
@@ -27,6 +28,12 @@ export interface PaletteItem {
   title: string;
   // hint is the secondary line (a path, a command's source, etc.).
   hint?: string;
+  // meta is right-aligned secondary text (e.g. a timestamp).
+  meta?: string;
+  // badge is a right-aligned counter or label (e.g. turn count).
+  badge?: string;
+  // icon overrides the default Command icon shown on the left.
+  icon?: ReactNode;
   // group is the section header this item belongs to.
   group: string;
   // keywords add to the searchable text (e.g. slash-command aliases).
@@ -214,11 +221,17 @@ export function CommandPalette({
                       }}
                     >
                       <span className="palette__item-icon" aria-hidden="true">
-                        <Command size={15} />
+                        {it.icon ?? <Command size={15} />}
                       </span>
                       <span className="palette__body">
                         <span className="palette__title">{it.title}</span>
-                        {it.hint && <span className="palette__hint">{it.hint}</span>}
+                        {(it.hint || it.meta || it.badge) && (
+                          <span className="palette__hint">
+                            {it.hint}
+                            {it.meta && <span className="palette__meta">{it.meta}</span>}
+                            {it.badge && <span className="palette__badge">{it.badge}</span>}
+                          </span>
+                        )}
                       </span>
                     </button>
                   );
