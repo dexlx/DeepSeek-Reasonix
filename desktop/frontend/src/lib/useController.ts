@@ -685,10 +685,10 @@ export function useController() {
     return undefined;
   }, [activeTabId, dispatchTo]);
 
-  const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean, scope = "") => {
+  const approve = useCallback((id: string, allow: boolean, session: boolean, persist: boolean) => {
     if (!activeTabId) return;
     dispatchTo(activeTabId, { type: "clearApproval" });
-    app.ApproveTabWithScope(activeTabId, id, allow, session, persist, scope).catch(() => {});
+    app.ApproveTab(activeTabId, id, allow, session, persist).catch(() => {});
   }, [activeTabId, dispatchTo]);
 
   const answerQuestion = useCallback((id: string, answers: QuestionAnswer[]) => {

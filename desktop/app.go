@@ -590,21 +590,17 @@ func (a *App) CancelTab(tabID string) {
 // Approve answers a pending approval_request by ID: allow runs the call, session
 // also remembers the grant for the rest of the session.
 func (a *App) Approve(id string, allow, session, persist bool) {
-	a.ApproveWithScope(id, allow, session, persist, "")
+	ctrl := a.ctrlByTabID("")
+	if ctrl != nil {
+		ctrl.Approve(id, allow, session, persist)
+	}
 }
 
-func (a *App) ApproveWithScope(id string, allow, session, persist bool, scope string) {
-	a.ApproveTabWithScope("", id, allow, session, persist, scope)
-}
-
+// ApproveTab is like Approve but scoped to a specific tab.
 func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
-	a.ApproveTabWithScope(tabID, id, allow, session, persist, "")
-}
-
-func (a *App) ApproveTabWithScope(tabID, id string, allow, session, persist bool, scope string) {
 	ctrl := a.ctrlByTabID(tabID)
 	if ctrl != nil {
-		ctrl.ApproveWithScope(id, allow, session, persist, scope)
+		ctrl.Approve(id, allow, session, persist)
 	}
 }
 

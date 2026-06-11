@@ -342,7 +342,7 @@ func TestApprovalSessionGrantScopesBashToCommand(t *testing.T) {
 func TestApprovalSessionGrantCanScopeBashToCommandPrefix(t *testing.T) {
 	c, ids, prompts := approvalIDs()
 	go func() {
-		c.ApproveWithScope(<-ids, true, true, false, permission.ApprovalScopePrefix) // grant go test:* for this session
+		c.Approve(<-ids, true, true, false) // grant bash session (prefix preferred)
 		c.Approve(<-ids, true, false, false)
 	}()
 
@@ -376,7 +376,7 @@ func TestApprovalPersistentBashPrefixRememberRule(t *testing.T) {
 		},
 	})
 	go func() {
-		c.ApproveWithScope(<-ids, true, true, true, permission.ApprovalScopePrefix)
+		c.Approve(<-ids, true, true, true)
 	}()
 
 	allow, remember, err := gateApprover{c}.Approve(context.Background(), "bash", "go test ./...", nil)

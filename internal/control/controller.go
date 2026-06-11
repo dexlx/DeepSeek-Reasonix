@@ -170,7 +170,6 @@ type approvalReply struct {
 	allow   bool
 	session bool
 	persist bool // true = write "always allow" rule to config
-	scope   string
 }
 
 type pendingApproval struct {
@@ -1070,18 +1069,12 @@ func (c *Controller) Turn() int {
 // also remembers a grant for the rest of the session so the same approval scope
 // is not re-prompted. Unknown/expired IDs are ignored.
 func (c *Controller) Approve(id string, allow, session, persist bool) {
-	c.ApproveWithScope(id, allow, session, persist, permission.ApprovalScopeExact)
-}
-
-// ApproveWithScope answers a pending ApprovalRequest with an explicit approval
-// scope. Unknown/expired IDs are ignored.
-func (c *Controller) ApproveWithScope(id string, allow, session, persist bool, scope string) {
 	c.mu.Lock()
 	pending := c.approvals[id]
 	delete(c.approvals, id)
 	c.mu.Unlock()
 	if pending.reply != nil {
-		pending.reply <- approvalReply{allow: allow, session: session, persist: persist, scope: scope} // buffered, never blocks
+		pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
 	}
 }
 
@@ -2680,13 +2673,13 @@ func (c *Controller) requestApproval(ctx context.Context, tool, subject string) 
 		// Plan approvals are one-shot — never persist a session grant for them, or
 		// every future plan would auto-approve.
 		if r.allow && r.session && tool != planApprovalTool {
-			rule := permission.SessionGrantRuleForScope(tool, subject, r.scope)
+			rule := permission.SessionGrantRuleForScope(tool, subject)
 			c.mu.Lock()
 			c.granted[rule] = true
 			c.mu.Unlock()
 		}
 		if r.allow && r.persist && tool != planApprovalTool && c.onRemember != nil {
-			c.emitRememberResult(c.onRemember(permission.RememberRuleForScope(tool, subject, r.scope)))
+			c.emitRememberResult(c.onRemember(permission.RememberRuleForScope(tool, subject)))
 		}
 		return r.allow, false, nil
 	case <-ctx.Done():

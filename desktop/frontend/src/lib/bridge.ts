@@ -95,9 +95,7 @@ export interface AppBindings {
   Cancel(): Promise<void>;
   CancelTab(tabID: string): Promise<void>;
   Approve(id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
-  ApproveWithScope(id: string, allow: boolean, session: boolean, persist: boolean, scope: string): Promise<void>;
   ApproveTab(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean): Promise<void>;
-  ApproveTabWithScope(tabID: string, id: string, allow: boolean, session: boolean, persist: boolean, scope: string): Promise<void>;
   AnswerQuestion(id: string, answers: QuestionAnswer[]): Promise<void>;
   AnswerQuestionForTab(tabID: string, id: string, answers: QuestionAnswer[]): Promise<void>;
   ReplayPendingPrompts(): Promise<void>;
@@ -1216,13 +1214,9 @@ function makeMockApp(): AppBindings {
           await withMockTabScope(_tabID, () => this.Cancel());
         },
         async Approve(_id, allow, session, persist) {
-          await this.ApproveWithScope(_id, allow, session, persist, "");
-        },
-        async ApproveWithScope(_id, allow, session, persist, scope) {
           if (!pendingApprovalPreview) return;
           pendingApprovalPreview = false;
-          const scopeLabel = scope === "prefix" ? "prefix" : "scope";
-          const suffix = persist ? `${scopeLabel} grant saved` : session ? `${scopeLabel} grant active this session` : "allowed once";
+          const suffix = persist ? "grant saved" : session ? "grant active this session" : "allowed once";
           emit({
             kind: "message",
             text: `approval preview answered: ${allow ? suffix : "denied"}`,
@@ -1230,10 +1224,7 @@ function makeMockApp(): AppBindings {
           emitMockTurnDone();
         },
         async ApproveTab(_tabID, id, allow, session, persist) {
-          await this.ApproveTabWithScope(_tabID, id, allow, session, persist, "");
-        },
-        async ApproveTabWithScope(_tabID, id, allow, session, persist, scope) {
-          await withMockTabScope(_tabID, () => this.ApproveWithScope(id, allow, session, persist, scope));
+          await withMockTabScope(_tabID, () => this.Approve(id, allow, session, persist));
         },
         async AnswerQuestion(_id, answers) {
       if (!pendingAskPreview) return;

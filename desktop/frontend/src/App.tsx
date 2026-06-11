@@ -1995,11 +1995,11 @@ export default function App() {
             {state.approval && (
               <ApprovalModal
                 approval={state.approval}
-                onAnswer={(allow, session, persist, scope) => {
+                onAnswer={(allow, session, persist) => {
                   // Approving an exit_plan_mode plan leaves plan mode; sync the
                   // tab-local indicator and persisted safe mode immediately.
                   if (state.approval!.tool === "exit_plan_mode" && allow) applyCollaborationMode("normal");
-                  approve(state.approval!.id, allow, session, persist, scope);
+                  approve(state.approval!.id, allow, session, persist);
                 }}
                 onRevisePlan={(text) => {
                   setPendingPlanRevision(text);

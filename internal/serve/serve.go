@@ -396,13 +396,12 @@ func (s *Server) approve(w http.ResponseWriter, r *http.Request) {
 		Allow   bool   `json:"allow"`
 		Session bool   `json:"session"`
 		Persist bool   `json:"persist"`
-		Scope   string `json:"scope"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.ID == "" {
 		http.Error(w, "missing id", http.StatusBadRequest)
 		return
 	}
-	s.ctl().ApproveWithScope(body.ID, body.Allow, body.Session, body.Persist, body.Scope)
+	s.ctl().Approve(body.ID, body.Allow, body.Session, body.Persist)
 	w.WriteHeader(http.StatusNoContent)
 }
 
