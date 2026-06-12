@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Brain, Check, ChevronsUpDown } from "lucide-react";
 import { asArray } from "../lib/array";
 import { app } from "../lib/bridge";
@@ -49,6 +49,12 @@ export function ModelSwitcher({ label, tabId, onPick }: { label: string; tabId?:
 
   useEffect(() => () => clearCloseTimer(), [clearCloseTimer]);
 
+  // Current model's provider label, shown on the trigger alongside the model name
+  const currentProvider = useMemo(() => {
+    const cur = models.find((m) => m.current);
+    return cur ? providerLabel(cur.provider, t) : null;
+  }, [models, t]);
+
   const pick = (name: string) => {
     closeMenu(() => onPick(name));
   };
@@ -63,7 +69,7 @@ export function ModelSwitcher({ label, tabId, onPick }: { label: string; tabId?:
         onClick={() => (open || closing ? closeMenu() : openMenu())}
       >
         <Brain size={13} className="modelsw__kind" />
-        <span className="modelsw__label">{label}</span>
+        <span className="modelsw__label">{label}{currentProvider ? ` · ${currentProvider}` : ''}</span>
         <ChevronsUpDown size={11} />
       </button>
       <AnchoredPopover
