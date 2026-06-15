@@ -332,6 +332,8 @@ declare global {
 
 // Must match desktop/app.go's eventChannel constant.
 const EVENT_CHANNEL = "agent:event";
+const RECENT_NATIVE_FILE_DRAG_MS = 2000;
+const WAILS_NON_FILE_DRAG_MESSAGE = "additional File object is not a file on the disk";
 
 // Resolve the Wails binding at CALL time, not module-load time: in dev the Wails
 // runtime can inject window.go AFTER this module first evaluates, so snapshotting
@@ -375,6 +377,26 @@ export function onBuiltInMCPUpdate(cb: (status: BuiltInMCPUpdateStatus) => void)
   return () => {};
 }
 
+function errorMessage(err: unknown): string {
+  if (err && typeof err === "object" && "message" in err) {
+    const msg = (err as { message?: unknown }).message;
+    if (typeof msg === "string") return msg;
+  }
+  return String(err);
+}
+
+export function isWailsNonFileDragError(err: unknown, recentNativeFileDrag = false): boolean {
+  const msg = errorMessage(err).trim();
+  if (msg.includes(WAILS_NON_FILE_DRAG_MESSAGE)) return true;
+  return recentNativeFileDrag && msg.toLowerCase() === "invalid argument";
+}
+
+function dataTransferLooksLikeFileDrag(dt: DataTransfer | null): boolean {
+  if (!dt) return false;
+  if (dt.files?.length > 0) return true;
+  return Array.from(dt.types ?? []).includes("Files");
+}
+
 // onFilesDropped subscribes to native OS file drops landing on the composer (the
 // --wails-drop-target element); the callback gets the dropped files' absolute
 // paths. No-op in the browser dev mock, where the runtime is absent.
@@ -385,17 +407,24 @@ export function onFilesDropped(cb: (paths: string[]) => void): () => void {
   // Wails' internal ResolveFilePaths throws when a non-file object (e.g. the
   // window icon) is dragged onto the webview. The error is uncaught and crashes
   // the app. Intercept it here so only real file drops reach the callback.
+  let lastNativeFileDragAt = 0;
+  const markNativeFileDrag = (e: DragEvent) => {
+    if (dataTransferLooksLikeFileDrag(e.dataTransfer)) lastNativeFileDragAt = Date.now();
+  };
+  const hasRecentNativeFileDrag = () => Date.now() - lastNativeFileDragAt <= RECENT_NATIVE_FILE_DRAG_MS;
   const suppressNonFileDragError = (e: ErrorEvent) => {
-    if (e.message?.includes("additional File object is not a file on the disk")) {
+    if (isWailsNonFileDragError(e.message, hasRecentNativeFileDrag())) {
       e.preventDefault();
     }
   };
   const suppressNonFileDragRejection = (e: PromiseRejectionEvent) => {
-    const msg = e.reason?.message ?? String(e.reason);
-    if (msg.includes("additional File object is not a file on the disk")) {
+    if (isWailsNonFileDragError(e.reason, hasRecentNativeFileDrag())) {
       e.preventDefault();
     }
   };
+  window.addEventListener("dragenter", markNativeFileDrag, true);
+  window.addEventListener("dragover", markNativeFileDrag, true);
+  window.addEventListener("drop", markNativeFileDrag, true);
   window.addEventListener("error", suppressNonFileDragError);
   window.addEventListener("unhandledrejection", suppressNonFileDragRejection);
 
@@ -404,6 +433,9 @@ export function onFilesDropped(cb: (paths: string[]) => void): () => void {
   }, true);
   return () => {
     rt.OnFileDropOff?.();
+    window.removeEventListener("dragenter", markNativeFileDrag, true);
+    window.removeEventListener("dragover", markNativeFileDrag, true);
+    window.removeEventListener("drop", markNativeFileDrag, true);
     window.removeEventListener("error", suppressNonFileDragError);
     window.removeEventListener("unhandledrejection", suppressNonFileDragRejection);
   };
