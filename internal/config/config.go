@@ -2273,7 +2273,10 @@ func mergeVisionModelsIntoProvider(e *ProviderEntry, models []string) {
 	for _, model := range e.ChatModelList() {
 		enabled[model] = true
 	}
-	merged := mergeModelLists(e.VisionModels, models)
+	merged := e.VisionModels
+	if merged == nil {
+		merged = models
+	}
 	out := make([]string, 0, len(merged))
 	for _, model := range merged {
 		if enabled[model] && IsLikelyChatModel(model) {

@@ -73,17 +73,29 @@ eq(
 
 eq(
   [
+    isLikelyVisionModel("gpt-4o"),
+    isLikelyVisionModel("gpt-4o-audio-preview"),
+    isLikelyVisionModel("gpt-4o-mini-audio-preview"),
     isLikelyVisionModel("mimo-v2.5"),
     isLikelyVisionModel("mimo-v2-omni"),
     isLikelyVisionModel("qwen2.5-vl-72b-instruct"),
     isLikelyVisionModel("mimo-v2.5-asr"),
   ],
-  [true, true, true, false],
+  [true, false, false, true, true, true, false],
   "detects likely image-capable chat model IDs",
 );
 
 eq(
-  inferredVisionModels(["mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni", "qwen-vl-plus", "mimo-v2.5-asr", "audio-omni-tts"]),
+  inferredVisionModels([
+    "mimo-v2.5-pro",
+    "mimo-v2.5",
+    "mimo-v2-omni",
+    "qwen-vl-plus",
+    "mimo-v2.5-asr",
+    "audio-omni-tts",
+    "gpt-4o-audio-preview",
+    "gpt-4o-mini-audio-preview",
+  ]),
   ["mimo-v2.5", "mimo-v2-omni", "qwen-vl-plus"],
   "infers image-capable models without importing audio models",
 );

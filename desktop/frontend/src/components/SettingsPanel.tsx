@@ -740,12 +740,14 @@ function normalizeBotMappingScope(scope: unknown, workspaceRoot: unknown): "glob
 }
 
 function normalizeProviderView(p: ProviderView): ProviderView {
+  const visionModels = asArray(p.visionModels);
   return {
     ...p,
     builtIn: Boolean(p.builtIn),
     added: Boolean(p.added),
     models: asArray(p.models),
-    visionModels: asArray(p.visionModels),
+    visionModels,
+    visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
     modelsUrl: p.modelsUrl ?? "",
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
     supportedEfforts: asArray(p.supportedEfforts),
@@ -3351,7 +3353,7 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   const modelDraftForFetch = (p: ProviderView, fetched: string[]): ProviderModelDraft => {
     const candidates = providerModelCandidates(p.models, fetched);
     const selected = mergedFetchedProviderModels(p.models, fetched, { preserveCurated: true });
-    const visionSource = p.visionModels.length > 0 ? p.visionModels : inferredVisionModels(candidates);
+    const visionSource = p.visionModelsConfigured ? p.visionModels : inferredVisionModels(candidates);
     return {
       providerName: p.name,
       candidates,
@@ -3486,7 +3488,13 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
     if (!draft || !provider || models.length === 0) return;
     let saved = false;
     await apply(async () => {
-      await app.SaveProvider({ ...provider, models, visionModels, default: providerDefaultModel(provider.default, models) });
+      await app.SaveProvider({
+        ...provider,
+        models,
+        visionModels,
+        visionModelsConfigured: true,
+        default: providerDefaultModel(provider.default, models),
+      });
       saved = true;
     });
     if (!saved) return;
@@ -4159,6 +4167,9 @@ function ProviderEditor({
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [models, setModels] = useState((initial?.models ?? []).join(", "));
   const [visionModels, setVisionModels] = useState((initial?.visionModels ?? []).join(", "));
+  const [visionModelsConfigured, setVisionModelsConfigured] = useState(
+    Boolean(initial?.visionModelsConfigured ?? ((initial?.visionModels ?? []).length > 0)),
+  );
   const [modelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [keyDraft, setKeyDraft] = useState("");
@@ -4227,6 +4238,7 @@ function ProviderEditor({
         modelsUrl,
         models: [],
         visionModels: [],
+        visionModelsConfigured: false,
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
@@ -4242,6 +4254,7 @@ function ProviderEditor({
         const existing = parseProviderListInput(current).filter((model) => fetched.includes(model));
         return uniqueStrings([...existing, ...inferredVisionModels(fetched)]).filter((model) => fetched.includes(model)).join(", ");
       });
+      setVisionModelsConfigured(true);
       if (keyDraft.trim()) setKeyDraft("");
       setDefaultEffort((v) => v);
       setFetchStatus(t("settings.fetchModelsSuccess", { n: fetched.length }));
@@ -4265,6 +4278,7 @@ function ProviderEditor({
       baseUrl: baseUrl.trim(),
       models: ms,
       visionModels: vms,
+      visionModelsConfigured: visionModelsConfigured || vms.length > 0,
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
       modelsUrl,
@@ -4350,7 +4364,15 @@ function ProviderEditor({
         <input className="mem-input" placeholder={t("settings.contextWindowPlaceholder")} value={ctx} onChange={(e) => setCtx(e.target.value)} inputMode="numeric" />
         <div className="mem-hint">{t("settings.contextWindowHint")}</div>
         <label className="set-label">{t("settings.visionModels")}</label>
-        <input className="mem-input" placeholder={t("settings.providerModels")} value={visionModels} onChange={(e) => setVisionModels(e.target.value)} />
+        <input
+          className="mem-input"
+          placeholder={t("settings.providerModels")}
+          value={visionModels}
+          onChange={(e) => {
+            setVisionModelsConfigured(true);
+            setVisionModels(e.target.value);
+          }}
+        />
         <div className="mem-hint">{t("settings.visionModelsHint")}</div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>

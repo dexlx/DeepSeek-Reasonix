@@ -77,6 +77,7 @@ func TestIsLikelyVisionModel(t *testing.T) {
 	}
 	for _, model := range []string{
 		"", "mimo-v2.5-pro", "deepseek-v4-pro", "mimo-v2.5-asr", "text-embedding-3-small",
+		"gpt-4o-audio-preview", "gpt-4o-mini-audio-preview",
 	} {
 		if IsLikelyVisionModel(model) {
 			t.Errorf("IsLikelyVisionModel(%q) = true, want false", model)
@@ -93,6 +94,8 @@ func TestInferVisionModels(t *testing.T) {
 		"qwen-vl-plus",
 		"mimo-v2.5-asr",
 		"audio-omni-tts",
+		"gpt-4o-audio-preview",
+		"gpt-4o-mini-audio-preview",
 	})
 	want := []string{"mimo-v2.5", "mimo-v2-omni", "qwen-vl-plus"}
 	if !reflect.DeepEqual(got, want) {

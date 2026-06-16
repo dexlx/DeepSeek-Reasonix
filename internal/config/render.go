@@ -274,7 +274,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			if p.Vision {
 				b.WriteString("vision      = true   # provider accepts image input for all listed models\n")
 			}
-			if len(p.VisionModels) > 0 {
+			if p.VisionModels != nil {
 				fmt.Fprintf(&b, "vision_models = %s   # models in this provider that accept image input\n", renderStringArray(p.VisionModels))
 			}
 			if p.VisionDetail != "" {

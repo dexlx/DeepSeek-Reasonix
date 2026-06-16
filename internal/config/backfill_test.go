@@ -593,6 +593,29 @@ func TestNormalizeOfficialMimoVisionModelsSkipsExplicitModelList(t *testing.T) {
 	}
 }
 
+func TestNormalizeOfficialMimoVisionModelsPreservesExplicitEmptyList(t *testing.T) {
+	c := &Config{
+		Desktop: DesktopConfig{ProviderAccess: []string{"mimo-api"}},
+		Providers: []ProviderEntry{{
+			Name:         "mimo-api",
+			Kind:         "openai",
+			BaseURL:      "https://api.xiaomimimo.com/v1",
+			Models:       []string{"mimo-v2.5-pro", "mimo-v2.5", "mimo-v2-omni"},
+			Default:      "mimo-v2.5-pro",
+			APIKeyEnv:    "MIMO_API_KEY",
+			VisionModels: []string{},
+		}},
+	}
+	normalizeDesktopOfficialProviderAccess(c)
+	p, ok := c.Provider("mimo-api")
+	if !ok {
+		t.Fatal("mimo-api provider missing")
+	}
+	if p.VisionModels == nil || len(p.VisionModels) != 0 {
+		t.Fatalf("mimo-api vision_models = %#v, want explicit empty list", p.VisionModels)
+	}
+}
+
 func TestNormalizeOfficialDeepSeekModelsSkipsExplicitModelList(t *testing.T) {
 	// User saved with only flash via Settings → Models = ["deepseek-v4-flash"].
 	c := &Config{Providers: []ProviderEntry{{

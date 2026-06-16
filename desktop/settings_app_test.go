@@ -67,6 +67,24 @@ func TestProviderViewFromEntry_FiltersNonChatModels(t *testing.T) {
 	if got, want := view.VisionModels, []string{"mimo-v2"}; !reflect.DeepEqual(got, want) {
 		t.Errorf("ProviderView.VisionModels = %v, want %v", got, want)
 	}
+	if !view.VisionModelsSet {
+		t.Fatal("ProviderView.VisionModelsSet = false, want true for configured vision_models")
+	}
+}
+
+func TestProviderViewFromEntry_MigratesProviderWideVision(t *testing.T) {
+	p := config.ProviderEntry{
+		Name:   "custom",
+		Models: []string{"text-only", "qwen-vl-plus"},
+		Vision: true,
+	}
+	view := providerViewFromEntry(p, false, true)
+	if got, want := view.VisionModels, []string{"text-only", "qwen-vl-plus"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("ProviderView.VisionModels = %v, want %v", got, want)
+	}
+	if !view.VisionModelsSet {
+		t.Fatal("ProviderView.VisionModelsSet = false, want true for provider-wide vision")
+	}
 }
 
 func TestFetchProviderModelsFiltersNonChatModels(t *testing.T) {
@@ -119,8 +137,9 @@ func TestSaveProviderFiltersNonChatModels(t *testing.T) {
 			"mimo-v2.5-pro",
 			"mimo-v2.5-tts",
 		},
-		Default:   "mimo-v2.5-asr",
-		APIKeyEnv: "MIMO_API_KEY",
+		VisionModelsSet: true,
+		Default:         "mimo-v2.5-asr",
+		APIKeyEnv:       "MIMO_API_KEY",
 	}); err != nil {
 		t.Fatalf("SaveProvider: %v", err)
 	}
@@ -161,6 +180,89 @@ func TestSaveProviderFiltersNonChatModels(t *testing.T) {
 	}
 	if !strings.Contains(block, `vision_models = ["mimo-v2.5-pro"]`) {
 		t.Fatalf("saved provider block did not persist filtered vision_models:\n%s", block)
+	}
+}
+
+func TestSaveProviderClearsProviderWideVisionForPerModelSelection(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	cfg.Providers = []config.ProviderEntry{{
+		Name:    "custom",
+		Kind:    "openai",
+		BaseURL: "https://proxy.example.com/v1",
+		Models:  []string{"text-only", "qwen-vl-plus"},
+		Default: "text-only",
+		Vision:  true,
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+
+	if err := NewApp().SaveProvider(ProviderView{
+		Name:            "custom",
+		Kind:            "openai",
+		BaseURL:         "https://proxy.example.com/v1",
+		Models:          []string{"text-only", "qwen-vl-plus"},
+		VisionModels:    []string{"qwen-vl-plus"},
+		VisionModelsSet: true,
+		Default:         "text-only",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	gotCfg := config.LoadForEdit(config.UserConfigPath())
+	got, ok := gotCfg.Provider("custom")
+	if !ok {
+		t.Fatal("saved provider not found")
+	}
+	if got.Vision {
+		t.Fatal("saved provider kept provider-wide vision=true")
+	}
+	if got, want := got.VisionModels, []string{"qwen-vl-plus"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("saved provider vision_models = %v, want %v", got, want)
+	}
+	textOnly := *got
+	textOnly.Model = "text-only"
+	if config.EffectiveVision(&textOnly) {
+		t.Fatal("unchecked text-only model should not inherit image input")
+	}
+	vision := *got
+	vision.Model = "qwen-vl-plus"
+	if !config.EffectiveVision(&vision) {
+		t.Fatal("checked vision model should keep image input")
+	}
+}
+
+func TestSaveProviderPreservesExplicitEmptyVisionModels(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	if err := NewApp().SaveProvider(ProviderView{
+		Name:            "custom",
+		Kind:            "openai",
+		BaseURL:         "https://proxy.example.com/v1",
+		Models:          []string{"text-only", "qwen-vl-plus"},
+		VisionModels:    []string{},
+		VisionModelsSet: true,
+		Default:         "text-only",
+	}); err != nil {
+		t.Fatalf("SaveProvider: %v", err)
+	}
+
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	got, ok := cfg.Provider("custom")
+	if !ok {
+		t.Fatal("saved provider not found")
+	}
+	if got.VisionModels == nil || len(got.VisionModels) != 0 {
+		t.Fatalf("saved provider vision_models = %#v, want explicit empty list", got.VisionModels)
+	}
+	raw, err := os.ReadFile(config.UserConfigPath())
+	if err != nil {
+		t.Fatalf("read saved config: %v", err)
+	}
+	if !strings.Contains(string(raw), `vision_models = []`) {
+		t.Fatalf("saved config did not persist explicit empty vision_models:\n%s", raw)
 	}
 }
 

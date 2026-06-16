@@ -33,6 +33,7 @@ type ProviderView struct {
 	BaseURL           string   `json:"baseUrl"`
 	Models            []string `json:"models"`
 	VisionModels      []string `json:"visionModels"`
+	VisionModelsSet   bool     `json:"visionModelsConfigured"`
 	ModelsURL         string   `json:"modelsUrl"`
 	Default           string   `json:"default"`
 	APIKeyEnv         string   `json:"apiKeyEnv"`
@@ -272,9 +273,14 @@ func removeProviderAccess(c *config.Config, names ...string) {
 
 func providerViewFromEntry(p config.ProviderEntry, builtIn, added bool) ProviderView {
 	models := p.ChatModelList()
+	visionModels := p.VisionModels
+	visionModelsSet := p.Vision || p.VisionModels != nil
+	if p.Vision {
+		visionModels = models
+	}
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL,
-		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, p.VisionModels)), ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
+		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
 		KeySet:            p.APIKeyEnv != "" && os.Getenv(p.APIKeyEnv) != "",
 		BalanceURL:        p.BalanceURL,
@@ -1002,15 +1008,20 @@ func (a *App) SaveProvider(p ProviderView) error {
 		e.Model = ""
 		e.Models = nil
 		e.Default = ""
+		e.VisionModels = nil
 		models := chatProviderModels(p.Models)
 		if len(models) > 0 {
 			e.Model = models[0] // also satisfies validateProvider's model requirement
 			e.Models = models
-			e.VisionModels = providerVisionModels(models, p.VisionModels)
+			if p.VisionModelsSet || len(p.VisionModels) > 0 {
+				e.Vision = false
+				e.VisionModels = providerVisionModels(models, p.VisionModels)
+			}
 			if len(models) > 1 {
 				e.Default = providerDefaultForModels(p.Default, models)
 			}
 		} else {
+			e.Vision = false
 			e.VisionModels = nil
 		}
 		if err := c.UpsertProvider(e); err != nil {

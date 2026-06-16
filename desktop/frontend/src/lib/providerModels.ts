@@ -40,9 +40,11 @@ export function isLikelyVisionModel(model: string): boolean {
   const lower = model.trim().toLowerCase();
   if (!lower) return false;
   if (lower === "mimo-v2.5" || lower === "mimo-v2-omni") return true;
+  const tokens = lower.split(/[-_./:]+/);
+  if (tokens.includes("audio")) return false;
   if (lower.startsWith("gpt-4o")) return true;
   const visionTokens = new Set(["vl", "vision", "visual", "multimodal", "omni"]);
-  return lower.split(/[-_./:]+/).some((token) => visionTokens.has(token));
+  return tokens.some((token) => visionTokens.has(token));
 }
 
 function uniqueStrings(values: string[]): string[] {

@@ -36,12 +36,15 @@ func IsLikelyVisionModel(model string) bool {
 	if mimoVisionModels[lower] {
 		return true
 	}
+	tokens := strings.FieldsFunc(lower, modelTokenSeparator)
+	for _, token := range tokens {
+		if token == "audio" {
+			return false
+		}
+	}
 	if strings.HasPrefix(lower, "gpt-4o") {
 		return true
 	}
-	tokens := strings.FieldsFunc(lower, func(r rune) bool {
-		return r == '-' || r == '_' || r == '.' || r == '/' || r == ':'
-	})
 	for _, token := range tokens {
 		switch token {
 		case "vl", "vision", "visual", "multimodal", "omni":
@@ -49,6 +52,10 @@ func IsLikelyVisionModel(model string) bool {
 		}
 	}
 	return false
+}
+
+func modelTokenSeparator(r rune) bool {
+	return r == '-' || r == '_' || r == '.' || r == '/' || r == ':'
 }
 
 // EffectiveVision resolves whether the selected model accepts image input.
