@@ -10,7 +10,7 @@ import { app, onEvent, onReady } from "./bridge";
 import { invalidateCache } from "./composerHistory";
 import { createRafBatch } from "./rafBatch";
 import { t } from "./i18n";
-import { summarize } from "./tools";
+import { fileDiffFromWire, summarize, summarizeFileDiff, type ToolFileDiff } from "./tools";
 import { modeHasAutoApproveTools } from "./types";
 import type {
   BalanceInfo,
@@ -66,7 +66,9 @@ export type Item =
       truncated?: boolean;
       dataArchived?: boolean; // args/output trimmed for memory; full data available via backend
       durationMs?: number;
+      subject?: string; // stable collapsed subject from archived history payloads
       summary?: string; // stable collapsed readout kept even after args/output archive
+      fileDiff?: ToolFileDiff; // previewed whole-file diff from writer dispatch
       isShell?: boolean; // true for !-prefix shell commands (controls default expand)
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
@@ -99,6 +101,7 @@ interface State {
   sessionCurrency: string;
   retry?: { attempt: number; max: number };
   seq: number;
+  sessionGen: number;
 }
 
 export const initialState: State = {
@@ -116,6 +119,7 @@ export const initialState: State = {
   sessionCost: 0,
   sessionCurrency: "¥",
   seq: 0,
+  sessionGen: 0,
 };
 
 function usageTotalTokens(usage?: WireUsage): number {
@@ -130,8 +134,8 @@ function updatesContextGauge(usage?: WireUsage): boolean {
   return !source || source === "executor";
 }
 
-function countsTowardCurrentTurn(state: State, usage?: WireUsage): boolean {
-  return updatesContextGauge(usage) || state.turnActive;
+function countsTowardCurrentTurn(state: State): boolean {
+  return state.turnActive || state.running;
 }
 
 export function sameMeta(a?: Meta, b?: Meta): boolean {
@@ -143,6 +147,10 @@ export function sameMeta(a?: Meta, b?: Meta): boolean {
     a.startupErr === b.startupErr &&
     a.eventChannel === b.eventChannel &&
     a.cwd === b.cwd &&
+    a.workspaceRoot === b.workspaceRoot &&
+    a.workspaceName === b.workspaceName &&
+    a.workspacePath === b.workspacePath &&
+    a.gitBranch === b.gitBranch &&
     a.autoApproveTools === b.autoApproveTools &&
     a.bypass === b.bypass &&
     a.collaborationMode === b.collaborationMode &&
@@ -276,8 +284,10 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         const positionalResult = tc.id ? undefined : positionalResults.get(positionalToolResultKey(messageIndex, callIndex));
         const result = tc.id ? resultByID.get(tc.id) : positionalResult?.message;
         if (tc.id) consumedToolIDs.add(tc.id);
-        const output = result?.content ?? "";
-        const error = result ? historyToolError(output) : undefined;
+        const archived = Boolean(tc.argumentsArchived || result?.toolResultArchived);
+        const output = result?.toolResultArchived ? undefined : result?.content ?? "";
+        const error = result?.toolResultError || (output ? historyToolError(output) : undefined);
+        const fileDiff = fileDiffFromWire(tc);
         items.push({
           kind: "tool",
           id: tc.id || `${idPrefix}tool${seq}`,
@@ -287,6 +297,10 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
           status: result ? (error ? "error" : "done") : "stopped",
           output,
           error,
+          dataArchived: archived || undefined,
+          subject: tc.subject,
+          summary: summarizeFileDiff(fileDiff) || tc.summary,
+          fileDiff,
           isShell: (tc.id || "").startsWith("shell-"),
         });
         seq++;
@@ -295,8 +309,8 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
     }
     if (m.role === "tool") {
       if ((m.toolCallId && consumedToolIDs.has(m.toolCallId)) || consumedPositionalToolIndexes.has(messageIndex)) continue;
-      const output = m.content;
-      const error = historyToolError(output);
+      const output = m.toolResultArchived ? undefined : m.content;
+      const error = m.toolResultError || (output ? historyToolError(output) : undefined);
       items.push({
         kind: "tool",
         id: m.toolCallId || `${idPrefix}tool${seq}`,
@@ -306,6 +320,7 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
         status: error ? "error" : "done",
         output,
         error,
+        dataArchived: m.toolResultArchived || undefined,
         isShell: (m.toolCallId || "").startsWith("shell-"),
       });
       seq++;
@@ -442,13 +457,15 @@ function applyEvent(s: State, e: WireEvent): State {
         const it = next[idx];
         if (it.kind === "tool") {
           const args = t.args ? t.args : it.args;
-          const summary = summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary };
+          const fileDiff = fileDiffFromWire(t);
+          const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
+          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff };
         }
         return { ...s, items: next };
       }
       const args = t.args ?? "";
-      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarize(t.name, args), isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
+      const fileDiff = fileDiffFromWire(t);
+      return { ...s, seq: s.seq + 1, items: [...s.items, { kind: "tool", id, name: t.name, args, readOnly: t.readOnly, status: "running", summary: summarizeFileDiff(fileDiff) || summarize(t.name, args), fileDiff, isShell: id.startsWith("shell-"), parentId: t.parentId, profile: t.profile }] };
     }
     case "tool_result": {
       const t = e.tool;
@@ -486,7 +503,7 @@ function applyEvent(s: State, e: WireEvent): State {
       return { ...s, items: next };
     }
     case "usage": {
-      if (!countsTowardCurrentTurn(s, e.usage)) return s;
+      if (!countsTowardCurrentTurn(s)) return s;
       const updateContextGauge = updatesContextGauge(e.usage);
       const used = e.usage && s.context.window && updateContextGauge ? e.usage.promptTokens : s.context.used;
       const turnTokens = s.turnTokens + (e.usage?.completionTokens ?? 0);
@@ -597,6 +614,7 @@ export function reducer(s: State, a: Action): State {
       const archived = items.map((it) => {
         if (it.kind !== "tool") return it;
         const t = it;
+        if (t.name === "todo_write") return it;
         const shortArgs = t.args && t.args.length > 200 ? t.args.slice(0, 200) + "…" : t.args;
         if (shortArgs === t.args && (t.output === undefined || t.output === "")) return it;
         return { ...t, args: shortArgs, output: undefined, dataArchived: true };
@@ -606,7 +624,7 @@ export function reducer(s: State, a: Action): State {
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
     case "clearApproval": return { ...s, approval: undefined };
     case "clearAsk": return { ...s, ask: undefined };
-    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs };
+    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }
@@ -1008,6 +1026,19 @@ export function useController() {
     void refreshCheckpoints(targetTabId);
   }, [activeTabId, dispatchTo, refreshCheckpoints, waitForTabReady]);
 
+  const openChannelSession = useCallback(async (path: string, tabId: string) => {
+    if (!tabId) return;
+    await waitForTabReady(tabId);
+    const messages = asArray(
+      await app.OpenChannelSessionForTab(tabId, path).catch(() => [] as HistoryMessage[]),
+    );
+    if (messages.length === 0) return;
+    dispatchTo(tabId, { type: "reset" });
+    dispatchTo(tabId, { type: "history", messages });
+    app.ContextUsageForTab(tabId).then((context) => dispatchTo(tabId, { type: "context", context })).catch(() => {});
+    void refreshCheckpoints(tabId);
+  }, [dispatchTo, refreshCheckpoints, waitForTabReady]);
+
   const previewSession = useCallback(async (path: string): Promise<HistoryMessage[]> => asArray<HistoryMessage>(await app.PreviewSession(path).catch(() => [])), []);
   const deleteSession = useCallback((path: string) => app.DeleteSession(path).catch(() => {}).finally(() => invalidateCache()), []);
   const restoreSession = useCallback((path: string) => app.RestoreSession(path).catch(() => {}).finally(() => invalidateCache()), []);
@@ -1183,7 +1214,7 @@ export function useController() {
     state: activeState,
     activeTabId,
     send, runShell, steer, notice, cancel, approve, answerQuestion, setControllerMode, setCollaborationMode, setToolApprovalMode, setGoal, clearGoal,
-    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
+    newSession, clearSession, listSessions, listTrashedSessions, resumeSession, openChannelSession, previewSession, deleteSession, restoreSession, purgeTrashedSession, renameSession,
     refreshMeta, pickWorkspace, switchWorkspace, compact, rewind, setModel, setEffort, setTokenMode,
     fetchMemory, remember, forget, saveDoc,
     switchTab, openProjectTab, openGlobalTab, openTopicSession, ensureBlankTab, closeTab, reorderTabs,

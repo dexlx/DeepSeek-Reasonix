@@ -530,7 +530,7 @@ func chatREPL(args []string) int {
 	m.refreshEffortStatus()
 
 	if m.nativeScrollback {
-		reserveNativeScrollbackFrame(os.Stdout, m.bottomRows())
+		prepareNativeScrollback(os.Stdout, m.bottomRows())
 	}
 
 	// Non-Termux terminals use an alt-screen transcript viewport. Termux stays
@@ -572,6 +572,14 @@ func chatREPL(args []string) int {
 		return 1
 	}
 	return 0
+}
+
+func prepareNativeScrollback(w io.Writer, rows int) {
+	// Clear the terminal's scrollback history so a reopened chat starts
+	// with a clean slate (Termux stays in the normal buffer, so prior
+	// output would otherwise remain visible above the banner).
+	fmt.Fprint(w, "\x1B[3J\x1B[2J\x1B[H")
+	reserveNativeScrollbackFrame(w, rows)
 }
 
 func reserveNativeScrollbackFrame(w io.Writer, rows int) {
@@ -717,6 +725,7 @@ func interactiveSetup(configPath, envPath string) int {
 		return 1
 	}
 	cfg.Language = lang
+	cfg.ApplyDeepSeekOfficialDefaultPricing()
 	i18n.DetectLanguage(lang)
 
 	// Now that the catalogue matches the user's choice, show the welcome banner
@@ -729,7 +738,7 @@ func interactiveSetup(configPath, envPath string) int {
 	}))
 	fmt.Println()
 
-	enabled, err := selectEnabledProviders(cfg.Providers)
+	enabled, err := selectEnabledProviders(cfg.Providers, cfg.DeepSeekOfficialPricingLanguage())
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "\n"+i18n.M.SetupCancelled)
 		return 1
@@ -831,12 +840,12 @@ func selectLanguage() (string, error) {
 // vendor that doesn't expose /models. All paths funnel through the same
 // fetchOrFallback / buildFamilyEntry helpers, so adding a new family only
 // requires a familyOf case.
-func selectEnabledProviders(providers []config.ProviderEntry) ([]config.ProviderEntry, error) {
+func selectEnabledProviders(providers []config.ProviderEntry, pricingLanguage string) ([]config.ProviderEntry, error) {
 	providers, stale := filterStaleCustomEntries(providers)
 	for _, s := range stale {
 		fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.SkipStaleCustomEntryFmt, s.Name, s.BaseURL)))
 	}
-	providers = withBuiltinFamilies(providers)
+	providers = withBuiltinFamiliesForLanguage(providers, pricingLanguage)
 
 	famOrder, famMembers, famInfo := groupByFamily(providers)
 
@@ -1384,11 +1393,18 @@ func groupByFamily(providers []config.ProviderEntry) ([]string, map[string][]int
 // already present are left untouched (the user's customizations win); only the
 // missing built-in families get their default entries appended.
 func withBuiltinFamilies(providers []config.ProviderEntry) []config.ProviderEntry {
+	return withBuiltinFamiliesForLanguage(providers, "")
+}
+
+func withBuiltinFamiliesForLanguage(providers []config.ProviderEntry, pricingLanguage string) []config.ProviderEntry {
 	have := map[string]bool{}
 	for _, p := range providers {
 		have[familyOf(p.Name).key] = true
 	}
-	for _, bp := range config.Default().Providers {
+	defaults := config.Default()
+	defaults.Language = pricingLanguage
+	defaults.ApplyDeepSeekOfficialDefaultPricing()
+	for _, bp := range defaults.Providers {
 		if k := familyOf(bp.Name).key; !have[k] {
 			providers = append(providers, bp)
 		}

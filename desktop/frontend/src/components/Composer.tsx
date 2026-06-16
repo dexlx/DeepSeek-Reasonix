@@ -8,6 +8,7 @@ import { app, onFilesDropped } from "../lib/bridge";
 import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } from "../lib/composerKeyboard";
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
+import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcuts";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { useToast } from "../lib/toast";
 import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
@@ -138,10 +139,6 @@ function clipboardHasImageHint(data: DataTransfer): boolean {
 
 function isPasteShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
   return e.key.toLowerCase() === "v" && (e.metaKey || e.ctrlKey) && !e.altKey;
-}
-
-function isYoloToggleShortcut(e: KeyboardEvent<HTMLTextAreaElement>): boolean {
-  return e.key.toLowerCase() === "y" && (e.metaKey || e.ctrlKey) && !e.altKey && !e.shiftKey;
 }
 
 async function dataURLHash(dataUrl: string): Promise<string> {
@@ -345,6 +342,7 @@ export function Composer({
   onSetTokenMode,
   insertRequest,
   disabled,
+  readOnly = false,
   decisionPending = false,
   ready,
   turnStartAt,
@@ -377,6 +375,7 @@ export function Composer({
   onSetTokenMode: (mode: TokenMode) => void;
   insertRequest?: ComposerInsertRequest | null;
   disabled?: boolean;
+  readOnly?: boolean;
   decisionPending?: boolean;
   // ready/cwd/running re-trigger the command fetch: Commands() returns only
   // built-ins until boot.Build finishes (the controller, hence skills/custom/MCP,
@@ -390,6 +389,7 @@ export function Composer({
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
+  const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
   const now = useTick(running);
   const [text, setText] = useState("");
   const [attachments, setAttachments] = useState<Attachment[]>([]);
@@ -874,7 +874,7 @@ export function Composer({
   const tokenModeOn = tokenMode === "economy";
 
   const submit = async () => {
-    if (disabled || submittingRef.current) return;
+    if (disabled || readOnly || submittingRef.current) return;
     const trimmedText = text.trim();
     if (pendingPaste > 0) return;
     if (!trimmedText && attachments.length === 0 && workspaceRefs.length === 0) {
@@ -1448,7 +1448,7 @@ export function Composer({
       return;
     }
 
-    if (isYoloToggleShortcut(e) && !composing) {
+    if (matchesShortcut(e.nativeEvent, "toolApproval.yolo", shortcutPlatform) && !composing) {
       e.preventDefault();
       onToggleYoloApprovalMode();
       return;
@@ -2039,15 +2039,17 @@ export function Composer({
           onDoubleClick={resetComposerHeight}
         />
         <div
-          className={`composer${dragOver ? " composer--dragover" : ""}${disabled ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
+          className={`composer${dragOver ? " composer--dragover" : ""}${disabled || readOnly ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
         >
           <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
           <textarea
+            id="composer-input"
             ref={taRef}
             className="composer__input"
+            aria-label={t("composer.placeholder")}
             value={text}
             onChange={(e) => {
               resetPromptHistoryNavigation();
@@ -2068,9 +2070,9 @@ export function Composer({
               lastCompositionEndAt.current = Date.now();
             }}
             style={textareaStyle}
-            placeholder={disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
+            placeholder={readOnly ? t("composer.readOnlyChannel") : disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
             rows={1}
-            disabled={disabled}
+            disabled={disabled || readOnly}
           />
           {composerPrompt && (
             <span className="composer__prompt" role="status">
@@ -2082,7 +2084,7 @@ export function Composer({
               <button
                 className="composer__btn composer__btn--send"
                 onClick={submit}
-                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled}
+                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled || readOnly}
               >
                 <ArrowUp size={16} />
               </button>

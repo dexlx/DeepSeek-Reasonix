@@ -140,6 +140,7 @@ export interface AppBindings {
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ResumeSession(path: string): Promise<HistoryMessage[]>;
   ResumeSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
+  OpenChannelSessionForTab(tabID: string, path: string): Promise<HistoryMessage[]>;
   PreviewSession(path: string): Promise<HistoryMessage[]>;
   DeleteSession(path: string): Promise<void>;
   RestoreSession(path: string): Promise<void>;
@@ -179,11 +180,11 @@ export interface AppBindings {
   ListDir(rel: string): Promise<DirEntry[]>;
   SearchFileRefs(query: string): Promise<DirEntry[]>;
   ReadFile(rel: string): Promise<FilePreview>;
-  WorkspaceChanges(): Promise<WorkspaceChangesView>;
+  WorkspaceChanges(tabID: string): Promise<WorkspaceChangesView>;
   GitBranches(): Promise<string[]>;
   GitCheckout(branch: string): Promise<void>;
-  WorkspaceGitHistory(path: string): Promise<GitCommitView[]>;
-  WorkspaceGitCommitDetail(hash: string, path: string): Promise<GitCommitDetailView>;
+  WorkspaceGitHistory(tabID: string, path: string): Promise<GitCommitView[]>;
+  WorkspaceGitCommitDetail(tabID: string, hash: string, path: string): Promise<GitCommitDetailView>;
   OpenWorkspacePath(rel: string): Promise<void>;
   RevealWorkspacePath(rel: string): Promise<void>;
   RevealPath(path: string): Promise<void>;
@@ -1264,6 +1265,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: globalWorkspaceRoot,
       workspaceName: "Global",
+      workspacePath: globalWorkspaceRoot,
       topicId: "",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1282,6 +1284,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-db",
       workspaceName: "joyquant-db",
+      workspacePath: "~/projects/joyquant-db",
+      gitBranch: "main",
       topicId: "topic_dev_standard",
       topicTitle: t("mock.trashDevStandardTitle"),
       projectColor: "blue",
@@ -1300,6 +1304,8 @@ function makeMockApp(): AppBindings {
       scope: "project",
       workspaceRoot: "~/projects/joyquant-sys",
       workspaceName: "joyquant-sys",
+      workspacePath: "~/projects/joyquant-sys",
+      gitBranch: "feature/p3b",
       topicId: "topic_p3b_pd",
       topicTitle: "p3b P&D",
       projectColor: "purple",
@@ -1318,6 +1324,7 @@ function makeMockApp(): AppBindings {
       scope: "global",
       workspaceRoot: "",
       workspaceName: "Global",
+      workspacePath: "~/projects/joyquant-db",
       topicId: "topic_global",
       topicTitle: "Global",
       label: "DeepSeek-R1",
@@ -1781,6 +1788,10 @@ function makeMockApp(): AppBindings {
     async ResumeSessionForTab(_tabID: string, path: string) {
       return this.ResumeSession(path);
     },
+    async OpenChannelSessionForTab(tabID: string, path: string) {
+      mockTabs = mockTabs.map((tab) => tab.id === tabID ? { ...tab, sessionPath: path, readOnly: true } : tab);
+      return this.ResumeSession(path);
+    },
     async PreviewSession(path: string) {
       const s = sessions.find((x) => x.path === path) ?? trashedSessions.find((x) => x.path === path);
       return [
@@ -1887,11 +1898,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(active?.toolApprovalMode, active ? normalizeMode(active.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(active?.collaborationMode, active?.goal, active ? normalizeMode(active.mode) : "normal");
+          const workspacePath = active?.workspacePath || active?.workspaceRoot || active?.cwd || cwd;
           return {
             label: active?.label ?? "DeepSeek-R1",
             ready: active?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: active?.cwd || cwd,
+            workspaceRoot: active?.workspaceRoot || workspacePath,
+            workspaceName: active?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: active?.gitBranch || (active?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -1906,11 +1923,17 @@ function makeMockApp(): AppBindings {
           const toolApprovalMode = normalizeToolApprovalMode(tab?.toolApprovalMode, tab ? normalizeMode(tab.mode) : "normal", settings.autoApproveTools);
           const autoApproveTools = toolApprovalMode === "yolo";
           const collaborationMode = normalizeCollaborationMode(tab?.collaborationMode, tab?.goal, tab ? normalizeMode(tab.mode) : "normal");
+          const workspacePath = tab?.workspacePath || tab?.workspaceRoot || tab?.cwd || cwd;
           return {
             label: tab?.label ?? "DeepSeek-R1",
             ready: tab?.ready ?? true,
             eventChannel: EVENT_CHANNEL,
             cwd: tab?.cwd || cwd,
+            workspaceRoot: tab?.workspaceRoot || workspacePath,
+            workspaceName: tab?.workspaceName,
+            workspacePath,
+            sandboxPath: settings.sandbox.workspaceRoot,
+            gitBranch: tab?.gitBranch || (tab?.scope === "project" ? "main" : ""),
             autoApproveTools,
             bypass: autoApproveTools,
             collaborationMode,
@@ -2162,7 +2185,7 @@ function makeMockApp(): AppBindings {
         binary: false,
       };
     },
-    async WorkspaceChanges() {
+    async WorkspaceChanges(_tabID: string) {
       return {
         gitAvailable: true,
         gitBranch: "main",
@@ -2186,12 +2209,12 @@ function makeMockApp(): AppBindings {
     async GitCheckout(_branch: string) {
       console.info("mock GitCheckout", _branch);
     },
-    async WorkspaceGitHistory(path: string) {
+    async WorkspaceGitHistory(_tabID: string, path: string) {
       return [
         { hash: "abcdef123456", author: "Mock Author", date: new Date().toISOString(), message: "Mock commit message for " + path },
       ];
     },
-    async WorkspaceGitCommitDetail(_hash: string, path: string) {
+    async WorkspaceGitCommitDetail(_tabID: string, _hash: string, path: string) {
       if (path) {
         return { diff: "--- a/mock\n+++ b/mock\n@@ -1,1 +1,1 @@\n-mock\n+mock diff" };
       }
@@ -2702,6 +2725,8 @@ function makeMockApp(): AppBindings {
         scope: "project",
         workspaceRoot,
         workspaceName: workspaceRoot.split("/").filter(Boolean).pop() ?? workspaceRoot,
+        workspacePath: workspaceRoot,
+        gitBranch: "main",
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, t("mock.newSession")),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2730,6 +2755,7 @@ function makeMockApp(): AppBindings {
         scope: "global",
         workspaceRoot: "",
         workspaceName: "Global",
+        workspacePath: cwd,
         topicId: _topicID,
         topicTitle: topicLabel(_topicID, "Global"),
         sessionPath: `/mock/sessions/${_topicID}.jsonl`,
@@ -2886,6 +2912,8 @@ function makeMockApp(): AppBindings {
     },
     async ContextPanel(_tabID: string) {
       const now = Date.now();
+      const currency = "¥";
+      const cost = (usd: number) => currency === "¥" ? Number((usd * 7.15).toFixed(4)) : usd;
       return {
         usedTokens: 42124,
         windowTokens: 128000,
@@ -2897,9 +2925,9 @@ function makeMockApp(): AppBindings {
         cacheMissTokens: 13000,
         requestCount: 10,
         elapsedMs: 33 * 60 * 1000,
-        sessionCost: 0.018,
-        sessionCurrency: "$",
-        sessionCostUsd: 0.018,
+        sessionCost: cost(0.018),
+        sessionCurrency: currency,
+        sessionCostUsd: cost(0.018),
         sources: {
           executor: {
             promptTokens: 24100,
@@ -2909,9 +2937,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 76000,
             cacheMissTokens: 9000,
             requestCount: 4,
-            sessionCost: 0.0124,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0124,
+            sessionCost: cost(0.0124),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0124),
           },
           planner: {
             promptTokens: 1800,
@@ -2921,9 +2949,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 3400,
             cacheMissTokens: 700,
             requestCount: 1,
-            sessionCost: 0.0011,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0011,
+            sessionCost: cost(0.0011),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0011),
           },
           subagent: {
             promptTokens: 4200,
@@ -2933,9 +2961,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 6100,
             cacheMissTokens: 2100,
             requestCount: 2,
-            sessionCost: 0.0032,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0032,
+            sessionCost: cost(0.0032),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0032),
           },
           compaction: {
             promptTokens: 2600,
@@ -2945,9 +2973,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 1100,
             cacheMissTokens: 900,
             requestCount: 1,
-            sessionCost: 0.0009,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0009,
+            sessionCost: cost(0.0009),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0009),
           },
           classifier: {
             promptTokens: 900,
@@ -2957,9 +2985,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 300,
             cacheMissTokens: 250,
             requestCount: 1,
-            sessionCost: 0.0003,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0003,
+            sessionCost: cost(0.0003),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0003),
           },
           title: {
             promptTokens: 420,
@@ -2969,9 +2997,9 @@ function makeMockApp(): AppBindings {
             cacheHitTokens: 100,
             cacheMissTokens: 50,
             requestCount: 1,
-            sessionCost: 0.0001,
-            sessionCurrency: "$",
-            sessionCostUsd: 0.0001,
+            sessionCost: cost(0.0001),
+            sessionCurrency: currency,
+            sessionCostUsd: cost(0.0001),
           },
         },
         mock: true,
