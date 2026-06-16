@@ -342,7 +342,7 @@ func (a *App) Settings() SettingsView {
 			Bot:                botSettingsView(config.BotConfig{}),
 			AutoPlan:           "off",
 			DesktopLayoutStyle: "classic",
-			DesktopTheme:       "light",
+			DesktopTheme:       "auto",
 			DesktopThemeStyle:  "graphite",
 			CloseBehavior:      "background",
 			DisplayMode:        "standard",

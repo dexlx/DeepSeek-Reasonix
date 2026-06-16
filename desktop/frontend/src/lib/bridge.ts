@@ -950,7 +950,7 @@ function makeMockApp(): AppBindings {
     },
     desktopLanguage: "",
     desktopLayoutStyle: "classic",
-    desktopTheme: "light",
+    desktopTheme: "auto",
     desktopThemeStyle: "graphite",
     closeBehavior: "background",
     displayMode: "compact",
