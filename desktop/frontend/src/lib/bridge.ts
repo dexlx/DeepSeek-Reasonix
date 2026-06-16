@@ -47,6 +47,7 @@ import type {
   ServerView,
   SessionMeta,
   SettingsView,
+  SkillsSettingsView,
   SkillRootView,
   SkillSuggestion,
   SkillView,
@@ -160,6 +161,8 @@ export interface AppBindings {
   MetaForTab(tabID: string): Promise<Meta>;
   Commands(): Promise<CommandInfo[]>;
   Capabilities(): Promise<CapabilitiesView>;
+  MCPServers(): Promise<ServerView[]>;
+  SkillsSettings(): Promise<SkillsSettingsView>;
   AddMCPServer(input: MCPServerInput): Promise<number>;
   UpdateMCPServer(name: string, input: MCPServerInput): Promise<void>;
   RemoveMCPServer(name: string): Promise<void>;
@@ -1890,6 +1893,15 @@ function makeMockApp(): AppBindings {
     async Capabilities() {
       return {
         servers: capServers.map((s) => ({ ...s })),
+        skills: capSkills.map((s) => ({ ...s })),
+        skillRoots: capSkillRoots.map((s) => ({ ...s })),
+      };
+    },
+    async MCPServers() {
+      return capServers.map((s) => ({ ...s }));
+    },
+    async SkillsSettings() {
+      return {
         skills: capSkills.map((s) => ({ ...s })),
         skillRoots: capSkillRoots.map((s) => ({ ...s })),
       };

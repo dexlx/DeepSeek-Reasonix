@@ -3,7 +3,7 @@ import { asArray } from "../lib/array";
 import { app, openExternal } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { mcpServerLifecycleActions } from "../lib/mcpServerLifecycle";
-import type { CapabilitiesView, MCPServerInput, ServerView, SkillRootSkillView, SkillRootView, SkillView } from "../lib/types";
+import type { CapabilitiesView, MCPServerInput, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { ResizableDrawer } from "./ResizableDrawer";
 import { Tooltip } from "./Tooltip";
@@ -14,6 +14,9 @@ import { ModalCloseButton } from "./ModalCloseButton";
 // each server shows a connected/failed dot, transport, and tool/prompt/resource
 // counts, with add / remove / retry; skills list their scope and run mode.
 type CapTab = "servers" | "skills";
+
+let mcpSettingsSnapshot: ServerView[] | null = null;
+let skillsSettingsSnapshot: SkillsSettingsView | null = null;
 
 export function CapabilitiesPanel({
   onClose,
@@ -285,14 +288,24 @@ export function CapabilitiesPanel({
 
 function normalizeCapabilitiesView(view: CapabilitiesView | null | undefined): CapabilitiesView {
   return {
-    servers: sortServersForDisplay(
-      asArray(view?.servers).map((server) => ({
-        ...server,
-        args: asArray(server.args),
-        envKeys: asArray(server.envKeys),
-        toolList: asArray(server.toolList),
-      })),
-    ),
+    servers: normalizeServerViews(view?.servers),
+    ...normalizeSkillsSettingsView(view),
+  };
+}
+
+function normalizeServerViews(servers: ServerView[] | null | undefined): ServerView[] {
+  return sortServersForDisplay(
+    asArray(servers).map((server) => ({
+      ...server,
+      args: asArray(server.args),
+      envKeys: asArray(server.envKeys),
+      toolList: asArray(server.toolList),
+    })),
+  );
+}
+
+function normalizeSkillsSettingsView(view: SkillsSettingsView | CapabilitiesView | null | undefined): SkillsSettingsView {
+  return {
     skills: asArray(view?.skills),
     skillRoots: asArray(view?.skillRoots).map((root) => ({
       ...root,
@@ -1432,7 +1445,7 @@ function AddServerForm({
 // embedded inside the settings centre.
 export function MCPServersSettingsPage() {
 	const t = useT();
-	const [view, setView] = useState<CapabilitiesView | null>(null);
+	const [servers, setServers] = useState<ServerView[] | null>(() => mcpSettingsSnapshot);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [adding, setAdding] = useState(false);
@@ -1442,14 +1455,16 @@ export function MCPServersSettingsPage() {
 	const [expandedServerTools, setExpandedServerTools] = useState<Set<string>>(() => new Set());
 
 	const reload = useCallback(async () => {
-		setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [] }))));
+		const next = normalizeServerViews(await app.MCPServers().catch(() => []));
+		mcpSettingsSnapshot = next;
+		setServers(next);
 	}, []);
 	useEffect(() => { void reload(); }, [reload]);
 	useEffect(() => {
-		if (!view || !view.servers.some((s) => s.status === "initializing" || s.status === "deferred")) return;
+		if (!servers?.some((s) => s.status === "initializing" || s.status === "deferred")) return;
 		const id = window.setInterval(() => void reload(), 2500);
 		return () => window.clearInterval(id);
-	}, [reload, view]);
+	}, [reload, servers]);
 
 	const mutate = async (fn: () => Promise<unknown>) => {
 		setBusy(true);
@@ -1467,12 +1482,12 @@ export function MCPServersSettingsPage() {
 		}
 	};
 	const serverGroups = useMemo(() => {
-		const servers = sortServersForDisplay(view?.servers ?? []);
+		const sorted = sortServersForDisplay(servers ?? []);
 		return {
-			failed: servers.filter((s) => s.status === "failed"),
-			active: servers.filter((s) => s.status !== "failed"),
+			failed: sorted.filter((s) => s.status === "failed"),
+			active: sorted.filter((s) => s.status !== "failed"),
 		};
-	}, [view]);
+	}, [servers]);
 	const toggleError = useCallback((name: string) => {
 		setExpandedErrors((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
 	}, []);
@@ -1484,17 +1499,17 @@ export function MCPServersSettingsPage() {
 	}, []);
 
 	const summary = useMemo(() => {
-		if (!view) return "";
-		return mcpServerSummary(view.servers, t);
-	}, [view, t]);
+		if (!servers) return "";
+		return mcpServerSummary(servers, t);
+	}, [servers, t]);
 
-	if (!view) return <div className="empty">{t("caps.loading")}</div>;
+	const loading = !servers;
 
 		return (
 			<section className="mem-section">
 				{err && serverGroups.failed.length === 0 && <div className="banner banner--error">{err}</div>}
 				<div className="cap-mcp-toolbar">
-				{view.servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
+				{servers && servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
 				<div className="cap-mcp-toolbar__actions">
 					{!adding && (
 						<button className="btn btn--small" disabled={busy} onClick={() => setAdding(true)}>
@@ -1514,9 +1529,12 @@ export function MCPServersSettingsPage() {
 					onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
 					onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
 					onConfirmMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.RemoveMCPServer(name))))}
-				/>
+					/>
 			)}
-			{view.servers.length === 0 && !adding && (
+			{loading && !adding && (
+				<div className="mem-empty">{t("caps.loading")}</div>
+			)}
+			{!loading && servers.length === 0 && !adding && (
 				<div className="mem-empty">{t("caps.noServers")}</div>
 			)}
 			{serverGroups.active.length > 0 && (
@@ -1556,14 +1574,16 @@ export function MCPServersSettingsPage() {
 // the settings centre.
 export function SkillsSettingsPage() {
 	const t = useT();
-	const [view, setView] = useState<CapabilitiesView | null>(null);
+	const [view, setView] = useState<SkillsSettingsView | null>(() => skillsSettingsSnapshot);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
 	const [skillQuery, setSkillQuery] = useState("");
 	const [expandedSkills, setExpandedSkills] = useState<Set<string>>(() => new Set());
 
 	const reload = useCallback(async () => {
-		setView(normalizeCapabilitiesView(await app.Capabilities().catch(() => ({ servers: [], skills: [], skillRoots: [] }))));
+		const next = normalizeSkillsSettingsView(await app.SkillsSettings().catch(() => ({ skills: [], skillRoots: [] })));
+		skillsSettingsSnapshot = next;
+		setView(next);
 	}, []);
 	useEffect(() => { void reload(); }, [reload]);
 

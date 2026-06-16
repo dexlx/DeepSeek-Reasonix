@@ -536,6 +536,10 @@ export interface CapabilitiesView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
 }
+export interface SkillsSettingsView {
+  skills: SkillView[];
+  skillRoots: SkillRootView[];
+}
 export interface MCPServerInput {
   name: string;
   transport: string; // stdio | http | sse
