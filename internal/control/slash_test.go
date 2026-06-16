@@ -215,16 +215,14 @@ func TestMemoryListTextIncludesArchivedMemories(t *testing.T) {
 }
 
 func TestManagementHooksTrustUsesWorkspaceRoot(t *testing.T) {
-	home := t.TempDir()
+	isolateControlConfigHome(t)
 	project := t.TempDir()
-	t.Setenv("HOME", home)
-	t.Setenv("USERPROFILE", home)
 
 	c := New(Options{WorkspaceRoot: project})
 	if !c.managementNotice("/hooks trust") {
 		t.Fatal("/hooks trust was not handled")
 	}
-	if !hook.IsTrusted(project, home) {
+	if !hook.IsTrusted(project, "") {
 		t.Fatal("/hooks trust did not trust the controller workspace root")
 	}
 }

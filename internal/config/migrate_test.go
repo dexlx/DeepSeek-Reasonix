@@ -3,6 +3,7 @@ package config
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -413,6 +414,9 @@ command = "legacy-os-bin"
 }
 
 func TestMigrateImportsLegacyXDGConfigToPrimaryConfig(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("legacy XDG paths are Unix-only")
+	}
 	_, dest, home := legacyHome(t)
 	legacy := filepath.Join(home, ".config", "reasonix", "config.toml")
 	if samePath(legacy, dest) {

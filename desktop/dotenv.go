@@ -145,26 +145,6 @@ func removeEnvFile(path, key string) error {
 	return os.Unsetenv(key)
 }
 
-// envFileKeys returns the set of KEY names assigned in a KEY=value file, empty
-// when the file is absent.
-func envFileKeys(path string) map[string]bool {
-	keys := map[string]bool{}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return keys
-	}
-	for _, raw := range strings.Split(string(data), "\n") {
-		line := strings.TrimPrefix(strings.TrimSpace(raw), "export ")
-		if line == "" || strings.HasPrefix(line, "#") {
-			continue
-		}
-		if k, _, ok := strings.Cut(line, "="); ok {
-			keys[strings.TrimSpace(k)] = true
-		}
-	}
-	return keys
-}
-
 // promoteProviderKeysToCredentials copies any configured provider api_key_env that
 // currently resolves (from a project .env, ~/.env, or the OS env) into the global
 // credential store when it isn't there yet, so a key set for one workspace follows

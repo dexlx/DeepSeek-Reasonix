@@ -94,6 +94,7 @@ func TestStoreCredentialLinesFileMode(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	t.Setenv("KEY_FILE_MODE", "")
 	os.Unsetenv("KEY_FILE_MODE")
@@ -121,6 +122,7 @@ func TestStoreCredentialLinesRejectsUnsafeFileLines(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 
 	_, err := StoreCredentialLines([]string{
@@ -147,6 +149,7 @@ func TestSetCredentialRejectsInvalidInput(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 
 	if _, err := SetCredential("BAD-KEY", "value"); err == nil {

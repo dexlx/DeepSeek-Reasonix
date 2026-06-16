@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -19,6 +20,13 @@ func isolateUserConfigHome(t *testing.T) string {
 	t.Setenv("USERPROFILE", home)
 	t.Setenv("AppData", filepath.Join(home, "AppData", "Roaming"))
 	return home
+}
+
+func expectedDefaultReasonixHome(home string) string {
+	if runtime.GOOS == "windows" {
+		return filepath.Join(home, "AppData", "Roaming", "reasonix")
+	}
+	return filepath.Join(home, ".reasonix")
 }
 
 func TestUserConfigDisplayPathCollapsesHome(t *testing.T) {
@@ -37,7 +45,7 @@ func TestUserConfigDisplayPathCollapsesHome(t *testing.T) {
 
 func TestUserConfigPathUsesReasonixHome(t *testing.T) {
 	home := isolateUserConfigHome(t)
-	want := filepath.Join(home, ".reasonix", "config.toml")
+	want := filepath.Join(expectedDefaultReasonixHome(home), "config.toml")
 	if got := UserConfigPath(); filepath.Clean(got) != filepath.Clean(want) {
 		t.Fatalf("UserConfigPath() = %q, want %q", got, want)
 	}
