@@ -2007,6 +2007,9 @@ func desktopMCPMigrationRoots(tabs desktopTabsFile) []string {
 	if cur := loadWorkspace(); cur != "" {
 		add(cur)
 	}
+	for _, root := range loadWorkspaces() {
+		add(root)
+	}
 	for _, entry := range tabs.Tabs {
 		if entry.Scope == "project" {
 			add(entry.WorkspaceRoot)

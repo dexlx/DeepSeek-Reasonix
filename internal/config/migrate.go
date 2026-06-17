@@ -163,8 +163,8 @@ func MigrateLegacyIfNeeded() (*MigrationResult, error) {
 }
 
 // MigrateMCPToUserConfigOnUpgrade runs a one-time best-effort backfill for the
-// v1.9.1 desktop/CLI upgrade: MCP servers found in legacy TOML, legacy v0.x JSON,
-// and known project roots are copied into the user-global config so the MCP
+// v1.9.1 desktop/CLI upgrade: MCP servers found in legacy TOML, known project
+// roots, and legacy v0.x JSON are copied into the user-global config so the MCP
 // settings page is stable across Global/project tabs. Existing global entries win
 // on name collisions, and source files are left untouched.
 func MigrateMCPToUserConfigOnUpgrade(projectRoots []string) (*MCPGlobalMigrationResult, error) {
@@ -199,7 +199,10 @@ func migrateMCPToUserConfig(projectRoots []string) (*MCPGlobalMigrationResult, e
 	if dest == "" {
 		return nil, nil
 	}
-	userCfg := LoadForEdit(dest)
+	userCfg, err := loadForEditStrict(dest)
+	if err != nil {
+		return nil, err
+	}
 	have := make(map[string]bool, len(userCfg.Plugins))
 	for _, p := range userCfg.Plugins {
 		if name := strings.TrimSpace(p.Name); name != "" {
@@ -229,19 +232,18 @@ func migrateMCPToUserConfig(projectRoots []string) (*MCPGlobalMigrationResult, e
 	for _, path := range mcpMigrationLegacyTOMLPaths(dest, home) {
 		addEntries(loadPluginEntriesFromTOML(path))
 	}
-	addEntries(loadLegacyConfigPlugins(legacyConfigPath()))
 	for _, root := range normalizedMCPMigrationRoots(projectRoots) {
 		addEntries(loadPluginEntriesFromTOML(filepath.Join(root, "reasonix.toml")))
 		if entries, err := loadMCPJSON(filepath.Join(root, mcpJSONFile)); err == nil {
 			addEntries(entries)
 		}
 	}
+	addEntries(loadLegacyConfigPlugins(legacyConfigPath()))
 
 	if result.Sources == 0 {
 		return nil, nil
 	}
 	if result.Added > 0 {
-		userCfg.ConfigVersion = Default().ConfigVersion
 		if err := userCfg.SaveTo(dest); err != nil {
 			return result, err
 		}

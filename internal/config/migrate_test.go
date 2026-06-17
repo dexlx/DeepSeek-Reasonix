@@ -238,6 +238,7 @@ func TestMigrateMCPToUserConfigOnUpgradeCollectsKnownSources(t *testing.T) {
 		"mcpServers": {
 			"legacy-json": {"command": "legacy-json-bin"},
 			"disabled-json": {"command": "disabled-json-bin", "disabled": true},
+			"project-json": {"command": "legacy-json-should-not-win"},
 			"global": {"command": "legacy-should-not-win"}
 		}
 	}`)
@@ -339,6 +340,71 @@ func TestMigrateMCPToUserConfigOnUpgradeDoesNotMarkEmptyScan(t *testing.T) {
 	}
 	if _, err := os.Stat(mcpGlobalMigrationMarkerPath()); !os.IsNotExist(err) {
 		t.Fatalf("empty scan should not write marker, stat err=%v", err)
+	}
+}
+
+func TestMigrateMCPToUserConfigOnUpgradeRefusesMalformedGlobalConfig(t *testing.T) {
+	srcJSON, dest, _ := legacyHome(t)
+	writeLegacy(t, srcJSON, `{
+		"mcpServers": {
+			"legacy-json": {"command": "legacy-json-bin"}
+		}
+	}`)
+	const malformed = "[[plugins]\nname = \"broken\"\n"
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte(malformed), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := MigrateMCPToUserConfigOnUpgrade(nil)
+	if err == nil {
+		t.Fatal("expected malformed global config to abort MCP migration")
+	}
+	if res != nil {
+		t.Fatalf("result = %+v, want nil", res)
+	}
+	if got, readErr := os.ReadFile(dest); readErr != nil {
+		t.Fatalf("read dest: %v", readErr)
+	} else if string(got) != malformed {
+		t.Fatalf("malformed config was overwritten:\n%s", got)
+	}
+	if _, statErr := os.Stat(mcpGlobalMigrationMarkerPath()); !os.IsNotExist(statErr) {
+		t.Fatalf("failed migration must not write marker, stat err=%v", statErr)
+	}
+}
+
+func TestMigrateMCPToUserConfigOnUpgradePreservesConfigVersion(t *testing.T) {
+	_, dest, _ := legacyHome(t)
+	if err := os.MkdirAll(filepath.Dir(dest), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(dest, []byte("config_version = 1\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	project := t.TempDir()
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(`
+[[plugins]]
+name = "project"
+command = "project-bin"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	res, err := MigrateMCPToUserConfigOnUpgrade([]string{project})
+	if err != nil {
+		t.Fatalf("MigrateMCPToUserConfigOnUpgrade: %v", err)
+	}
+	if res == nil || res.Added != 1 {
+		t.Fatalf("result = %+v, want 1 added", res)
+	}
+	got, err := os.ReadFile(dest)
+	if err != nil {
+		t.Fatalf("read dest: %v", err)
+	}
+	if !strings.Contains(string(got), "config_version = 1") {
+		t.Fatalf("MCP migration should not advance config_version:\n%s", got)
 	}
 }
 

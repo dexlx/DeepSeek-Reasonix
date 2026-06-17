@@ -1726,16 +1726,33 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 // of resetting to defaults. .env is loaded so api_key_env resolution works while
 // the wizard decides which keys are still missing.
 func LoadForEdit(path string) *Config {
+	cfg, err := loadForEditStrict(path)
+	if err == nil {
+		return cfg
+	}
+	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
+	loadDotEnv()
+	cfg = Default()
+	normalizeConfigForEdit(cfg)
+	return cfg
+}
+
+func loadForEditStrict(path string) (*Config, error) {
 	loadDotEnv()
 	cfg := Default()
 	if _, err := os.Stat(path); err == nil {
 		if err := migrateLegacyMCPTiersFile(path); err != nil {
-			slog.Warn("config: legacy mcp tier migration failed", "path", path, "err", err)
+			return nil, fmt.Errorf("config %s: %w", path, err)
 		}
 	}
 	if err := mergeFile(cfg, path); err != nil {
-		slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
+		return nil, err
 	}
+	normalizeConfigForEdit(cfg)
+	return cfg, nil
+}
+
+func normalizeConfigForEdit(cfg *Config) {
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
 	normalizeLegacyMCPTiers(cfg)
@@ -1744,7 +1761,6 @@ func LoadForEdit(path string) *Config {
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
-	return cfg
 }
 
 // mergeFile decodes a TOML file onto cfg if it exists. An absent file is not an error.

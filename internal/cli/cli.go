@@ -154,6 +154,9 @@ func migrateLegacyConfigForCLI() {
 	if _, err := config.MigrateLegacyIfNeeded(); err != nil {
 		fmt.Fprintln(os.Stderr, "warning: config migration failed:", err)
 	}
+}
+
+func migrateMCPConfigForCLIWorkspace() {
 	if wd, err := os.Getwd(); err == nil {
 		if _, err := config.MigrateMCPToUserConfigOnUpgrade([]string{wd}); err != nil {
 			fmt.Fprintln(os.Stderr, "warning: MCP config migration failed:", err)
@@ -190,6 +193,7 @@ func configureCLIThemeFromConfigNoProbe() {
 // the agent's typed event stream — runAgent passes a TextSink that renders to
 // stdout, the TUI passes an event-channel sink so events become tea.Msgs.
 func setup(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink) (*control.Controller, error) {
+	migrateMCPConfigForCLIWorkspace()
 	return boot.Build(ctx, boot.Options{
 		Model:      modelName,
 		MaxSteps:   maxStepsOverride,

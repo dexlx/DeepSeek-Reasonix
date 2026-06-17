@@ -129,6 +129,40 @@ func isolateCLIConfigHome(t *testing.T) string {
 	return home
 }
 
+func TestMCPMigrationWaitsForCLIWorkspace(t *testing.T) {
+	isolateCLIConfigHome(t)
+	cwd := mustGetwd(t)
+	if err := os.WriteFile(filepath.Join(cwd, "reasonix.toml"), []byte(`
+[[plugins]]
+name = "cwd-project"
+command = "cwd-project-bin"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	migrateLegacyConfigForCLI()
+	if cfg := config.LoadForEdit(config.UserConfigPath()); hasPluginNamed(cfg, "cwd-project") {
+		t.Fatalf("early CLI legacy migration imported the cwd project plugin: %+v", cfg.Plugins)
+	}
+
+	migrateMCPConfigForCLIWorkspace()
+	if cfg := config.LoadForEdit(config.UserConfigPath()); !hasPluginNamed(cfg, "cwd-project") {
+		t.Fatalf("workspace-aware CLI migration did not import project plugin: %+v", cfg.Plugins)
+	}
+}
+
+func hasPluginNamed(cfg *config.Config, name string) bool {
+	if cfg == nil {
+		return false
+	}
+	for _, plugin := range cfg.Plugins {
+		if plugin.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMetadataCommandsDoNotProbeTerminalTheme(t *testing.T) {
 	defer func(prev func() (terminalRGB, bool)) {
 		queryTerminalBackgroundForTheme = prev
