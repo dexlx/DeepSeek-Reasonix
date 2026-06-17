@@ -847,22 +847,6 @@ func (m *Manager) adoptUnscopedJobsLocked(parentSession string) {
 	}
 }
 
-func (m *Manager) rebaseSessionArtifactsLocked(parentSession, dir string) {
-	for _, j := range m.jobs {
-		if j == nil || !sessionMatches(parentSession, j.SessionID) {
-			continue
-		}
-		j.mu.Lock()
-		if j.artifactPath != "" {
-			j.artifactPath = filepath.Join(dir, filepath.Base(j.artifactPath))
-		}
-		if j.artifactMetaPath != "" {
-			j.artifactMetaPath = filepath.Join(dir, filepath.Base(j.artifactMetaPath))
-		}
-		j.mu.Unlock()
-	}
-}
-
 func (m *Manager) recordArtifactMigrationError(parentSession string, err error) {
 	text := "job artifact migration failed: " + err.Error()
 	m.mu.Lock()
