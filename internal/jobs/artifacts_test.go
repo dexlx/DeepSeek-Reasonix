@@ -163,3 +163,38 @@ func TestSetActiveSessionPathReportsMigrationFailure(t *testing.T) {
 		t.Fatalf("migration failure notice not emitted, got %q", notices)
 	}
 }
+
+func TestOutputReadsArtifactFromOffset(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bash-1.log")
+	prefix := strings.Repeat("x", 2*defaultTailBytes)
+	suffix := "new output\n"
+	if err := os.WriteFile(path, []byte(prefix+suffix), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	m := NewManager(event.Discard)
+	defer m.Close()
+	j := &Job{
+		ID:           "bash-1",
+		Kind:         "bash",
+		SessionID:    "session",
+		status:       Running,
+		readOffset:   int64(len(prefix)),
+		artifactPath: path,
+		done:         make(chan struct{}),
+	}
+	m.jobs[j.ID] = j
+	m.order = append(m.order, j.ID)
+
+	text, status, ok := m.OutputForSession("session", j.ID)
+	if !ok || status != Running {
+		t.Fatalf("OutputForSession ok/status = %v/%s, want true/running", ok, status)
+	}
+	if text != suffix {
+		t.Fatalf("OutputForSession text = %q, want %q", text, suffix)
+	}
+	if j.readOffset != int64(len(prefix)+len(suffix)) {
+		t.Fatalf("readOffset = %d, want %d", j.readOffset, len(prefix)+len(suffix))
+	}
+}

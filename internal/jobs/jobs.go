@@ -499,19 +499,41 @@ func (m *Manager) OutputForSession(parentSession, id string) (text string, statu
 }
 
 func (j *Job) readArtifactSinceOffsetLocked() string {
-	b, err := os.ReadFile(j.artifactPath)
+	f, err := os.Open(j.artifactPath)
 	if err != nil {
 		if j.artifactErr == "" {
 			j.artifactErr = err.Error()
 		}
 		return ""
 	}
-	if j.readOffset > int64(len(b)) {
-		j.readOffset = int64(len(b))
+	defer f.Close()
+	info, err := f.Stat()
+	if err != nil {
+		if j.artifactErr == "" {
+			j.artifactErr = err.Error()
+		}
 		return ""
 	}
-	text := string(b[j.readOffset:])
-	j.readOffset = int64(len(b))
+	size := info.Size()
+	if j.readOffset > size {
+		j.readOffset = size
+		return ""
+	}
+	if _, err := f.Seek(j.readOffset, io.SeekStart); err != nil {
+		if j.artifactErr == "" {
+			j.artifactErr = err.Error()
+		}
+		return ""
+	}
+	b, err := io.ReadAll(f)
+	if err != nil {
+		if j.artifactErr == "" {
+			j.artifactErr = err.Error()
+		}
+		return ""
+	}
+	text := string(b)
+	j.readOffset = size
 	return text
 }
 
