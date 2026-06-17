@@ -7,7 +7,9 @@ import {
   mergedFetchedProviderModels,
   providerApiKeyEnvForSave,
   providerDefaultModel,
+  providerIsConfigured,
   providerModelCandidates,
+  providerRequiresKey,
 } from "../lib/providerModels";
 
 let passed = 0;
@@ -135,6 +137,18 @@ eq(
   providerApiKeyEnvForSave("Local Gateway", "GATEWAY_KEY", ""),
   "GATEWAY_KEY",
   "preserves an explicitly configured key env",
+);
+
+eq(
+  [
+    providerRequiresKey({ apiKeyEnv: "" }),
+    providerIsConfigured({ apiKeyEnv: "", keySet: false }),
+    providerIsConfigured({ apiKeyEnv: "LOCAL_API_KEY", keySet: false, requiresKey: false }),
+    providerIsConfigured({ apiKeyEnv: "REMOTE_API_KEY", keySet: false, requiresKey: true }),
+    providerIsConfigured({ apiKeyEnv: "REMOTE_API_KEY", keySet: true, requiresKey: true }),
+  ],
+  [false, true, true, false, true],
+  "separates provider selectability from key presence for no-auth providers",
 );
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

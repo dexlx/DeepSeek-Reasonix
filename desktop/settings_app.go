@@ -38,6 +38,8 @@ type ProviderView struct {
 	Default           string   `json:"default"`
 	APIKeyEnv         string   `json:"apiKeyEnv"`
 	KeySet            bool     `json:"keySet"` // the env var currently resolves to a non-empty value
+	RequiresKey       bool     `json:"requiresKey"`
+	Configured        bool     `json:"configured"` // selectable: either key is present or no key is required
 	KeySource         string   `json:"keySource,omitempty"`
 	KeySourcePath     string   `json:"keySourcePath,omitempty"`
 	BalanceURL        string   `json:"balanceUrl"`
@@ -285,11 +287,14 @@ func providerViewFromEntryForRoot(p config.ProviderEntry, builtIn, added bool, r
 		visionModels = models
 	}
 	key := config.ResolveCredentialForRootGlobalFirst(root, p.APIKeyEnv)
+	requiresKey := p.RequiresAPIKey()
 	return ProviderView{
 		Name: p.Name, BuiltIn: builtIn, Added: added, Kind: p.Kind, BaseURL: p.BaseURL,
 		Models: nonNil(models), VisionModels: nonNil(providerVisionModels(models, visionModels)), VisionModelsSet: visionModelsSet, ModelsURL: p.ModelsURL, Default: p.DefaultModel(),
 		APIKeyEnv:         p.APIKeyEnv,
 		KeySet:            key.Set,
+		RequiresKey:       requiresKey,
+		Configured:        !requiresKey || key.Set,
 		KeySource:         key.Source.Label,
 		KeySourcePath:     key.Source.Path,
 		BalanceURL:        p.BalanceURL,

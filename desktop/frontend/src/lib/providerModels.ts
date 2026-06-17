@@ -16,6 +16,16 @@ export function providerDefaultModel(currentDefault: string, models: string[]): 
   return currentDefault && models.includes(currentDefault) ? currentDefault : models[0] ?? "";
 }
 
+export function providerRequiresKey(provider: { requiresKey?: boolean; apiKeyEnv?: string }): boolean {
+  if (typeof provider.requiresKey === "boolean") return provider.requiresKey;
+  return Boolean((provider.apiKeyEnv ?? "").trim());
+}
+
+export function providerIsConfigured(provider: { configured?: boolean; requiresKey?: boolean; apiKeyEnv?: string; keySet?: boolean }): boolean {
+  if (typeof provider.configured === "boolean") return provider.configured;
+  return !providerRequiresKey(provider) || Boolean(provider.keySet);
+}
+
 export function providerApiKeyEnvForSave(name: string, apiKeyEnv: string, keyDraft: string): string {
   const explicit = apiKeyEnv.trim();
   if (explicit) return explicit;

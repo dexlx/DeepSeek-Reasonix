@@ -9,6 +9,7 @@ import type * as GeneratedApp from "../../wailsjs/go/main/App";
 
 import { addBreadcrumb } from "./breadcrumbs";
 import { t } from "./i18n";
+import { providerRequiresKey } from "./providerModels";
 import { DEFAULT_STATUS_BAR_ITEMS, normalizeStatusBarItems } from "./statusBarItems";
 import { modeWithAutoApproveTools, modeWithPlan, normalizeCollaborationMode, normalizeMode, normalizeTokenMode, normalizeToolApprovalMode } from "./types";
 
@@ -2394,7 +2395,7 @@ function makeMockApp(): AppBindings {
     },
     async FetchProviderModels(p: ProviderView) {
       if (!p.baseUrl.trim()) throw new Error(t("settings.fetchModelsMissingBaseUrl"));
-      if (!p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
+      if (providerRequiresKey(p) && !p.apiKeyEnv.trim()) throw new Error(t("settings.fetchModelsMissingKeyEnv"));
       await delay(350);
       if (p.baseUrl.includes("deepseek")) return ["deepseek-v4-flash", "deepseek-v4-pro"];
       if (p.baseUrl.includes("mimo") || p.baseUrl.includes("xiaomimimo")) return ["mimo-v2.5", "mimo-v2.5-pro"];

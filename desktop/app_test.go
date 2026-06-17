@@ -574,6 +574,9 @@ func TestSettingsLoadsActiveWorkspaceCredentialsWithUserConfig(t *testing.T) {
 			if !p.KeySet {
 				t.Fatalf("workspace provider keySet = false, want true from active workspace .env: %+v", p)
 			}
+			if !p.Configured {
+				t.Fatalf("workspace provider configured = false, want true from active workspace .env: %+v", p)
+			}
 			return
 		}
 	}
