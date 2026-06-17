@@ -2046,7 +2046,7 @@ func (a *App) rebindTabToSessionPath(tab *WorkspaceTab, sessionPath string) erro
 	if sessionPath == "" {
 		return fmt.Errorf("session path is required")
 	}
-	loaded, err := agent.LoadSession(sessionPath)
+	loaded, err := loadResumableSession(sessionPath)
 	if err != nil {
 		return err
 	}

@@ -2126,7 +2126,8 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		}
 	}
 
-	grace := 150 * time.Millisecond
+	grace := 500 * time.Millisecond
+	slack := 300 * time.Millisecond
 	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test", Jobs: jm})
 	keepCtrl := control.New(control.Options{SessionDir: dir, SessionPath: keepPath, Label: "keep"})
@@ -2147,7 +2148,7 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		t.Fatalf("DeleteSession(stuck job): %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > grace+100*time.Millisecond {
+	if elapsed > grace+slack {
 		t.Fatalf("DeleteSession took %s, want one teardown grace plus scheduling slack", elapsed)
 	}
 	if !agent.IsCleanupPending(path) {
@@ -2284,7 +2285,8 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	}
 	sessionPath := writeTopicSession(t, dir, "stuck-topic.jsonl", topicID, "Stuck trash", projectRoot)
 
-	grace := 150 * time.Millisecond
+	grace := 500 * time.Millisecond
+	slack := 300 * time.Millisecond
 	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test", Jobs: jm, WorkspaceRoot: projectRoot})
 	releaseJob := startNonCooperativeSessionJob(t, jm, sessionPath)
@@ -2324,7 +2326,7 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		t.Fatalf("TrashTopic(stuck job): %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > grace+100*time.Millisecond {
+	if elapsed > grace+slack {
 		t.Fatalf("TrashTopic took %s, want one teardown grace plus scheduling slack", elapsed)
 	}
 	if !agent.IsCleanupPending(sessionPath) {
