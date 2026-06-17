@@ -241,7 +241,7 @@ func TestMigrateMCPToUserConfigOnUpgradeCollectsKnownSources(t *testing.T) {
 			"global": {"command": "legacy-should-not-win"}
 		}
 	}`)
-	writeLegacy(t, legacyUserConfigPath(), `
+	writeLegacy(t, filepath.Join(filepath.Dir(dest), "reasonix.toml"), `
 [[plugins]]
 name = "legacy-toml"
 command = "legacy-toml-bin"

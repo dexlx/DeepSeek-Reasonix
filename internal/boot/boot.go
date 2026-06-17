@@ -117,7 +117,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// written config + ~/.env are picked up this same boot. CLI Run also calls this
 	// before config-only commands; this call stays as the shared frontend fallback.
 	migrated, migErr := config.MigrateLegacyIfNeeded()
-	migratedMCP, mcpMigErr := config.MigrateMCPToUserConfigOnUpgrade([]string{root})
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
 		return nil, err
@@ -156,11 +155,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "config migration from ~/.reasonix failed: " + migErr.Error()})
 	} else if migrated != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
-	}
-	if mcpMigErr != nil {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "MCP global config migration failed: " + mcpMigErr.Error()})
-	} else if migratedMCP != nil && migratedMCP.Added > 0 {
-		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf("MCP migration: imported %d server(s) into %s", migratedMCP.Added, migratedMCP.To)})
 	}
 	migration.MigrateLegacyMemorySources(sink)
 	migration.MigrateLegacySessionSources(sink)
