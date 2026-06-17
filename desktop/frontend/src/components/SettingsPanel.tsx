@@ -71,7 +71,7 @@ export function SettingsPanel({
   agentRunning = false,
 }: {
   onClose: () => void;
-  onChanged: () => void;
+  onChanged: (settings?: SettingsView | null) => void;
   initialTab?: SettingsTab;
   initialFocus?: SettingsInitialFocus;
   agentRunning?: boolean;
@@ -92,7 +92,11 @@ export function SettingsPanel({
   // Play the modal exit animation, then let the parent unmount us.
   const { status, requestClose } = useDeferredClose(onClose, 240);
 
-  const reload = async () => setS(normalizeSettingsView(await app.Settings().catch(() => null)));
+  const reload = async () => {
+    const next = normalizeSettingsView(await app.Settings().catch(() => null));
+    setS(next);
+    return next;
+  };
   useEffect(() => {
     void reload();
     if (initialTab) setTab(initialTab === "providers" ? "models" : initialTab);
@@ -112,8 +116,8 @@ export function SettingsPanel({
     setWarning(null);
     try {
       const result = await fn();
-      await reload();
-      onChanged();
+      const next = await reload();
+      onChanged(next);
       if (typeof result === "string" && result.trim()) {
         setWarning(result.trim());
       }
@@ -128,8 +132,8 @@ export function SettingsPanel({
     setWarning(null);
     try {
       await fn();
-      await reload();
-      onChanged();
+      const next = await reload();
+      onChanged(next);
     } catch (e) {
       setErr(String((e as Error)?.message ?? e));
     }
@@ -4744,7 +4748,7 @@ function ruleListHint(list: string, t: ReturnType<typeof useT>): string {
 
 type HookScope = "global" | "project";
 
-function HooksSection({ onChanged }: { onChanged: () => void }) {
+function HooksSection({ onChanged }: { onChanged: (settings?: SettingsView | null) => void }) {
   const t = useT();
   const [scope, setScope] = useState<HookScope>("global");
   const [view, setView] = useState<HooksSettingsView | null>(null);

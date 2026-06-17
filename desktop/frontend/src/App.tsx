@@ -944,6 +944,12 @@ export default function App() {
     setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
   }, [t]);
 
+  const refreshSidebarImConnectionsFromSettings = useCallback(async (settings: Pick<SettingsView, "bot">) => {
+    const runtimeStatus = await loadBotRuntimeStatus();
+    setSidebarImConnections(sidebarImConnectionsFromBot(settings.bot, t, runtimeStatus));
+    setImTopicSources(sidebarImTopicSourcesFromBot(settings.bot, t));
+  }, [t]);
+
   const openBotSettings = useCallback(() => {
     closeTransientOverlays();
     setSidebarImDetailConnectionId("");
@@ -2986,8 +2992,13 @@ export default function App() {
             setSettingsFocus(null);
             setSettingsTarget(null);
           }}
-          onChanged={() => {
+          onChanged={(settings) => {
             void refreshMeta();
+            if (settings) {
+              applyDesktopPreferences(settings);
+              void refreshSidebarImConnectionsFromSettings(settings).catch((e) => console.warn("bot sidebar refresh failed", e));
+              return;
+            }
             void reloadSidebarImConnections().catch((e) => console.warn("bot sidebar refresh failed", e));
             void app.Settings()
               .then(applyDesktopPreferences)
