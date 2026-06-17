@@ -1640,10 +1640,11 @@ func mergeTOMLPlugins(paths []string) ([]PluginEntry, error) {
 	return merged, nil
 }
 
-// mergeTOMLProviders merges [[providers]] across TOML sources by provider name
-// (later source wins). Keep official legacy aliases distinct here: they can carry
-// different default models and effort capabilities, and the later desktop
-// normalization layer handles canonical Settings access.
+// mergeTOMLProviders merges [[providers]] across TOML sources by provider name.
+// User-global providers win over same-named project providers; project providers
+// only fill names the global config does not define. Keep official legacy aliases
+// distinct here: they can carry different default models and effort capabilities,
+// and the later desktop normalization layer handles canonical Settings access.
 func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSourceScope, bool, error) {
 	var merged []ProviderEntry
 	index := map[string]int{}
@@ -1666,12 +1667,16 @@ func mergeTOMLProviders(paths []string) ([]ProviderEntry, map[string]providerSou
 			normalizeProviderEffortFields(&p)
 			key := providerMergeKey(p)
 			if i, ok := index[key]; ok {
-				merged[i] = p
+				if sources[key] == providerSourceProject && source == providerSourceUser {
+					merged[i] = p
+					sources[key] = source
+				}
+				continue
 			} else {
 				index[key] = len(merged)
 				merged = append(merged, p)
+				sources[key] = source
 			}
-			sources[key] = source
 		}
 	}
 	return merged, sources, saw, nil
@@ -1731,14 +1736,14 @@ func LoadForEdit(path string) *Config {
 		return cfg
 	}
 	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
-	loadDotEnv()
+	loadDotEnvForEditPath(path)
 	cfg = Default()
 	normalizeConfigForEdit(cfg)
 	return cfg
 }
 
 func loadForEditStrict(path string) (*Config, error) {
-	loadDotEnv()
+	loadDotEnvForEditPath(path)
 	cfg := Default()
 	if _, err := os.Stat(path); err == nil {
 		if err := migrateLegacyMCPTiersFile(path); err != nil {
@@ -1761,6 +1766,15 @@ func normalizeConfigForEdit(cfg *Config) {
 	applyDeepSeekOfficialDefaultPricing(cfg)
 	backfillDeepSeekOfficialPrices(cfg)
 	normalizeEffortConfig(cfg)
+}
+
+func loadDotEnvForEditPath(path string) {
+	path = strings.TrimSpace(path)
+	if path == "" || isUserConfigPath(path) {
+		loadDotEnv()
+		return
+	}
+	loadDotEnvForRoot(filepath.Dir(path))
 }
 
 // mergeFile decodes a TOML file onto cfg if it exists. An absent file is not an error.

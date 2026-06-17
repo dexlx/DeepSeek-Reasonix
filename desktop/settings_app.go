@@ -553,6 +553,8 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	if userPath == "" {
 		return nil, "", fmt.Errorf("cannot resolve user config directory")
 	}
+	config.LoadGlobalCredentials()
+	config.LoadCredentialsForRoot(a.activeWorkspaceRoot())
 	if _, err := os.Stat(userPath); err == nil {
 		cfg := config.LoadForEdit(userPath)
 		normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath)
@@ -1364,10 +1366,61 @@ func (a *App) SetProviderKey(apiKeyEnv, value string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	if err := a.ensureProviderAccessForKey(apiKeyEnv); err != nil {
+		return "", err
+	}
 	if err := a.rebuild(); err != nil {
 		return "", err
 	}
 	return warning, nil
+}
+
+func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
+	apiKeyEnv = strings.TrimSpace(apiKeyEnv)
+	if apiKeyEnv == "" {
+		return nil
+	}
+	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	access := providerAccessSet(cfg.Desktop.ProviderAccess)
+	changed := false
+	addAccess := func(name string) {
+		name = config.CanonicalDesktopOfficialProviderName(name)
+		if name == "" || access[name] {
+			return
+		}
+		addProviderAccess(cfg, name)
+		access[name] = true
+		changed = true
+	}
+	for i := range cfg.Providers {
+		p := cfg.Providers[i]
+		if strings.TrimSpace(p.APIKeyEnv) != apiKeyEnv {
+			continue
+		}
+		if len(p.ModelList()) == 0 {
+			continue
+		}
+		addAccess(p.Name)
+	}
+	if !changed && apiKeyEnv == "DEEPSEEK_API_KEY" {
+		entries, _, err := officialProviderTemplate("deepseek", cfg.DeepSeekOfficialPricingLanguage())
+		if err != nil {
+			return err
+		}
+		for _, e := range entries {
+			if err := cfg.UpsertProvider(e); err != nil {
+				return err
+			}
+			addAccess(e.Name)
+		}
+	}
+	if !changed {
+		return nil
+	}
+	return cfg.SaveTo(path)
 }
 
 // ClearProviderKey removes a provider secret from the global credential store

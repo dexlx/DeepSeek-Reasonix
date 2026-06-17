@@ -33,6 +33,20 @@ func loadDotEnvForRoot(root string) {
 	}
 }
 
+// LoadCredentialsForRoot loads the credential environment for a workspace root
+// without decoding or mutating the full runtime config. Existing environment
+// variables keep the same first-wins precedence as LoadForRoot.
+func LoadCredentialsForRoot(root string) {
+	loadDotEnvForRoot(root)
+}
+
+// LoadGlobalCredentials loads credentials referenced by the user-global config
+// from the system credential store or ~/.reasonix/credentials, without consulting
+// a project .env first.
+func LoadGlobalCredentials() {
+	loadGlobalCredentialStore()
+}
+
 func legacyCredentialsPaths() []string {
 	current := UserCredentialsPath()
 	seen := map[string]bool{}

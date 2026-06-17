@@ -90,6 +90,50 @@ func TestLoadDotEnvReadsGlobalCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadGlobalCredentialsOverridesProjectDotEnvSource(t *testing.T) {
+	project := t.TempDir()
+	home := t.TempDir()
+
+	t.Setenv("HOME", home)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+
+	key := "KEY_GLOBAL_PRIORITY"
+	if err := os.MkdirAll(filepath.Dir(UserConfigPath()), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(UserConfigPath(), []byte(`
+[[providers]]
+name = "global-priority"
+kind = "openai"
+base_url = "https://example.invalid/v1"
+model = "m"
+api_key_env = "KEY_GLOBAL_PRIORITY"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(UserCredentialsPath(), []byte(key+"=from_credentials\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte(key+"=from_project\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv(key, "")
+	os.Unsetenv(key)
+
+	loadDotEnvForRoot(project)
+	if got := os.Getenv(key); got != "from_project" {
+		t.Fatalf("precondition: project .env should load first, got %q", got)
+	}
+	LoadGlobalCredentials()
+	got := ResolveCredentialForRoot(project, key)
+	if got.Value != "from_credentials" || got.Source.Kind != CredentialSourceCredentials {
+		t.Fatalf("credential = %+v, want global credentials to override project .env for settings reads", got)
+	}
+}
+
 func TestResolveCredentialSourceShowsProjectEnvShadowingCredentials(t *testing.T) {
 	cwd := t.TempDir()
 	cfgHome := t.TempDir()

@@ -100,6 +100,16 @@ func credentialEnvNamesForRoot(root string) []string {
 		cfg.Providers = providers
 	}
 
+	return credentialEnvNamesFromConfig(cfg)
+}
+
+func credentialEnvNamesForConfigPath(path string) []string {
+	cfg := Default()
+	_ = mergeFile(cfg, path)
+	return credentialEnvNamesFromConfig(cfg)
+}
+
+func credentialEnvNamesFromConfig(cfg *Config) []string {
 	seen := map[string]bool{}
 	var out []string
 	add := func(name string) {
@@ -125,14 +135,21 @@ func credentialEnvNamesForRoot(root string) []string {
 }
 
 func loadCredentialStoreForRoot(root string) {
-	names := credentialEnvNamesForRoot(root)
+	loadCredentialStoreForNames(credentialEnvNamesForRoot(root), false)
+}
+
+func loadGlobalCredentialStore() {
+	loadCredentialStoreForNames(credentialEnvNamesForConfigPath(userConfigLoadPath()), true)
+}
+
+func loadCredentialStoreForNames(names []string, overrideLocalDotEnv bool) {
 	if len(names) == 0 {
 		return
 	}
 	mode := credentialsStoreMode()
 	if mode == CredentialsStoreAuto || mode == CredentialsStoreKeyring {
 		for _, name := range names {
-			if _, exists := os.LookupEnv(name); exists {
+			if !credentialStoreShouldLoad(name, overrideLocalDotEnv) {
 				recordExistingCredentialSource(name)
 				continue
 			}
@@ -145,10 +162,55 @@ func loadCredentialStoreForRoot(root string) {
 	}
 	if mode == CredentialsStoreAuto || mode == CredentialsStoreFile {
 		if p := UserCredentialsPath(); p != "" {
-			loadDotEnvFileAs(p, CredentialSource{Kind: CredentialSourceCredentials, Path: p, Label: "Reasonix credentials"})
+			if overrideLocalDotEnv {
+				loadCredentialFileForNames(p, names, true, CredentialSource{Kind: CredentialSourceCredentials, Path: p, Label: "Reasonix credentials"})
+			} else {
+				loadDotEnvFileAs(p, CredentialSource{Kind: CredentialSourceCredentials, Path: p, Label: "Reasonix credentials"})
+			}
 		}
 		for _, p := range legacyCredentialsPaths() {
-			loadDotEnvFileAs(p, CredentialSource{Kind: CredentialSourceLegacy, Path: p, Label: "legacy Reasonix credentials"})
+			if overrideLocalDotEnv {
+				loadCredentialFileForNames(p, names, true, CredentialSource{Kind: CredentialSourceLegacy, Path: p, Label: "legacy Reasonix credentials"})
+			} else {
+				loadDotEnvFileAs(p, CredentialSource{Kind: CredentialSourceLegacy, Path: p, Label: "legacy Reasonix credentials"})
+			}
+		}
+	}
+}
+
+func credentialStoreShouldLoad(name string, overrideLocalDotEnv bool) bool {
+	value, exists := os.LookupEnv(name)
+	if !exists {
+		return true
+	}
+	if !overrideLocalDotEnv {
+		return false
+	}
+	source, ok := trackedCredential(name, value)
+	if !ok {
+		return false
+	}
+	switch source.Kind {
+	case CredentialSourceProjectEnv, CredentialSourceHomeEnv, CredentialSourceLegacy:
+		return true
+	default:
+		return false
+	}
+}
+
+func loadCredentialFileForNames(path string, names []string, overrideLocalDotEnv bool, source CredentialSource) {
+	for _, name := range names {
+		if !credentialStoreShouldLoad(name, overrideLocalDotEnv) {
+			recordExistingCredentialSource(name)
+			continue
+		}
+		value, ok := envFileValue(path, name)
+		if !ok || value == "" {
+			continue
+		}
+		if err := os.Setenv(name, value); err == nil {
+			source.Path = path
+			recordCredentialSource(name, value, source)
 		}
 	}
 }

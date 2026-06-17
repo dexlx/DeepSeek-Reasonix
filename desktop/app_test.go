@@ -535,6 +535,51 @@ status_bar_items = ["cost", "balance"]
 	}
 }
 
+func TestSettingsLoadsActiveWorkspaceCredentialsWithUserConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	project := robustTempDir(t)
+	launch := robustTempDir(t)
+	if err := os.WriteFile(filepath.Join(project, ".env"), []byte("WORKSPACE_ONLY_KEY=from-project\n"), 0o600); err != nil {
+		t.Fatalf("write project env: %v", err)
+	}
+	userCfg := config.LoadForEdit(config.UserConfigPath())
+	if err := userCfg.UpsertProvider(config.ProviderEntry{
+		Name:      "workspace-provider",
+		Kind:      "openai",
+		BaseURL:   "https://workspace.example/v1",
+		Model:     "workspace-model",
+		APIKeyEnv: "WORKSPACE_ONLY_KEY",
+	}); err != nil {
+		t.Fatalf("upsert provider: %v", err)
+	}
+	userCfg.Desktop.ProviderAccess = []string{"workspace-provider"}
+	if err := userCfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save user config: %v", err)
+	}
+	t.Setenv("WORKSPACE_ONLY_KEY", "")
+	os.Unsetenv("WORKSPACE_ONLY_KEY")
+	orig, _ := os.Getwd()
+	defer func() { _ = os.Chdir(orig) }()
+	if err := os.Chdir(launch); err != nil {
+		t.Fatalf("chdir launch: %v", err)
+	}
+
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{"project": {ID: "project", WorkspaceRoot: project}}
+	app.activeTabID = "project"
+	got := app.Settings()
+	for _, p := range got.Providers {
+		if p.Name == "workspace-provider" {
+			if !p.KeySet {
+				t.Fatalf("workspace provider keySet = false, want true from active workspace .env: %+v", p)
+			}
+			return
+		}
+	}
+	t.Fatalf("workspace provider missing from settings: %+v", got.Providers)
+}
+
 func TestSettingsSeedsMissingUserConfigFromLegacyProjectConfig(t *testing.T) {
 	isolateDesktopUserDirs(t)
 
@@ -864,6 +909,49 @@ api_key_env = "DEEPSEEK_API_KEY"
 	if cfg.DefaultModel != "deepseek/deepseek-v4-flash" {
 		t.Fatalf("default_model = %q, want deepseek/deepseek-v4-flash", cfg.DefaultModel)
 	}
+}
+
+func TestSetProviderKeyRestoresOfficialProviderAccess(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	os.Unsetenv("DEEPSEEK_API_KEY")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+default_model = "deepseek/deepseek-v4-flash"
+
+[desktop]
+provider_access = []
+
+[[providers]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := NewApp().SetProviderKey("DEEPSEEK_API_KEY", "sk-test"); err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if !providerAccessSet(cfg.Desktop.ProviderAccess)["deepseek"] {
+		t.Fatalf("provider_access = %+v, want deepseek restored", cfg.Desktop.ProviderAccess)
+	}
+	got := NewApp().Settings()
+	for _, p := range got.Providers {
+		if p.Name == "deepseek" {
+			if !p.Added || !p.KeySet {
+				t.Fatalf("deepseek settings = %+v, want added and key-set", p)
+			}
+			return
+		}
+	}
+	t.Fatalf("settings providers missing deepseek: %+v", got.Providers)
 }
 
 func TestAddOfficialProviderAccessUsesDesktopLanguagePricing(t *testing.T) {
