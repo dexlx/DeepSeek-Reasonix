@@ -149,7 +149,7 @@ func (p *ParallelTasksTool) Execute(ctx context.Context, args json.RawMessage) (
 	}
 
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Completed %d parallel tasks:\n", len(results)))
+	fmt.Fprintf(&b, "Completed %d parallel tasks:\n", len(results))
 	for i, r := range results {
 		if i > 0 {
 			b.WriteString("\n")
