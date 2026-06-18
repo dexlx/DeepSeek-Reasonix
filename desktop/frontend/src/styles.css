@@ -22289,6 +22289,468 @@ a[href] {
 .app--creation .footer,
 :root[data-theme-style] .app--creation .footer {
   border-top: 0;
+  padding: 0 clamp(22px, 5vw, 56px) clamp(22px, 4vh, 36px);
+  background: transparent;
+}
+
+.app--creation .composer-wrap,
+:root[data-theme-style] .app--creation .composer-wrap {
+  width: min(100%, 880px);
+  max-width: 880px;
+  margin: 0 auto;
+}
+
+.app--creation .composer-card,
+:root[data-theme-style] .app--creation .composer-card {
+  border: 1.3px solid color-mix(in srgb, var(--fg-faint) 14%, transparent);
+  border-radius: 16px;
+  background: color-mix(in srgb, var(--bg-elev) 6%, transparent);
+  isolation: isolate;
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fg-faint) 7%, transparent),
+    0 10px 26px color-mix(in srgb, #000 16%, transparent);
+  transition: border-color 0.8s var(--ease-out), box-shadow 0.95s var(--ease-out);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app--creation .composer-card::before,
+:root[data-theme-style] .app--creation .composer-card::before {
+  --creation-run-angle: 0deg;
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  padding: 1.3px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0.34;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 38%, #fff 4%), color-mix(in srgb, var(--accent) 9%, transparent) 18%, transparent 42%, transparent 58%, color-mix(in srgb, var(--accent) 9%, transparent) 82%, color-mix(in srgb, var(--accent) 38%, #fff 4%)) top / 100% 100% no-repeat,
+    linear-gradient(90deg, color-mix(in srgb, var(--accent) 32%, #fff 4%), color-mix(in srgb, var(--accent) 8%, transparent) 22%, transparent 44%, transparent 56%, color-mix(in srgb, var(--accent) 8%, transparent) 78%, color-mix(in srgb, var(--accent) 32%, #fff 4%)) bottom / 100% 100% no-repeat;
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  transition: opacity 1.15s var(--ease-out);
+}
+
+.app--creation .composer-card::after,
+:root[data-theme-style] .app--creation .composer-card::after {
+  --creation-hover-angle: 0deg;
+  content: "";
+  position: absolute;
+  inset: -1px;
+  z-index: -1;
+  padding: 1.3px;
+  border-radius: inherit;
+  pointer-events: none;
+  opacity: 0;
+  background: conic-gradient(
+    from var(--creation-hover-angle),
+    transparent 0deg,
+    transparent 54deg,
+    color-mix(in srgb, var(--accent) 10%, transparent) 72deg,
+    color-mix(in srgb, var(--accent) 52%, #fff 6%) 90deg,
+    color-mix(in srgb, var(--accent) 10%, transparent) 110deg,
+    transparent 132deg,
+    transparent 360deg
+  );
+  -webkit-mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  filter: drop-shadow(0 0 8px color-mix(in srgb, var(--accent) 22%, transparent));
+}
+
+.app--creation .composer-card:hover,
+.app--creation .composer-card:focus-within,
+:root[data-theme-style] .app--creation .composer-card:hover,
+:root[data-theme-style] .app--creation .composer-card:focus-within {
+  border-color: color-mix(in srgb, var(--fg-faint) 12%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--accent) 3%, transparent),
+    0 0 10px color-mix(in srgb, var(--accent) 4%, transparent),
+    0 12px 28px color-mix(in srgb, #000 18%, transparent);
+}
+
+.app--creation .composer-card:hover:not(:focus-within)::before,
+:root[data-theme-style] .app--creation .composer-card:hover:not(:focus-within)::before {
+  opacity: 0.08;
+  animation: none;
+}
+
+.app--creation .composer-card:not(.composer-card--running):focus-within::before,
+:root[data-theme-style] .app--creation .composer-card:not(.composer-card--running):focus-within::before {
+  opacity: 0.34;
+  animation: none;
+}
+
+.app--creation .composer-card:hover::after,
+.app--creation .composer-card:focus-within::after,
+:root[data-theme-style] .app--creation .composer-card:hover::after,
+:root[data-theme-style] .app--creation .composer-card:focus-within::after {
+  animation: creation-composer-border-arrive 1.9s cubic-bezier(0.22, 0.8, 0.18, 1) both;
+}
+
+.app--creation .composer-card--running:hover::after,
+.app--creation .composer-card--running:focus-within::after,
+:root[data-theme-style] .app--creation .composer-card--running:hover::after,
+:root[data-theme-style] .app--creation .composer-card--running:focus-within::after {
+  animation: none;
+  opacity: 0;
+}
+
+.app--creation .composer-card--running::before,
+:root[data-theme-style] .app--creation .composer-card--running::before {
+  opacity: 1;
+  background: conic-gradient(
+    from var(--creation-run-angle),
+    transparent 0deg,
+    transparent 42deg,
+    color-mix(in srgb, var(--accent) 28%, transparent) 62deg,
+    color-mix(in srgb, var(--accent) 96%, #fff 16%) 82deg,
+    color-mix(in srgb, var(--accent) 28%, transparent) 104deg,
+    transparent 126deg,
+    transparent 220deg,
+    color-mix(in srgb, var(--accent) 24%, transparent) 238deg,
+    color-mix(in srgb, var(--accent) 82%, #fff 14%) 258deg,
+    color-mix(in srgb, var(--accent) 24%, transparent) 280deg,
+    transparent 304deg,
+    transparent 360deg
+  );
+  filter: drop-shadow(0 0 12px color-mix(in srgb, var(--accent) 52%, transparent));
+  animation: creation-composer-border-run 3.2s linear infinite;
+}
+
+@property --creation-run-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@property --creation-hover-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+@keyframes creation-composer-border-run {
+  0% {
+    --creation-run-angle: 0deg;
+    opacity: 0.76;
+  }
+  42% {
+    opacity: 1;
+  }
+  58% {
+    opacity: 0.88;
+  }
+  100% {
+    --creation-run-angle: 360deg;
+    opacity: 0.76;
+  }
+}
+
+@keyframes creation-composer-border-settle {
+  0%, 62% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0.5;
+  }
+}
+
+@keyframes creation-composer-border-arrive {
+  0% {
+    --creation-hover-angle: 190deg;
+    opacity: 0;
+  }
+  22% {
+    opacity: 0.22;
+  }
+  48% {
+    opacity: 0.58;
+  }
+  78% {
+    --creation-hover-angle: 520deg;
+    opacity: 0.42;
+  }
+  100% {
+    --creation-hover-angle: 560deg;
+    opacity: 0;
+  }
+}
+
+@keyframes creation-composer-border-breathe {
+  0%, 100% {
+    opacity: 0.42;
+  }
+  50% {
+    opacity: 0.58;
+  }
+}
+
+.app--creation .composer-card:focus-within,
+:root[data-theme-style] .app--creation .composer-card:focus-within {
+  border-color: color-mix(in srgb, var(--fg-faint) 16%, transparent);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--fg-faint) 8%, transparent),
+    0 12px 30px color-mix(in srgb, #000 18%, transparent);
+  transform: none;
+}
+
+.app--creation .composer-resize-handle::before,
+:root[data-theme-style] .app--creation .composer-resize-handle::before,
+.app--creation .composer-resize-handle:hover::before,
+.app--creation .composer-resize-handle:focus-visible::before,
+.app--creation .composer-card--resizing .composer-resize-handle::before,
+:root[data-theme-style] .app--creation .composer-resize-handle:hover::before,
+:root[data-theme-style] .app--creation .composer-resize-handle:focus-visible::before,
+:root[data-theme-style] .app--creation .composer-card--resizing .composer-resize-handle::before {
+  opacity: 0 !important;
+  background: transparent !important;
+  box-shadow: none !important;
+}
+
+.app--creation .composer,
+:root[data-theme-style] .app--creation .composer {
+  min-height: 62px;
+  padding: 13px 11px 12px 17px;
+  border-bottom-color: transparent;
+}
+
+.app--creation .composer__caret,
+:root[data-theme-style] .app--creation .composer__caret {
+  display: none;
+}
+
+.app--creation .composer__input,
+:root[data-theme-style] .app--creation .composer__input {
+  color: var(--fg);
+  font-size: 14.5px;
+  line-height: 1.55;
+}
+
+.app--creation .composer__input::placeholder,
+:root[data-theme-style] .app--creation .composer__input::placeholder {
+  color: color-mix(in srgb, var(--fg-faint) 86%, transparent);
+}
+
+.app--creation .composer__btn,
+:root[data-theme-style] .app--creation .composer__btn {
+  width: 34px;
+  height: 34px;
+  margin-right: 8px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+}
+
+.app--creation .composer__btn--send,
+:root[data-theme-style] .app--creation .composer__btn--send {
+  background: color-mix(in srgb, var(--accent) 90%, #fff 6%);
+  color: #fff;
+  box-shadow: 0 4px 10px color-mix(in srgb, var(--accent) 12%, transparent);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app--creation .composer__btn--send:not(:disabled):hover,
+:root[data-theme-style] .app--creation .composer__btn--send:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 94%, #fff 10%);
+  transform: none;
+}
+
+.app--creation .composer__btn--send svg,
+:root[data-theme-style] .app--creation .composer__btn--send svg {
+  width: 14px;
+  height: 14px;
+}
+
+.app--creation .composer-meta,
+:root[data-theme-style] .app--creation .composer-meta {
+  min-height: 34px;
+  padding: 4px 10px 6px;
+}
+
+.app--creation .composer-meta__params,
+:root[data-theme-style] .app--creation .composer-meta__params {
+  gap: 7px;
+  width: 100%;
+}
+
+.app--creation .composer-meta__control,
+:root[data-theme-style] .app--creation .composer-meta__control {
+  height: 28px;
+}
+
+.app--creation .composer-meta__control--intent,
+:root[data-theme-style] .app--creation .composer-meta__control--intent {
+  gap: 5px;
+  max-width: none;
+}
+
+.app--creation .composer-meta__control--approval,
+:root[data-theme-style] .app--creation .composer-meta__control--approval {
+  flex: 0 0 auto;
+  min-width: 0;
+  max-width: none;
+}
+
+.app--creation .composer-meta__control--model,
+:root[data-theme-style] .app--creation .composer-meta__control--model {
+  flex: 0 1 auto;
+  margin-left: auto;
+  max-width: min(280px, 34vw);
+}
+
+.app--creation .composer-meta__control--effort,
+:root[data-theme-style] .app--creation .composer-meta__control--effort {
+  flex: 0 0 auto;
+  width: auto;
+  max-width: none;
+}
+
+.app--creation .composer-modebar,
+.app--creation .composer-mode-chip,
+.app--creation .composer-more-trigger,
+.app--creation .composer-meta .modelsw__trigger,
+.app--creation .composer-context__item,
+:root[data-theme-style] .app--creation .composer-modebar,
+:root[data-theme-style] .app--creation .composer-mode-chip,
+:root[data-theme-style] .app--creation .composer-more-trigger,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__trigger,
+:root[data-theme-style] .app--creation .composer-context__item {
+  border-color: color-mix(in srgb, var(--fg-faint) 11%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 7%, transparent);
+  box-shadow: none;
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+.app--creation .composer-action-trigger:hover:not(:disabled),
+.app--creation .composer-action-trigger:focus-visible,
+.app--creation .composer-action-trigger--open,
+:root[data-theme-style] .app--creation .composer-action-trigger:hover:not(:disabled),
+:root[data-theme-style] .app--creation .composer-action-trigger:focus-visible,
+:root[data-theme-style] .app--creation .composer-action-trigger--open {
+  background: color-mix(in srgb, var(--fg-faint) 5%, transparent);
+}
+
+.app--creation .composer-action-trigger,
+:root[data-theme-style] .app--creation .composer-action-trigger {
+  flex-basis: 28px;
+  width: 28px;
+  height: 28px;
+}
+
+.app--creation .composer-action-trigger svg,
+:root[data-theme-style] .app--creation .composer-action-trigger svg {
+  width: 15px;
+  height: 15px;
+}
+
+.app--creation .composer-modebar,
+:root[data-theme-style] .app--creation .composer-modebar {
+  --creation-mode-cell: 28px;
+  flex: 0 0 auto;
+  width: auto;
+  height: 28px;
+  grid-template-columns: repeat(3, var(--creation-mode-cell));
+  padding: 2px;
+}
+
+.app--creation .composer-modebar__thumb,
+:root[data-theme-style] .app--creation .composer-modebar__thumb {
+  left: 4px;
+  width: 24px;
+  border-color: color-mix(in srgb, #3b82f6 28%, transparent);
+  background: color-mix(in srgb, #3b82f6 34%, transparent);
+  box-shadow: none;
+  transform: translateX(calc(var(--composer-modebar-index) * var(--creation-mode-cell)));
+}
+
+.app--creation .composer-modebar--approval[data-mode="auto"] .composer-modebar__thumb,
+:root[data-theme-style] .app--creation .composer-modebar--approval[data-mode="auto"] .composer-modebar__thumb {
+  border-color: color-mix(in srgb, #22c55e 28%, transparent);
+  background: color-mix(in srgb, #22c55e 34%, transparent);
+}
+
+.app--creation .composer-modebar--approval[data-mode="yolo"] .composer-modebar__thumb,
+:root[data-theme-style] .app--creation .composer-modebar--approval[data-mode="yolo"] .composer-modebar__thumb {
+  border-color: color-mix(in srgb, #f97316 30%, transparent);
+  background: color-mix(in srgb, #f97316 36%, transparent);
+}
+
+.app--creation .composer-modebar__item,
+:root[data-theme-style] .app--creation .composer-modebar__item {
+  justify-self: center;
+  align-self: center;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+}
+
+.app--creation .composer-modebar__item span,
+:root[data-theme-style] .app--creation .composer-modebar__item span {
+  display: none;
+}
+
+.app--creation .composer-modebar__item svg,
+:root[data-theme-style] .app--creation .composer-modebar__item svg {
+  width: 13px;
+  height: 13px;
+}
+
+.app--creation .composer-meta .modelsw__trigger,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__trigger {
+  width: auto;
+  height: 28px;
+  gap: 5px;
+  padding: 0 10px;
+  font-size: 12px;
+}
+
+.app--creation .composer-meta .modelsw,
+:root[data-theme-style] .app--creation .composer-meta .modelsw {
+  width: auto;
+}
+
+.app--creation .composer-meta .modelsw__kind,
+.app--creation .composer-meta .modelsw__provider,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__kind,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__provider {
+  display: none;
+}
+
+.app--creation .composer-meta .modelsw__trigger svg,
+:root[data-theme-style] .app--creation .composer-meta .modelsw__trigger svg {
+  width: 10px;
+  height: 10px;
+}
+
+.app--creation .composer-meta__control--effort .modelsw__trigger,
+:root[data-theme-style] .app--creation .composer-meta__control--effort .modelsw__trigger {
+  min-width: 52px;
+}
+
+.app--creation .composer-meta__control--effort .modelsw__label,
+:root[data-theme-style] .app--creation .composer-meta__control--effort .modelsw__label {
+  flex: 0 1 auto;
+}
+
+@media (max-width: 760px) {
+  .app--creation .footer,
+  :root[data-theme-style] .app--creation .footer {
+    padding: 0 12px 14px;
+  }
+
+  .app--creation .composer-wrap,
+  :root[data-theme-style] .app--creation .composer-wrap {
+    width: 100%;
+  }
 }
 
 :root[data-theme-style] .app--creation .statusbar {
