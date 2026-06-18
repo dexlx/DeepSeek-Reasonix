@@ -4301,6 +4301,9 @@ func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
 	if ctrl == nil {
 		return 0, fmt.Errorf("no active session")
 	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		return 0, rebuildControllerActiveWorkError("MCP server")
+	}
 	entry := config.PluginEntry{
 		Name:    in.Name,
 		Type:    normalizeMCPTransport(in.Transport),
@@ -4322,6 +4325,9 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
+	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
 	}
 	if strings.TrimSpace(in.Name) != "" && strings.TrimSpace(in.Name) != name {
 		return fmt.Errorf("renaming MCP servers is not supported; remove and add a new server")
@@ -4379,6 +4385,9 @@ func (a *App) RemoveMCPServer(name string) error {
 	if tab == nil || tab.Ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
+	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
+	}
 	disconnected := tab.Ctrl.DisconnectMCPServer(name)
 	removed, err := a.removeDesktopMCPServer(name)
 	if err != nil {
@@ -4401,6 +4410,9 @@ func (a *App) ReconnectMCPServer(name string) error {
 	tab := a.activeTab()
 	if tab == nil || tab.Ctrl == nil {
 		return fmt.Errorf("no active session")
+	}
+	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
 	}
 	tab.Ctrl.DisconnectMCPServer(name)
 	if h := tab.Ctrl.Host(); h != nil {
@@ -4435,6 +4447,9 @@ func (a *App) ClearMCPServerAuthentication(name string) error {
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
+	}
 	if _, _, _, err := config.ClearPluginAuthenticationInSource(name); err != nil {
 		return err
 	}
@@ -4452,6 +4467,9 @@ func (a *App) SetMCPServerEnabled(name string, enabled bool) error {
 	tab := a.activeTab()
 	if tab == nil || tab.Ctrl == nil {
 		return fmt.Errorf("no active session")
+	}
+	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
 	}
 	configuredEntry, hasConfiguredEntry, err := a.desktopMCPServerForEdit(name)
 	if err != nil {
@@ -4510,6 +4528,10 @@ func (a *App) connectConfiguredMCPServerForTab(tab *WorkspaceTab, name string) (
 // retired tier field.
 func (a *App) SetMCPServerTier(name, tier string) error {
 	tier = normalizeMCPTier(tier)
+	tab := a.activeTab()
+	if tab != nil && controllerHasActiveRuntimeWork(tab.Ctrl) {
+		return rebuildControllerActiveWorkError("MCP server")
+	}
 	updated, found, err := a.desktopMCPServerForEdit(name)
 	if err != nil {
 		return err
@@ -4525,7 +4547,6 @@ func (a *App) SetMCPServerTier(name, tier string) error {
 	if err := a.saveDesktopMCPServer(updated); err != nil {
 		return err
 	}
-	tab := a.activeTab()
 	if tier != "lazy" && tab != nil && tab.Ctrl != nil && !mcpConnected(tab.Ctrl, name) {
 		if _, err := tab.Ctrl.ConnectMCPServer(updated); err != nil {
 			recordMCPFailure(tab.Ctrl, updated, err)
@@ -6107,6 +6128,9 @@ func (a *App) ConnectKey(apiKey string) (string, error) {
 	apiKey = strings.TrimSpace(apiKey)
 	if apiKey == "" {
 		return "", fmt.Errorf("key is required")
+	}
+	if tab := a.activeTab(); tab != nil && controllerHasActiveRuntimeWork(tab.Ctrl) {
+		return "", rebuildControllerActiveWorkError("provider key")
 	}
 	ctx, cancel := context.WithTimeout(a.ctx, 8*time.Second)
 	defer cancel()

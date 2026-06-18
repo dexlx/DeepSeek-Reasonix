@@ -965,6 +965,24 @@ api_key_env = "DEEPSEEK_API_KEY"
 	}
 }
 
+func TestAddOfficialProviderAccessRejectsBackgroundJobsBeforeSavingKey(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	os.Unsetenv("DEEPSEEK_API_KEY")
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.setTestCtrl(newBackgroundJobController(t, "provider-access-job"), "deepseek-flash/deepseek-v4-flash")
+
+	_, err := app.AddOfficialProviderAccess("deepseek", "sk-test")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("AddOfficialProviderAccess with background job error = %v, want active-work guard", err)
+	}
+	if data, readErr := os.ReadFile(config.UserCredentialsPath()); readErr == nil && strings.Contains(string(data), "DEEPSEEK_API_KEY") {
+		t.Fatalf("provider key should not be saved after rejected add access:\n%s", data)
+	}
+}
+
 func TestSetProviderKeyRestoresOfficialProviderAccess(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv("DEEPSEEK_API_KEY", "")
@@ -1529,6 +1547,95 @@ func TestDeleteProviderRejectsAffectedBackgroundJobs(t *testing.T) {
 	}
 	if _, ok := config.LoadForEdit(config.UserConfigPath()).Provider("prov-a"); !ok {
 		t.Fatal("provider should remain after rejected deletion")
+	}
+}
+
+func TestDeleteProviderRejectsUnaffectedBackgroundJobsBeforeSavingConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("REASONIX_TEST_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-b/model-b1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-a", Kind: "openai", BaseURL: "https://a.example.com", Model: "model-a1", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.setTestCtrl(newBackgroundJobController(t, "provider-unaffected-job"), "prov-b/model-b1")
+
+	err := app.DeleteProvider("prov-a")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("DeleteProvider with unaffected background job error = %v, want active-work guard", err)
+	}
+	if _, ok := config.LoadForEdit(config.UserConfigPath()).Provider("prov-a"); !ok {
+		t.Fatal("unaffected provider should remain after rejected deletion")
+	}
+}
+
+func TestRemoveBuiltInProviderAccessRejectsBackgroundJobsBeforeSavingConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+default_model = "mimo-pro/mimo-v2.5-pro"
+
+[desktop]
+provider_access = ["deepseek-flash", "mimo-pro"]
+
+[[providers]]
+name = "deepseek-flash"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[[providers]]
+name = "mimo-pro"
+kind = "openai"
+base_url = "https://token-plan-cn.xiaomimimo.com/v1"
+model = "mimo-v2.5-pro"
+api_key_env = "MIMO_API_KEY"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.setTestCtrl(newBackgroundJobController(t, "provider-access-unaffected-job"), "mimo-token-plan/mimo-v2.5-pro")
+
+	err := app.RemoveProviderAccess("deepseek")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("RemoveProviderAccess with background job error = %v, want active-work guard", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	access := providerAccessSet(cfg.Desktop.ProviderAccess)
+	if !access["deepseek"] && !access["deepseek-flash"] {
+		t.Fatalf("provider_access should still contain deepseek after rejected removal: %+v", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestConnectKeyRejectsBackgroundJobsBeforeSavingKey(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	t.Setenv("DEEPSEEK_API_KEY", "")
+	os.Unsetenv("DEEPSEEK_API_KEY")
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.setTestCtrl(newBackgroundJobController(t, "connect-key-job"), "deepseek-flash/deepseek-v4-flash")
+
+	_, err := app.ConnectKey("sk-test")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("ConnectKey with background job error = %v, want active-work guard", err)
+	}
+	if data, readErr := os.ReadFile(config.UserCredentialsPath()); readErr == nil && strings.Contains(string(data), "DEEPSEEK_API_KEY") {
+		t.Fatalf("onboarding key should not be saved after rejected connect:\n%s", data)
 	}
 }
 
@@ -2858,6 +2965,21 @@ tier = "lazy"
 	t.Fatalf("time missing after disable: %+v", view.Servers)
 }
 
+func TestSetMCPServerEnabledRejectsBackgroundJobs(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	app := NewApp()
+	app.setTestCtrl(newBackgroundJobController(t, "mcp-enabled-job"), "")
+
+	err := app.SetMCPServerEnabled("time", false)
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("SetMCPServerEnabled with background job error = %v, want active-work guard", err)
+	}
+	if tab := app.activeTab(); tab == nil || len(tab.disabledMCP) != 0 {
+		t.Fatalf("disabled MCP state changed after rejected toggle: %+v", tab)
+	}
+}
+
 func TestEditAndRemoveConfiguredMCPWithBuiltInName(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
@@ -3334,6 +3456,38 @@ tier = "lazy"
 	t.Fatalf("broken MCP missing from Capabilities: %+v", view.Servers)
 }
 
+func TestSetMCPServerTierRejectsBackgroundJobsBeforeSavingConfig(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+[[plugins]]
+name = "broken"
+command = "reasonix-missing-mcp-binary"
+tier = "lazy"
+`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp()
+	app.setTestCtrl(newBackgroundJobController(t, "mcp-tier-job"), "")
+
+	err := app.SetMCPServerTier("broken", "background")
+	if err == nil || !strings.Contains(err.Error(), "stop background jobs") {
+		t.Fatalf("SetMCPServerTier with background job error = %v, want active-work guard", err)
+	}
+	data, readErr := os.ReadFile(config.UserConfigPath())
+	if readErr != nil {
+		t.Fatalf("read config: %v", readErr)
+	}
+	if !strings.Contains(string(data), `tier = "lazy"`) {
+		t.Fatalf("plugin config changed after rejected tier update:\n%s", data)
+	}
+}
+
 func TestCapabilitiesMigratesFailedMCPConfiguredTierAfterRestart(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
@@ -3469,6 +3623,23 @@ func waitNotRunning(t *testing.T, ctrl *control.Controller) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func newBackgroundJobController(t *testing.T, label string) *control.Controller {
+	t.Helper()
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, label+".jsonl")
+	jm := jobs.NewManager(event.Discard)
+	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test", Jobs: jm})
+	t.Cleanup(ctrl.Close)
+	jm.StartForSession(agent.BranchID(path), "bash", label, func(ctx context.Context, _ io.Writer) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	})
+	return ctrl
 }
 
 func hasLevel(levels []string, want string) bool {
