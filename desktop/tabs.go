@@ -1114,11 +1114,11 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 	for _, id := range a.orderedTabIDsLocked() {
 		tab := a.tabs[id]
 		if a.blankTabMatchesTargetLocked(tab, scope, workspaceRoot) {
-			a.activeTabID = tab.ID
 			if err := resetReusableBlankTabTitle(tab, scope, workspaceRoot); err != nil {
 				a.mu.Unlock()
 				return TabMeta{}, err
 			}
+			a.activeTabID = tab.ID
 			meta := a.tabMeta(tab, true)
 			a.saveTabsLocked()
 			a.mu.Unlock()
