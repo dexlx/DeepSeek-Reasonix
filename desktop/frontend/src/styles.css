@@ -1563,6 +1563,11 @@
 }
 
 :root[data-theme="light"][data-theme-style] .app--creation {
+  --creation-canvas-bg: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--accent) 4%, #ffffff) 0%,
+    color-mix(in srgb, var(--accent) 1.5%, #ffffff) 100%
+  );
   --stage: #ececef;
   --surface: #ffffff;
   --surface-2: #ffffff;
@@ -1614,6 +1619,11 @@
 
 @media (prefers-color-scheme: light) {
   :root[data-theme-style]:not([data-theme]) .app--creation {
+    --creation-canvas-bg: linear-gradient(
+      180deg,
+      color-mix(in srgb, var(--accent) 4%, #ffffff) 0%,
+      color-mix(in srgb, var(--accent) 1.5%, #ffffff) 100%
+    );
     --stage: #ececef;
     --surface: #ffffff;
     --surface-2: #ffffff;
@@ -22452,6 +22462,24 @@ a[href] {
   grid-template-rows: minmax(0, 1fr);
 }
 
+:root[data-theme="light"][data-theme-style] .app--creation,
+:root[data-theme="light"][data-theme-style] .app--creation .layout,
+:root[data-theme="light"][data-theme-style] .app--creation .chat-pane,
+:root[data-theme="light"][data-theme-style] .app--creation .transcript,
+:root[data-theme="light"][data-theme-style] .app--creation .footer {
+  background: var(--creation-canvas-bg);
+}
+
+@media (prefers-color-scheme: light) {
+  :root[data-theme-style]:not([data-theme]) .app--creation,
+  :root[data-theme-style]:not([data-theme]) .app--creation .layout,
+  :root[data-theme-style]:not([data-theme]) .app--creation .chat-pane,
+  :root[data-theme-style]:not([data-theme]) .app--creation .transcript,
+  :root[data-theme-style]:not([data-theme]) .app--creation .footer {
+    background: var(--creation-canvas-bg);
+  }
+}
+
 .app--creation .layout--creation-chrome-hidden .sidebar,
 .app--creation .layout--creation-chrome-hidden .chat-pane,
 .app--creation .layout--creation-chrome-hidden .sidebar-resizer,
@@ -22472,12 +22500,19 @@ a[href] {
   padding-top: 14px;
   padding-bottom: 0;
   border-bottom: 0;
+  background: transparent;
 }
 
 .app--creation .topicbar__title-row,
 :root[data-theme-style] .app--creation .topicbar__title-row {
   gap: 0;
+  background: transparent;
   transform: translateY(-3px);
+}
+
+.app--creation .topicbar__identity,
+:root[data-theme-style] .app--creation .topicbar__identity {
+  background: transparent;
 }
 
 .app--creation .topicbar__title-row h1,
