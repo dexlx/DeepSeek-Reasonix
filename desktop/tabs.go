@@ -3729,6 +3729,8 @@ type topicSummary struct {
 }
 
 func (a *App) ListProjectTree() []ProjectNode {
+	os.Stderr.WriteString(fmt.Sprintf("// ListProjectTree: scanning %d session dirs...\n", len(a.knownSessionDirs())))
+
 	migrateLegacySessionsIntoGlobalTopics(config.SessionDir())
 	f := loadProjectsFile()
 	out := []ProjectNode{}
@@ -3769,6 +3771,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			// Compute signature cheaply (ReadDir + Stat, no file content).
 			sig, _, err := topicSessionDirSnapshot(dir)
 			if err != nil {
+				os.Stderr.WriteString(fmt.Sprintf("// ListProjectTree: snapshot err %s: %v\n", filepath.Base(dir), err))
 				return
 			}
 
@@ -3982,6 +3985,8 @@ func (a *App) ListProjectTree() []ProjectNode {
 		node.Children = children
 		out = append(out, node)
 	}
+
+	os.Stderr.WriteString(fmt.Sprintf("// ListProjectTree: done (%d sessions, %d nodes)\n", len(sessionInfos), len(out)))
 
 	return applyPinnedProjectOrder(applyProjectTreeOrder(out, f.SidebarOrder), f.PinnedProjects)
 }
@@ -4447,7 +4452,11 @@ func (a *App) knownSessionDirs() []string {
 	add(config.SessionDir()) // legacy/global sessions from earlier desktop builds
 	add(desktopSessionDir(globalWorkspaceRoot()))
 	for _, project := range loadProjectsFile().Projects {
-		add(desktopSessionDir(project.Root))
+		dir := desktopSessionDir(project.Root)
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			continue // project dir removed or external volume unmounted
+		}
+		add(dir)
 	}
 	a.mu.RLock()
 	for _, tab := range a.tabs {
