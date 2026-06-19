@@ -758,7 +758,31 @@ func (h *Host) AddWithLifecycle(lifeCtx, callCtx context.Context, s Spec) ([]too
 	if h.has(s.Name) {
 		return nil, serverAlreadyConnectedError(s.Name)
 	}
-	return h.addConnectedWithLifecycle(lifeCtx, callCtx, s)
+	attempt, owner := h.beginSpawn(s.Name)
+	if !owner {
+		select {
+		case <-attempt.done:
+			if attempt.err != nil {
+				return nil, attempt.err
+			}
+			return append([]tool.Tool(nil), attempt.tools...), nil
+		case <-callCtx.Done():
+			return nil, callCtx.Err()
+		case <-lifeCtx.Done():
+			return nil, lifeCtx.Err()
+		}
+	}
+	var tools []tool.Tool
+	var err error
+	defer func() { h.endSpawn(s.Name, tools, err) }()
+	// Double-check after acquiring the spawn token: another caller may have
+	// connected the server between our h.has check and beginSpawn.
+	if h.has(s.Name) {
+		err = serverAlreadyConnectedError(s.Name)
+		return nil, err
+	}
+	tools, err = h.addConnectedWithLifecycle(lifeCtx, callCtx, s)
+	return tools, err
 }
 
 func (h *Host) addConnected(ctx context.Context, s Spec) ([]tool.Tool, error) {
