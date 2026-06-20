@@ -214,7 +214,7 @@ export function HeartbeatPanel({ open, onClose, startNew, onOpenTopic }: Heartbe
         </header>
 
         {editing ? (
-          <TaskEditor task={editing} onSave={handleSaveEdit} onCancel={() => setEditing(null)} onDelete={() => { handleDelete(editing.id); setEditing(null); }} />
+          <TaskEditor key={editing.id} task={editing} onSave={handleSaveEdit} onCancel={() => setEditing(null)} onDelete={() => { handleDelete(editing.id); setEditing(null); }} />
         ) : (
           <div className="heartbeat-modal__body">
             <div className="heartbeat-toolbar">
@@ -762,7 +762,7 @@ function TaskEditor({
 
   // Detect frequency type from interval value
   const [freqType, setFreqType] = useState<"cycle" | "interval">(
-    task.interval.includes("|") ? "cycle" : "interval"
+    (task.interval && task.interval.includes("|")) ? "cycle" : "interval"
   );
 
   const isNew = !task.createdAt;
