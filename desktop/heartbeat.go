@@ -245,13 +245,13 @@ func (e *HeartbeatEngine) executeTask(t HeartbeatTask) HeartbeatTask {
 
 	// Apply the task's approval mode to the controller so that permission
 	// prompts are handled as configured (default "yolo" = no blocking).
-	if ctrl := e.app.ctrlByTabID(tabMeta.ID); ctrl != nil {
-		ctrl.SetToolApprovalMode(normalizeHeartbeatApprovalMode(t.ApprovalMode))
-	}
-
 	// Normalize and store back so the persisted JSON gets a real value
 	// (e.g. "yolo") rather than "" or null.
-	t.ApprovalMode = normalizeHeartbeatApprovalMode(t.ApprovalMode)
+	mode := normalizeHeartbeatApprovalMode(t.ApprovalMode)
+	t.ApprovalMode = mode
+	if ctrl := e.app.ctrlByTabID(tabMeta.ID); ctrl != nil {
+		ctrl.SetToolApprovalMode(mode)
+	}
 
 	// Submit as a plain user turn so scheduled prompts cannot invoke desktop
 	// shell or slash-command handlers such as "!cmd", "/clear", or "/compact".

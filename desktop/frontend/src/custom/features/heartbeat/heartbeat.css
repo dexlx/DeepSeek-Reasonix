@@ -756,6 +756,25 @@
   line-height: 1.4;
 }
 
+.heartbeat-editor__tw-add {
+  cursor: pointer;
+  color: var(--fg-faint);
+}
+
+.heartbeat-editor__tw-sep {
+  font-size: 11px;
+}
+
+.heartbeat-editor__tw-clear {
+  padding: 0 4px;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--fg-muted);
+  border: none;
+  background: none;
+  cursor: pointer;
+}
+
 /* ── frequency: unified components ──────────────────────────────── */
 /* All freq-* components share height: 32px for visual consistency */
 

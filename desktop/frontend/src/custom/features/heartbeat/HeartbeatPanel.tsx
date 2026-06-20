@@ -534,7 +534,7 @@ const WEEKDAYS = [
   { key: "sun", label: "周日" },
 ] as const;
 
-const ALL_WEEKDAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"];
+const ALL_WEEKDAYS = WEEKDAYS.map(w => w.key);
 
 function CycleEditor({
   draft,
@@ -558,6 +558,8 @@ function CycleEditor({
   const [yearMonth, setYearMonth] = useState(cycleDays.split("-")[0] || "1");
   const [yearDay, setYearDay] = useState(cycleDays.split("-")[1] || "1");
   const [timeVal, setTimeVal] = useState(cycleTime);
+
+  const hasWeekdays = cycleType === "daily" || cycleType === "weekly" || cycleType === "biweekly";
 
   // Build interval string when config changes
   const buildInterval = useCallback((ct: string, days: string[], tm: string) => {
@@ -619,7 +621,7 @@ function CycleEditor({
 
   const onTimeChange = useCallback((tm: string) => {
     setTimeVal(tm);
-    const days = cycleType === "daily" || cycleType === "weekly" || cycleType === "biweekly" ? selectedDays
+    const days = hasWeekdays ? selectedDays
       : cycleType === "monthly" ? [monthDay]
       : cycleType === "yearly" ? [yearMonth, yearDay]
       : [];
@@ -692,7 +694,7 @@ function CycleEditor({
           onChange={(e) => onTimeChange(e.target.value)}
         />
 
-        {(cycleType === "daily" || cycleType === "weekly" || cycleType === "biweekly") && (
+        {hasWeekdays && (
           <div className="set-seg">
             {WEEKDAYS.map((wd) => (
               <button
@@ -930,8 +932,7 @@ function TaskEditor({
               {draft.timeWindowStart || draft.timeWindowEnd ? (
                 <>{t("heartbeat.timeWindow")}</>
               ) : (
-                <span
-                  style={{ cursor: "pointer", color: "var(--fg-faint)" }}
+                <span className="heartbeat-editor__tw-add"
                   onClick={() => setDraft((prev) => ({ ...prev, timeWindowStart: "09:00", timeWindowEnd: "17:00" }))}
                 >
                   + {t("heartbeat.timeWindow")}
@@ -947,7 +948,7 @@ function TaskEditor({
                   onChange={(e) => setDraft((prev) => ({ ...prev, timeWindowStart: e.target.value || undefined }))}
                   placeholder="09:00"
                 />
-                <span className="heartbeat-editor__freq-label" style={{ fontSize: "11px" }}>—</span>
+                <span className="heartbeat-editor__freq-label heartbeat-editor__tw-sep">—</span>
                 <input
                   className="heartbeat-editor__freq-input heartbeat-editor__freq-input--time"
                   type="time"
@@ -956,9 +957,7 @@ function TaskEditor({
                   placeholder="17:00"
                 />
                 <button
-                  className="heartbeat-card__open-btn"
-                  type="button"
-                  style={{ padding: "0 4px", fontSize: "13px", lineHeight: "20px", color: "var(--fg-muted)", border: "none", background: "none", cursor: "pointer" }}
+                  className="heartbeat-card__open-btn heartbeat-editor__tw-clear"
                   onClick={() => setDraft((prev) => ({ ...prev, timeWindowStart: undefined, timeWindowEnd: undefined }))}
                   title="清除时间窗口"
                 >
