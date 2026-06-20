@@ -140,6 +140,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if modelName == "" {
 		modelName = cfg.DefaultModel
 	}
+	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
 	tokenEconomy := tokenMode == TokenModeEconomy
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)

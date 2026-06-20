@@ -55,8 +55,8 @@
 
 - **Config-driven.** Providers, the agent, enabled tools, and plugins are all
   declared in `reasonix.toml`. No hardcoded models.
-- **Multi-model & composable.** DeepSeek (flash/pro) and MiMo ship as presets;
-  any OpenAI-compatible endpoint is a config entry, not new code. Optionally run
+- **Multi-model & composable.** DeepSeek ships as a preset; any
+  OpenAI-compatible endpoint is a config entry, not new code. Optionally run
   two models together (executor + planner) in separate, cache-stable sessions.
 - **Plugin-driven.** External tools run as subprocesses over stdio JSON-RPC
   (MCP-compatible). Built-in tools self-register at compile time.
@@ -93,7 +93,7 @@ reasonix setup                      # config wizard → ./reasonix.toml
 export DEEPSEEK_API_KEY=sk-...      # or let setup save it to the credential store
 reasonix                            # then run /init to generate AGENTS.md (project memory)
 reasonix run "implement the TODOs in main.go"
-reasonix run --model mimo-pro "add unit tests for this function"
+reasonix run --model deepseek-pro "add unit tests for this function"
 echo "explain this code" | reasonix run
 ```
 

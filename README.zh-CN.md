@@ -53,7 +53,7 @@
 
 - **配置驱动**：provider、agent、启用的工具、插件全部在 `reasonix.toml` 中声明，
   内核无硬编码模型。
-- **多模型 · 可组合**：DeepSeek（flash/pro）与 MiMo 作为预设内置；任何 OpenAI 兼容
+- **多模型 · 可组合**：DeepSeek 作为预设内置；任何 OpenAI 兼容
   端点都只是一条配置。可选让两个模型协同（执行器 + 规划器），各自独立、缓存稳定的 session。
 - **插件驱动**：外部工具以子进程形式运行，通过 stdio JSON-RPC 通信（MCP 兼容）；
   内置工具在编译期自注册。
@@ -89,7 +89,7 @@ reasonix setup                      # 配置向导 → ./reasonix.toml
 export DEEPSEEK_API_KEY=sk-...      # 也可以让 setup 保存到凭据存储
 reasonix                            # 然后在会话里运行 /init 生成 AGENTS.md（项目记忆）
 reasonix run "把 main.go 里的 TODO 实现掉"
-reasonix run --model mimo-pro "给这个函数补单元测试"
+reasonix run --model deepseek-pro "给这个函数补单元测试"
 echo "解释这段代码" | reasonix run
 ```
 
