@@ -2545,23 +2545,17 @@ func (c *Controller) snapshot(markActivity bool) error {
 			"label", c.Label(), "session_dir", c.SessionDir())
 		return errNoSessionPath
 	}
-	if !markActivity {
-		if _, err := agent.EnsureBranchMeta(path); err != nil {
-			return err
-		}
-	}
 	if err := s.Save(path); err != nil {
 		return err
 	}
-	if strings.TrimSpace(modelRef) != "" {
-		if err := agent.SetBranchModelPreserveUpdated(path, modelRef); err != nil {
-			return err
-		}
-	}
-	if markActivity {
-		return agent.TouchBranchMeta(path)
-	}
-	return nil
+	// Record the listing-only sidecar fields (model, preview, user-turn count)
+	// straight from the in-memory conversation, so the sidebar and resume picker
+	// never have to decode the whole .jsonl just to show them. markActivity bumps
+	// UpdatedAt exactly like the previous TouchBranchMeta did; false preserves it
+	// like SetBranchModelPreserveUpdated. The single write subsumes the old
+	// EnsureBranchMeta / SetBranchModel / TouchBranchMeta sequence.
+	preview, turns := agent.SessionPreviewFromMessages(s.Snapshot())
+	return agent.UpdateSessionMeta(path, modelRef, preview, turns, markActivity)
 }
 
 func (c *Controller) messageCount() int {
