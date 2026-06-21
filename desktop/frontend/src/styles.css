@@ -24617,6 +24617,75 @@ a[href] {
   letter-spacing: inherit;
 }
 
+.app--creation .msg--assistant .md .code[data-lang="bash"],
+.app--creation .msg--assistant .md .code[data-lang="shell"],
+.app--creation .msg--assistant .md .code[data-lang="sh"],
+.app--creation .msg--assistant .md .code[data-lang="powershell"],
+.app--creation .msg--assistant .md .code[data-lang="pwsh"],
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="bash"],
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="shell"],
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="sh"],
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="powershell"],
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="pwsh"] {
+  width: max-content;
+  max-width: 100%;
+  margin: 7px 0 13px;
+  padding: 9px 13px 9px 31px;
+  border: 1px solid color-mix(in srgb, var(--border) 58%, var(--bg));
+  border-radius: 8px;
+  background: linear-gradient(
+    90deg,
+    color-mix(in srgb, var(--accent) 5%, var(--bg-elev)),
+    color-mix(in srgb, var(--bg-elev) 52%, var(--bg))
+  );
+  color: color-mix(in srgb, var(--fg) 89%, var(--bg));
+  font-size: 12.5px;
+  line-height: 1.6;
+  box-shadow: none;
+}
+
+.app--creation .msg--assistant .md .code[data-lang="bash"]::before,
+.app--creation .msg--assistant .md .code[data-lang="shell"]::before,
+.app--creation .msg--assistant .md .code[data-lang="sh"]::before,
+.app--creation .msg--assistant .md .code[data-lang="powershell"]::before,
+.app--creation .msg--assistant .md .code[data-lang="pwsh"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="bash"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="shell"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="sh"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="powershell"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="pwsh"]::before {
+  content: "$";
+  position: absolute;
+  top: 9px;
+  left: 13px;
+  color: var(--accent);
+  font-weight: 700;
+}
+
+.app--creation .msg--assistant .md .code[data-lang="powershell"]::before,
+.app--creation .msg--assistant .md .code[data-lang="pwsh"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="powershell"]::before,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="pwsh"]::before {
+  content: ">";
+}
+
+.app--creation .msg--assistant .md .code[data-lang="bash"] .code-block__copy,
+.app--creation .msg--assistant .md .code[data-lang="shell"] .code-block__copy,
+.app--creation .msg--assistant .md .code[data-lang="sh"] .code-block__copy,
+.app--creation .msg--assistant .md .code[data-lang="powershell"] .code-block__copy,
+.app--creation .msg--assistant .md .code[data-lang="pwsh"] .code-block__copy,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="bash"] .code-block__copy,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="shell"] .code-block__copy,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="sh"] .code-block__copy,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="powershell"] .code-block__copy,
+:root[data-theme-style] .app--creation .msg--assistant .md .code[data-lang="pwsh"] .code-block__copy {
+  top: 5px;
+  right: 5px;
+  color: color-mix(in srgb, var(--fg-faint) 58%, var(--bg));
+  border-color: color-mix(in srgb, var(--border-soft) 58%, var(--bg));
+  background: color-mix(in srgb, var(--bg-elev-2) 28%, var(--bg));
+}
+
 .app--creation .md blockquote,
 :root[data-theme-style] .app--creation .md blockquote {
   margin: 2px 0 12px;
