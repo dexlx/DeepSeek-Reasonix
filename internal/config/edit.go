@@ -779,8 +779,17 @@ func validatePlugin(e PluginEntry) error {
 // writes a sibling temp file then renames, so a crash mid-write can't leave a
 // half-written reasonix.toml that fails to parse on next load. Parent directories
 // are created as needed.
+//
+// For project configs (./reasonix.toml) the write is incremental: only sections
+// and fields that differ from built-in defaults are written, so the file never
+// accumulates fields that override the user's global config. User configs still
+// write the full annotated template since they are the user's own settings store.
 func (c *Config) SaveTo(path string) error {
-	return c.SaveToScope(path, renderScopeForPath(path))
+	scope := renderScopeForPath(path)
+	if scope == RenderScopeProject {
+		return c.saveProjectIncremental(path)
+	}
+	return c.SaveToScope(path, scope)
 }
 
 func (c *Config) SaveToScope(path string, scope RenderScope) error {
@@ -788,6 +797,94 @@ func (c *Config) SaveToScope(path string, scope RenderScope) error {
 		return fmt.Errorf("save: empty config path")
 	}
 	return writeConfigFile(path, RenderTOMLForScope(c, scope))
+}
+
+// saveProjectIncremental merges only the delta (non-default sections/fields)
+// into the existing project config file, preserving all other content verbatim.
+func (c *Config) saveProjectIncremental(path string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("save: empty config path")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		raw = nil
+	}
+
+	body := string(raw)
+	isNew := body == ""
+
+	if isNew {
+		return writeConfigFile(path, RenderTOMLForScope(c, RenderScopeProject))
+	}
+
+	delta := RenderTOMLProjectDelta(c)
+	if strings.TrimSpace(delta) == "" {
+		return nil // no changes to write
+	}
+
+	// Parse delta into section blocks and merge each into body
+	body = mergeTOMLDelta(body, delta)
+	return writeConfigFile(path, body)
+}
+
+// mergeTOMLDelta parses delta into named TOML blocks and merges each into body
+// via replaceTOMLSection. Consecutive array-of-tables entries ([[plugins]],
+// [[providers]]) with the same name are merged into a single block so the
+// replacement doesn't lose entries.
+func mergeTOMLDelta(body, delta string) string {
+	lines := strings.Split(delta, "\n")
+	type section struct {
+		name    string
+		content string
+		isArray bool
+	}
+	var sections []section
+	var curName string
+	var curBuf strings.Builder
+	curIsArray := false
+
+	flush := func() {
+		if curName == "" {
+			return
+		}
+		content := curBuf.String()
+		if curIsArray && len(sections) > 0 && sections[len(sections)-1].isArray && sections[len(sections)-1].name == curName {
+			sections[len(sections)-1].content += content
+		} else {
+			sections = append(sections, section{curName, content, curIsArray})
+		}
+		curBuf.Reset()
+	}
+
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		switch {
+		case strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]"):
+			flush()
+			curName = trimmed[2 : len(trimmed)-2]
+			curIsArray = true
+			curBuf.WriteString(line + "\n")
+		case strings.HasPrefix(trimmed, "[") && strings.HasSuffix(trimmed, "]") && !strings.HasPrefix(trimmed, "[["):
+			flush()
+			curName = trimmed[1 : len(trimmed)-1]
+			curIsArray = false
+			curBuf.WriteString(line + "\n")
+		default:
+			if curName != "" {
+				curBuf.WriteString(line + "\n")
+			}
+		}
+	}
+	flush()
+
+	for _, s := range sections {
+		body = replaceTOMLSection(body, s.name, s.content)
+	}
+	return body
 }
 
 // SaveMinimalProjectReasoningLanguage writes a new project config that only
@@ -818,6 +915,111 @@ func configFilePerm(path string) os.FileMode {
 		return 0o600
 	}
 	return 0o644
+}
+
+// WritePermissionsSection replaces or creates the [permissions] section in a
+// TOML file, preserving all other sections verbatim. When the file doesn't
+// exist yet, it creates one containing only the permissions section.
+func WritePermissionsSection(path string, allow []string) error {
+	if strings.TrimSpace(path) == "" {
+		return fmt.Errorf("write permissions: empty config path")
+	}
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			return err
+		}
+		raw = nil
+	}
+
+	newBlock := fmt.Sprintf("[permissions]\nallow = %s\n", renderStringArray(allow))
+
+	body := string(raw)
+	if body == "" {
+		return writeConfigFile(path, newBlock)
+	}
+
+	body = replaceTOMLSection(body, "permissions", newBlock)
+	return writeConfigFile(path, body)
+}
+
+// replaceTOMLSection replaces the content of a named TOML section (including
+// its header line) with newContent. It handles both [section] and [[section]]
+// array-of-tables headers. If the section doesn't exist, newContent is appended
+// at the end.
+func replaceTOMLSection(body, sectionName, newContent string) string {
+	headerBare := "[" + sectionName + "]"
+	headerArr := "[[" + sectionName + "]]"
+
+	sectionStart := strings.Index(body, headerArr)
+	var header string
+	var headerLen int
+	if sectionStart >= 0 {
+		header = headerArr
+		headerLen = len(headerArr)
+	} else {
+		sectionStart = strings.Index(body, headerBare)
+		if sectionStart < 0 {
+			return strings.TrimRight(body, "\n") + "\n\n" + newContent
+		}
+		header = headerBare
+		headerLen = len(headerBare)
+	}
+
+	// For [[array-of-tables]], find the LAST consecutive entry of the same type
+	// and replace everything from the first entry through the last.
+	if strings.HasPrefix(header, "[[") {
+		start := sectionStart
+		// Find first preceding entry of the same array
+		for {
+			prev := strings.LastIndex(body[:start], "\n"+headerArr)
+			if prev < 0 {
+				prev = strings.LastIndex(body[:start], headerArr)
+			}
+			if prev < 0 {
+				break
+			}
+			// Check it's on its own line (preceded by newline or at start)
+			if prev == 0 || body[prev-1] == '\n' {
+				start = prev
+			} else {
+				break
+			}
+		}
+		sectionStart = start
+
+		// Find the last consecutive entry and then the next section after it
+		scan := body[sectionStart:]
+		lastEntryEnd := 0
+		for {
+			idx := strings.Index(scan, "\n"+headerArr)
+			if idx < 0 {
+				break
+			}
+			lastEntryEnd += idx + 1 + len(headerArr)
+			scan = scan[idx+1+len(headerArr):]
+		}
+
+		rest := scan
+		nextSection := strings.Index(rest, "\n[")
+		if nextSection >= 0 {
+			sectionEnd := sectionStart + len(body) - len(scan) + nextSection
+			return body[:sectionStart] + strings.TrimRight(newContent, "\n") + body[sectionEnd:]
+		}
+		return body[:sectionStart] + strings.TrimRight(newContent, "\n") + "\n"
+	}
+
+	rest := body[sectionStart+headerLen:]
+	nextSection := strings.Index(rest, "\n[")
+	var sectionEnd int
+	if nextSection >= 0 {
+		sectionEnd = sectionStart + headerLen + nextSection
+	} else {
+		sectionEnd = len(body)
+	}
+
+	return body[:sectionStart] + newContent + body[sectionEnd:]
 }
 
 func renderScopeForPath(path string) RenderScope {
