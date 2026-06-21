@@ -1844,6 +1844,51 @@ func TestLegacyMigrationSkipsProjectScopedSessions(t *testing.T) {
 	}
 }
 
+func TestProjectTreeMigratesCLISessionFromProjectDir(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	dir := config.ProjectSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := writeLegacySession(t, dir, "cli-project.jsonl", "cli project prompt", time.Now())
+	wantTopicID := legacySessionTopicID(sessionPath)
+
+	nodes := NewApp().ListProjectTree()
+	if len(nodes) != 1 || nodes[0].Kind != "project" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != wantTopicID {
+		t.Fatalf("project CLI session should appear in project tree, got %#v; want topic %q", nodes, wantTopicID)
+	}
+}
+
+func TestProjectTreeMigratesCLISessionFromGlobalWorkspaceDir(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	globalRoot := globalWorkspaceRoot()
+	dir := desktopSessionDir(globalRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sessionPath := writeLegacySession(t, dir, "cli-global.jsonl", "cli global prompt", time.Now())
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, agent.BranchMeta{
+		CreatedAt:     time.Now().Add(-time.Minute),
+		UpdatedAt:     time.Now(),
+		Scope:         "global",
+		WorkspaceRoot: globalRoot,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	wantTopicID := legacySessionTopicID(sessionPath)
+
+	nodes := NewApp().ListProjectTree()
+	if len(nodes) != 1 || nodes[0].Kind != "global_folder" || len(nodes[0].Children) != 1 || nodes[0].Children[0].TopicID != wantTopicID {
+		t.Fatalf("global workspace CLI session should appear in Global, got %#v; want topic %q", nodes, wantTopicID)
+	}
+}
+
 func TestLegacyMigrationConcurrentRunsHaveNoLostUpdates(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := config.SessionDir()
