@@ -499,6 +499,69 @@ func TestNewZhipuSetsFlag(t *testing.T) {
 	}
 }
 
+// TestBuildRequestGenericThinking covers the vendor-agnostic `thinking` config
+// field on a provider we don't auto-detect: thinking.type is emitted as set, and
+// an empty/unset field leaves thinking off the wire entirely.
+func TestBuildRequestGenericThinking(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		thinking string
+		wantType string // "" means no thinking field
+	}{
+		{name: "enabled", thinking: "enabled", wantType: "enabled"},
+		{name: "disabled", thinking: "disabled", wantType: "disabled"},
+		{name: "unset-omits", thinking: "", wantType: ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := (&client{model: "some-model", thinkingType: tc.thinking}).buildRequest(provider.Request{})
+			if tc.wantType == "" {
+				if req.Thinking != nil {
+					t.Fatalf("expected no thinking, got %+v", req.Thinking)
+				}
+				return
+			}
+			if req.Thinking == nil || req.Thinking.Type != tc.wantType {
+				t.Fatalf("Thinking = %+v, want %q", req.Thinking, tc.wantType)
+			}
+		})
+	}
+}
+
+// TestNewThinkingConfigParsing pins how the `thinking` config field is read:
+// enabled|disabled are kept (case-insensitively), everything else is ignored so
+// an unknown value can never break a request.
+func TestNewThinkingConfigParsing(t *testing.T) {
+	base := provider.Config{Name: "gen", BaseURL: "https://api.example.com/v1", Model: "x", APIKey: "k"}
+	for in, want := range map[string]string{"enabled": "enabled", "DISABLED": "disabled", "adaptive": "", "garbage": "", "": ""} {
+		cfg := base
+		cfg.Extra = map[string]any{"thinking": in}
+		p, err := New(cfg)
+		if err != nil {
+			t.Fatalf("New(thinking=%q): %v", in, err)
+		}
+		if got := p.(*client).thinkingType; got != want {
+			t.Errorf("thinking=%q → thinkingType=%q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestBuildRequestDeepSeekDisabled covers turning DeepSeek thinking off via
+// effort=disabled, which the factory routes to thinking.type=disabled.
+func TestBuildRequestDeepSeekDisabled(t *testing.T) {
+	base := provider.Config{Name: "ds", BaseURL: "https://api.deepseek.com", Model: "deepseek-v4", APIKey: "k"}
+	p, err := New(withEffort(base, "disabled"))
+	if err != nil {
+		t.Fatalf("New(effort=disabled): %v", err)
+	}
+	req := p.(*client).buildRequest(provider.Request{})
+	if req.Thinking == nil || req.Thinking.Type != "disabled" {
+		t.Fatalf("Thinking = %+v, want disabled", req.Thinking)
+	}
+	if req.ReasoningEffort != "" {
+		t.Fatalf("disabled DeepSeek must not send reasoning_effort, got %q", req.ReasoningEffort)
+	}
+}
+
 func withEffort(c provider.Config, effort string) provider.Config {
 	extra := c.Extra
 	if extra == nil {
