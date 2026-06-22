@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -758,13 +759,23 @@ func (s *service) applyPendingSessionConfig(ctx context.Context, sess *acpSessio
 	return nil
 }
 
-func sessionConfigActiveWorkError(message string) *RPCError {
-	return &RPCError{Code: ErrInvalidRequest, Message: "session config: " + message}
+type activeSessionConfigWorkError struct {
+	*RPCError
+}
+
+func (e *activeSessionConfigWorkError) Unwrap() error {
+	return e.RPCError
+}
+
+func sessionConfigActiveWorkError(message string) error {
+	return &activeSessionConfigWorkError{
+		RPCError: &RPCError{Code: ErrInvalidRequest, Message: "session config: " + message},
+	}
 }
 
 func isSessionConfigActiveWorkError(err error) bool {
-	re, ok := err.(*RPCError)
-	return ok && re.Code == ErrInvalidRequest && strings.Contains(re.Message, "before switching config")
+	var activeErr *activeSessionConfigWorkError
+	return errors.As(err, &activeErr)
 }
 
 // sessionClose releases an active session. Unknown sessions are accepted as a
