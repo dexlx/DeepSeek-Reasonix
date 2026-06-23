@@ -47,4 +47,3 @@ export function createRafResizeUpdater({ target, separator, cssVar }: RafResizeU
     },
   };
 }
-
