@@ -202,8 +202,8 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if got := c.cpBound[0]; got != 1 {
-		t.Fatalf("checkpoint boundary = %d, want pre-user message index 1", got)
+	if !c.CheckpointHasBoundary(0) {
+		t.Fatal("checkpoint boundary should be available for the orchestrated turn")
 	}
 	if len(sess.Messages) != 2 || sess.Messages[1].Content != "write the test" {
 		t.Fatalf("session messages after turn = %+v, want system + user", sess.Messages)
@@ -221,5 +221,11 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 	}
 	if meta.UpdatedAt.IsZero() {
 		t.Fatal("activity meta should be marked after transcript changes")
+	}
+	if err := c.Rewind(0, RewindConversation); err != nil {
+		t.Fatal(err)
+	}
+	if len(sess.Messages) != 1 {
+		t.Fatalf("session messages after rewind = %d, want boundary before user message", len(sess.Messages))
 	}
 }
