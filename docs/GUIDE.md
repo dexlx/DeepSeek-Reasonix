@@ -55,6 +55,8 @@ default_model = "deepseek-flash"   # executor; set [agent].planner_model to add 
 max_steps = 0                    # user/global only; executor tool-call rounds; 0 = no limit
 planner_max_steps = 0            # user/global only; planner read-only tool-call rounds; 0 = no limit
 reasoning_language = "auto"      # visible reasoning text: auto|zh|en
+# plan_mode_allowed_tools = ["custom_reader"]   # extra read-only custom tools only;
+#                                                # does not unlock blocked tools or unsafe bash
 # planner_model = "deepseek-pro"      # optional low-frequency planner
 # subagent_model = "deepseek-pro"     # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
@@ -99,6 +101,11 @@ command = "reasonix-plugin-example"
 ```
 
 For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-configuration-toml).
+
+`[agent].plan_mode_allowed_tools` is only an extra read-only declaration for
+custom or external tools Reasonix cannot classify itself. It no longer unlocks
+known blocked plan-mode tools such as `bash`, `task`, writers, installers, or
+memory mutation tools, and it never bypasses bash's plan-mode safety checks.
 
 ## Serve web frontend
 

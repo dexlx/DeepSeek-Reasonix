@@ -96,6 +96,10 @@ and DeepSeek prefix-cache–oriented design.
   search + tree-sitter symbol index is not bundled in v2 yet, and CodeGraph is no
   longer shipped as an internal MCP server.
 - **Plan mode** + `complete_step` (evidence-backed step sign-off).
+- **Plan-mode tool overrides are narrower**: `[agent].plan_mode_allowed_tools`
+  now only declares extra read-only custom/external tools. It no longer unlocks
+  known blocked plan-mode tools such as `bash`, `task`, writers, installers, or
+  memory mutation tools, and unsafe bash commands still remain blocked.
 - **No web dashboard** — the v2 line is terminal + desktop (Wails), by design.
 - Some granular v1 tools are intentionally consolidated (e.g. file-management ops
   go through `bash`); a few v1 tools are not yet ported (tracked on Discussions).
