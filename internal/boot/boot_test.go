@@ -1202,7 +1202,7 @@ model = "x"
 }
 
 func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
-	for _, source := range []string{"task", "install_source"} {
+	for _, source := range []string{"task", "install_source", "skills", "mcp"} {
 		t.Run(source, func(t *testing.T) {
 			isolateConfigHome(t)
 			dir := robustTempDir(t)
