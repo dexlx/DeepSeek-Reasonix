@@ -24,7 +24,6 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
-	"reasonix/internal/planmode"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
@@ -1202,8 +1201,38 @@ model = "x"
 }
 
 func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
-	for _, source := range []string{"task", "install_source", "skills", "mcp"} {
-		t.Run(source, func(t *testing.T) {
+	tests := []struct {
+		source          string
+		args            string
+		forbiddenTools  []string
+		forbiddenPrefix string
+	}{
+		{
+			source:         "task",
+			args:           `{"source":"task"}`,
+			forbiddenTools: []string{"task"},
+		},
+		{
+			source:         "install_source",
+			args:           `{"source":"install_source"}`,
+			forbiddenTools: []string{"install_source"},
+		},
+		{
+			source: "skills",
+			args:   `{"source":"skills"}`,
+			forbiddenTools: []string{
+				"run_skill", "read_skill", "install_skill",
+				"explore", "research", "review", "security_review",
+			},
+		},
+		{
+			source:          "mcp",
+			args:            `{"source":"mcp","name":"mockmcp"}`,
+			forbiddenPrefix: "mcp__mockmcp",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
 			isolateConfigHome(t)
 			dir := robustTempDir(t)
 			t.Chdir(dir)
@@ -1211,7 +1240,7 @@ func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
 			registerBootTokenProfileTestProvider()
 			prov := testutil.NewMock("token-economy",
 				testutil.Turn{ToolCalls: []provider.ToolCall{
-					{ID: "source-1", Name: "connect_tool_source", Arguments: fmt.Sprintf(`{"source":%q}`, source)},
+					{ID: "source-1", Name: "connect_tool_source", Arguments: tt.args},
 				}},
 				testutil.Turn{Text: "done"},
 			)
@@ -1226,6 +1255,10 @@ system_prompt = "BASE"
 name = "test-model"
 kind = "boot-token-profile-test"
 model = "x"
+
+[[plugins]]
+name = "mockmcp"
+command = "reasonix-missing-mockmcp"
 `)
 
 			ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
@@ -1238,15 +1271,29 @@ model = "x"
 				t.Fatalf("Run: %v", err)
 			}
 
+			reqs := prov.Requests()
+			if len(reqs) != 2 {
+				t.Fatalf("requests = %d, want 2", len(reqs))
+			}
 			var toolOutput string
 			for _, msg := range ctrl.History() {
 				if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
 					toolOutput += msg.Content
 				}
 			}
-			want := planmode.Policy{}.Decide(planmode.Call{Name: source, ReadOnly: false}).Message
-			if !strings.Contains(toolOutput, want) {
-				t.Fatalf("connect_tool_source(%s) output = %q, want policy message %q", source, toolOutput, want)
+			if strings.TrimSpace(toolOutput) == "" {
+				t.Fatalf("connect_tool_source(%s) returned empty tool output", tt.source)
+			}
+			if !strings.Contains(toolOutput, "blocked:") || !strings.Contains(toolOutput, "plan mode") {
+				t.Fatalf("connect_tool_source(%s) output = %q, want visible plan-mode block", tt.source, toolOutput)
+			}
+			for _, forbidden := range tt.forbiddenTools {
+				if requestHasTool(reqs[1], forbidden) {
+					t.Fatalf("blocked source %s should not expose %q; tools=%v", tt.source, forbidden, toolSchemaNames(reqs[1].Tools))
+				}
+			}
+			if tt.forbiddenPrefix != "" && requestHasToolPrefix(reqs[1], tt.forbiddenPrefix) {
+				t.Fatalf("blocked source %s should not expose tools with prefix %q; tools=%v", tt.source, tt.forbiddenPrefix, toolSchemaNames(reqs[1].Tools))
 			}
 		})
 	}
