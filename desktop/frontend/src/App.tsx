@@ -2256,7 +2256,8 @@ export default function App() {
         if (!isChannelSession(session) && !singleSurfaceLayout) {
           await resumeSession(session.path, targetTab.id);
         }
-        await refreshTabMetas();
+        // Fire refreshTabMetas in background — transcript data loads independently.
+        void refreshTabMetas();
         setTabRevealSignal((value) => value + 1);
         setTranscriptRevealSignal((value) => value + 1);
       } catch (err: any) {
