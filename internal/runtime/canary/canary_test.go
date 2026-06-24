@@ -1,6 +1,9 @@
 package canary
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestEvaluateModesAreDeterministic(t *testing.T) {
 	if got := Evaluate(Policy{Mode: SafeMode}, "same-key"); got.Enabled {
@@ -30,5 +33,21 @@ func TestPromoteRequiresStableRunsAndStagesRollout(t *testing.T) {
 	got = Promote(Policy{Mode: CanaryMode, TrafficPercent: 100, MinStableRuns: 3}, 3, 0.9)
 	if got.Mode != FullProductionMode {
 		t.Fatalf("100%% stable canary should promote to full production: %+v", got)
+	}
+}
+
+func TestCompareBehaviorDetectsDecisionLevelDivergence(t *testing.T) {
+	diff := CompareBehavior(
+		BehaviorSample{Decision: "production_hardening", Strategy: "bugfix", Outcome: "success", Steps: []string{"a", "b"}},
+		BehaviorSample{Decision: "production_hardening", Strategy: "review", Outcome: "success", Steps: []string{"a", "c"}},
+	)
+	if !diff.Diverged {
+		t.Fatalf("expected behavior divergence: %+v", diff)
+	}
+	got := strings.Join(diff.Reasons, "\n")
+	for _, want := range []string{"strategy diverged", "execution steps diverged"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in reasons: %+v", want, diff.Reasons)
+		}
 	}
 }

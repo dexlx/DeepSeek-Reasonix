@@ -56,3 +56,23 @@ func TestLatestStableReturnsNotExistWithoutStableSnapshot(t *testing.T) {
 		t.Fatalf("LatestStable error = %v, want os.ErrNotExist", err)
 	}
 }
+
+func TestCaptureAtomicRecordsBarrierAndStableHash(t *testing.T) {
+	now := time.Now().UTC()
+	barrier := NewBarrier("barrier-1", now)
+	state := SystemState{MemoryGraph: map[string]string{"state": "good"}}
+	first, err := CaptureAtomic("snap", state, true, 1, barrier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := CaptureAtomic("snap", state, true, 1, barrier)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.BarrierID != "barrier-1" || first.CreatedAt != now {
+		t.Fatalf("snapshot barrier = %+v, want barrier-1 at %s", first, now)
+	}
+	if first.StateHash == "" || first.StateHash != second.StateHash {
+		t.Fatalf("state hash is not stable: first=%q second=%q", first.StateHash, second.StateHash)
+	}
+}

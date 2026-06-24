@@ -21,6 +21,13 @@ type Decision struct {
 	Usage   Usage
 }
 
+type Reservation struct {
+	Allowed  bool           `json:"allowed"`
+	Reasons  []string       `json:"reasons,omitempty"`
+	Budget   ResourceBudget `json:"budget"`
+	Reserved Usage          `json:"reserved"`
+}
+
 func DefaultBudget() ResourceBudget {
 	return ResourceBudget{
 		MaxTokens:      32000,
@@ -44,6 +51,48 @@ func Enforce(budget ResourceBudget, usage Usage) Decision {
 		decision.Allowed = false
 		decision.Reasons = append(decision.Reasons, fmt.Sprintf("memory node budget exceeded (%d>%d)", usage.MemoryNodes, budget.MaxMemoryNodes))
 	}
+	return decision
+}
+
+func Reserve(budget ResourceBudget, usage Usage) Reservation {
+	decision := Enforce(budget, usage)
+	return Reservation{
+		Allowed:  decision.Allowed,
+		Reasons:  append([]string(nil), decision.Reasons...),
+		Budget:   decision.Budget,
+		Reserved: decision.Usage,
+	}
+}
+
+func (r Reservation) Decision() Decision {
+	return Decision{
+		Allowed: r.Allowed,
+		Reasons: append([]string(nil), r.Reasons...),
+		Budget:  Normalize(r.Budget),
+		Usage:   r.Reserved,
+	}
+}
+
+func (r Reservation) Commit(actual Usage) Decision {
+	budget := Normalize(r.Budget)
+	decision := Enforce(budget, actual)
+	if !r.Allowed {
+		decision.Allowed = false
+		decision.Reasons = append(decision.Reasons, r.Reasons...)
+	}
+	if actual.Tokens > r.Reserved.Tokens {
+		decision.Allowed = false
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("unreserved token usage (%d>%d)", actual.Tokens, r.Reserved.Tokens))
+	}
+	if actual.ToolCalls > r.Reserved.ToolCalls {
+		decision.Allowed = false
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("unreserved tool call usage (%d>%d)", actual.ToolCalls, r.Reserved.ToolCalls))
+	}
+	if actual.MemoryNodes > r.Reserved.MemoryNodes {
+		decision.Allowed = false
+		decision.Reasons = append(decision.Reasons, fmt.Sprintf("unreserved memory growth (%d>%d)", actual.MemoryNodes, r.Reserved.MemoryNodes))
+	}
+	decision.Reasons = dedupeStrings(decision.Reasons)
 	return decision
 }
 
@@ -81,4 +130,17 @@ func ScaleForCanary(budget ResourceBudget, percent int) ResourceBudget {
 		MaxToolCalls:   scale(budget.MaxToolCalls),
 		MaxMemoryNodes: budget.MaxMemoryNodes,
 	}
+}
+
+func dedupeStrings(in []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, len(in))
+	for _, s := range in {
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	return out
 }

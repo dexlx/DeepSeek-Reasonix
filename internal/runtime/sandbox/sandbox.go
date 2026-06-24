@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"time"
@@ -105,12 +106,103 @@ func (e *Execution) Snapshot() ExecutionSnapshot {
 }
 
 type ExecutionSnapshot struct {
-	Context      SandboxContext `json:"context"`
-	StartedAt    time.Time      `json:"started_at"`
-	Steps        int            `json:"steps"`
-	ToolCalls    int            `json:"tool_calls"`
-	KillReason   string         `json:"kill_reason,omitempty"`
-	TerminatedAt time.Time      `json:"terminated_at,omitempty"`
+	Context      SandboxContext    `json:"context"`
+	StartedAt    time.Time         `json:"started_at"`
+	Steps        int               `json:"steps"`
+	ToolCalls    int               `json:"tool_calls"`
+	KillReason   string            `json:"kill_reason,omitempty"`
+	TerminatedAt time.Time         `json:"terminated_at,omitempty"`
+	Isolation    IsolationSnapshot `json:"isolation,omitempty"`
+}
+
+type IsolationPolicy struct {
+	GoroutineContainment  bool `json:"goroutine_containment"`
+	StrictContextClone    bool `json:"strict_context_clone"`
+	NoSharedPointerEscape bool `json:"no_shared_pointer_escape"`
+}
+
+type IsolationSnapshot struct {
+	Policy        IsolationPolicy `json:"policy,omitempty"`
+	Completed     bool            `json:"completed,omitempty"`
+	TimedOut      bool            `json:"timed_out,omitempty"`
+	Panic         string          `json:"panic,omitempty"`
+	PotentialLeak bool            `json:"potential_leak,omitempty"`
+}
+
+func DefaultIsolationPolicy() IsolationPolicy {
+	return IsolationPolicy{
+		GoroutineContainment:  true,
+		StrictContextClone:    true,
+		NoSharedPointerEscape: true,
+	}
+}
+
+func RunIsolated(parent context.Context, cfg SandboxContext, now time.Time, fn func(context.Context) error) (ExecutionSnapshot, error) {
+	if parent == nil {
+		parent = context.Background()
+	}
+	exec := Start(cfg, now)
+	if err := parent.Err(); err != nil {
+		exec.Kill("parent context canceled", now)
+		snap := exec.Snapshot()
+		snap.Isolation = IsolationSnapshot{Policy: DefaultIsolationPolicy(), Completed: true}
+		return snap, err
+	}
+	if fn == nil {
+		snap := exec.Snapshot()
+		snap.Isolation = IsolationSnapshot{Policy: DefaultIsolationPolicy(), Completed: true}
+		return snap, nil
+	}
+	ctx, cancel := isolatedContext(parent, exec.cfg, exec.startedAt)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		defer func() {
+			if recovered := recover(); recovered != nil {
+				done <- fmt.Errorf("sandbox panic: %v", recovered)
+			}
+		}()
+		done <- fn(ctx)
+	}()
+	var err error
+	isolation := IsolationSnapshot{Policy: DefaultIsolationPolicy()}
+	select {
+	case err = <-done:
+		isolation.Completed = true
+	case <-ctx.Done():
+		err = ctx.Err()
+		isolation.TimedOut = true
+		exec.Kill("isolated context canceled", time.Now().UTC())
+		select {
+		case <-done:
+			isolation.Completed = true
+		case <-time.After(10 * time.Millisecond):
+			isolation.PotentialLeak = true
+		}
+	}
+	if err != nil && stringsHasPrefix(err.Error(), "sandbox panic:") {
+		isolation.Panic = err.Error()
+		exec.Kill("panic", time.Now().UTC())
+	}
+	snap := exec.Snapshot()
+	snap.Isolation = isolation
+	return snap, err
+}
+
+func isolatedContext(parent context.Context, cfg SandboxContext, now time.Time) (context.Context, context.CancelFunc) {
+	deadline := now.Add(time.Duration(normalize(cfg).MaxTimeMs) * time.Millisecond)
+	if parentDeadline, ok := parent.Deadline(); ok && parentDeadline.Before(deadline) {
+		deadline = parentDeadline
+	}
+	ctx, cancel := context.WithDeadline(context.Background(), deadline)
+	go func() {
+		select {
+		case <-parent.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
 }
 
 func (e *Execution) kill(reason string, now time.Time) {
@@ -139,4 +231,8 @@ func normalize(cfg SandboxContext) SandboxContext {
 		cfg.ToolCallLimit = def.ToolCallLimit
 	}
 	return cfg
+}
+
+func stringsHasPrefix(s, prefix string) bool {
+	return len(s) >= len(prefix) && s[:len(prefix)] == prefix
 }

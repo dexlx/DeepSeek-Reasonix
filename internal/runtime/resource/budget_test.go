@@ -28,3 +28,24 @@ func TestScaleForCanaryKeepsMinimumBudget(t *testing.T) {
 		t.Fatalf("scaled budget = %+v, want bounded token/tool budgets and unchanged memory cap", scaled)
 	}
 }
+
+func TestReservationCommitBlocksUnreservedAsyncUsage(t *testing.T) {
+	reservation := Reserve(ResourceBudget{MaxTokens: 100, MaxToolCalls: 2, MaxMemoryNodes: 10}, Usage{
+		Tokens:      50,
+		ToolCalls:   1,
+		MemoryNodes: 5,
+	})
+	if !reservation.Allowed {
+		t.Fatalf("reservation rejected valid usage: %+v", reservation)
+	}
+	decision := reservation.Commit(Usage{Tokens: 60, ToolCalls: 2, MemoryNodes: 5})
+	if decision.Allowed {
+		t.Fatalf("commit allowed unreserved async usage: %+v", decision)
+	}
+	got := strings.Join(decision.Reasons, "\n")
+	for _, want := range []string{"unreserved token usage", "unreserved tool call usage"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in reasons: %+v", want, decision.Reasons)
+		}
+	}
+}

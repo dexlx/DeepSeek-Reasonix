@@ -880,6 +880,8 @@ func TestProductionHardeningCreatesSnapshotAndRestoresState(t *testing.T) {
 	}
 	if snap, err := runtimesnapshot.Load(dir, tr.ProductionHardening.SnapshotID); err != nil || !snap.Stable {
 		t.Fatalf("snapshot load = %+v err=%v, want stable snapshot", snap, err)
+	} else if snap.BarrierID == "" || snap.StateHash == "" {
+		t.Fatalf("snapshot missing atomic barrier metadata: %+v", snap)
 	}
 	mutated := next
 	mutated.Nodes = append(mutated.Nodes, MemoryNode{ID: "corrupted", Type: "state", Content: "bad", Quality: QualityCorrupted})
@@ -892,6 +894,44 @@ func TestProductionHardeningCreatesSnapshotAndRestoresState(t *testing.T) {
 		if node.ID == "corrupted" {
 			t.Fatalf("restore kept corrupted node: %+v", restored.Nodes)
 		}
+	}
+}
+
+func TestProductionHardeningBlocksUnreservedToolCallGrowth(t *testing.T) {
+	now := time.Now().UTC()
+	rt := New(t.TempDir())
+	st := state{Production: normalizeProductionState(ProductionState{}), NoisyRefs: map[string]int{}}
+	ir := PlannerIR{
+		Version:        version,
+		Goal:           "fix a bug",
+		SourceEvent:    "fix a bug",
+		Constraints:    []Constraint{{Type: "must_use", Text: "stay inside one tool call", Source: "test"}},
+		ExecutionSteps: []Step{{ID: "one", Action: "Run one tool"}},
+	}
+	hardening := hardeningTraceForStart(context.Background(), ir, "fix a bug", st, now)
+	tr := ExecutionTrace{
+		ID:                  "trace-unreserved-tool",
+		IRVersion:           version,
+		Goal:                "fix a bug",
+		Steps:               ir.ExecutionSteps,
+		Outcome:             "success",
+		Cost:                CostMetrics{EstimatedInputTokens: 5, EstimatedCompiledTokens: 5, ToolCalls: 2},
+		ProductionHardening: hardening,
+		StartedAt:           now,
+		CompletedAt:         now.Add(time.Second),
+	}
+	_, tr = rt.applyProductionHardening(st, tr, defaultControlPolicy(), now)
+	if tr.Outcome != "partial_success" {
+		t.Fatalf("outcome = %q, want partial_success for unreserved tool growth", tr.Outcome)
+	}
+	if tr.ProductionHardening == nil || tr.ProductionHardening.ResourceDecision.Allowed {
+		t.Fatalf("resource decision allowed unreserved tool growth: %+v", tr.ProductionHardening)
+	}
+	if !strings.Contains(strings.Join(tr.ProductionHardening.BlockReasons, "\n"), "unreserved tool call usage") {
+		t.Fatalf("missing unreserved tool-call reason: %+v", tr.ProductionHardening.BlockReasons)
+	}
+	if tr.ProductionHardening.EnforcementAuthority != "production_hardening" {
+		t.Fatalf("wrong enforcement authority: %+v", tr.ProductionHardening)
 	}
 }
 

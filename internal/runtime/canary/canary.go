@@ -26,6 +26,18 @@ type Evaluation struct {
 	Reasons []string `json:"reasons,omitempty"`
 }
 
+type BehaviorSample struct {
+	Decision string   `json:"decision,omitempty"`
+	Strategy string   `json:"strategy,omitempty"`
+	Outcome  string   `json:"outcome,omitempty"`
+	Steps    []string `json:"steps,omitempty"`
+}
+
+type BehaviorDiff struct {
+	Diverged bool     `json:"diverged"`
+	Reasons  []string `json:"reasons,omitempty"`
+}
+
 func DefaultPolicy() Policy {
 	return Policy{
 		Mode:           CanaryMode,
@@ -100,6 +112,33 @@ func Normalize(policy Policy) Policy {
 		policy.MinStableRuns = 5
 	}
 	return policy
+}
+
+func CompareBehavior(canary, baseline BehaviorSample) BehaviorDiff {
+	if baseline.Decision == "" && baseline.Strategy == "" && baseline.Outcome == "" && len(baseline.Steps) == 0 {
+		return BehaviorDiff{Reasons: []string{"baseline unavailable"}}
+	}
+	diff := BehaviorDiff{}
+	if strings.TrimSpace(canary.Decision) != strings.TrimSpace(baseline.Decision) {
+		diff.Diverged = true
+		diff.Reasons = append(diff.Reasons, "decision diverged")
+	}
+	if strings.TrimSpace(canary.Strategy) != strings.TrimSpace(baseline.Strategy) {
+		diff.Diverged = true
+		diff.Reasons = append(diff.Reasons, "strategy diverged")
+	}
+	if strings.TrimSpace(canary.Outcome) != strings.TrimSpace(baseline.Outcome) {
+		diff.Diverged = true
+		diff.Reasons = append(diff.Reasons, "outcome diverged")
+	}
+	if strings.Join(canary.Steps, "\x00") != strings.Join(baseline.Steps, "\x00") {
+		diff.Diverged = true
+		diff.Reasons = append(diff.Reasons, "execution steps diverged")
+	}
+	if len(diff.Reasons) == 0 {
+		diff.Reasons = []string{"behavior matches baseline"}
+	}
+	return diff
 }
 
 func bucket(key string) int {

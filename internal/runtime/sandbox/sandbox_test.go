@@ -1,6 +1,7 @@
 package sandbox
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -32,5 +33,34 @@ func TestExecutionKillSwitchTerminatesContext(t *testing.T) {
 	snap := exec.Snapshot()
 	if snap.KillReason != "operator stop" || snap.TerminatedAt.IsZero() {
 		t.Fatalf("invalid kill snapshot: %+v", snap)
+	}
+}
+
+func TestRunIsolatedClonesContextAndDetectsLeaks(t *testing.T) {
+	type ctxKey string
+	parent := context.WithValue(context.Background(), ctxKey("secret"), "shared")
+	now := time.Now().UTC()
+	snap, err := RunIsolated(parent, SandboxContext{MaxTimeMs: 1000}, now, func(ctx context.Context) error {
+		if got := ctx.Value(ctxKey("secret")); got != nil {
+			t.Fatalf("isolated context leaked parent value: %v", got)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !snap.Isolation.Completed || !snap.Isolation.Policy.StrictContextClone || !snap.Isolation.Policy.GoroutineContainment {
+		t.Fatalf("invalid isolation snapshot: %+v", snap.Isolation)
+	}
+
+	snap, err = RunIsolated(context.Background(), SandboxContext{MaxTimeMs: 1}, now, func(ctx context.Context) error {
+		<-make(chan struct{})
+		return nil
+	})
+	if err == nil {
+		t.Fatal("expected isolated run to time out")
+	}
+	if !snap.Isolation.TimedOut || !snap.Isolation.PotentialLeak {
+		t.Fatalf("leaking goroutine was not detected: %+v", snap.Isolation)
 	}
 }

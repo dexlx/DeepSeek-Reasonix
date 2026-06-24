@@ -1,6 +1,7 @@
 package snapshot
 
 import (
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -26,18 +27,36 @@ type SystemSnapshot struct {
 	CreatedAt        time.Time       `json:"created_at"`
 	Stable           bool            `json:"stable"`
 	ExecutionCount   int             `json:"execution_count,omitempty"`
+	BarrierID        string          `json:"barrier_id,omitempty"`
+	StateHash        string          `json:"state_hash,omitempty"`
 	MemoryGraph      json.RawMessage `json:"memory_graph,omitempty"`
 	ControlGraph     json.RawMessage `json:"control_graph,omitempty"`
 	StrategyRegistry json.RawMessage `json:"strategy_registry,omitempty"`
 	EquilibriumState json.RawMessage `json:"equilibrium_state,omitempty"`
 }
 
+type Barrier struct {
+	ID       string    `json:"id"`
+	FrozenAt time.Time `json:"frozen_at"`
+}
+
+func NewBarrier(id string, now time.Time) Barrier {
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	return Barrier{ID: sanitizeID(id), FrozenAt: now.UTC()}
+}
+
 func Capture(id string, state SystemState, stable bool, executionCount int, now time.Time) (SystemSnapshot, error) {
+	return CaptureAtomic(id, state, stable, executionCount, NewBarrier(id, now))
+}
+
+func CaptureAtomic(id string, state SystemState, stable bool, executionCount int, barrier Barrier) (SystemSnapshot, error) {
 	if strings.TrimSpace(id) == "" {
 		return SystemSnapshot{}, fmt.Errorf("snapshot id is required")
 	}
-	if now.IsZero() {
-		now = time.Now().UTC()
+	if barrier.FrozenAt.IsZero() {
+		barrier = NewBarrier(id, time.Now().UTC())
 	}
 	memoryGraph, err := marshalRaw(state.MemoryGraph)
 	if err != nil {
@@ -57,9 +76,11 @@ func Capture(id string, state SystemState, stable bool, executionCount int, now 
 	}
 	return SystemSnapshot{
 		ID:               sanitizeID(id),
-		CreatedAt:        now.UTC(),
+		CreatedAt:        barrier.FrozenAt.UTC(),
 		Stable:           stable,
 		ExecutionCount:   executionCount,
+		BarrierID:        barrier.ID,
+		StateHash:        stateHash(memoryGraph, controlGraph, strategyRegistry, equilibriumState),
 		MemoryGraph:      memoryGraph,
 		ControlGraph:     controlGraph,
 		StrategyRegistry: strategyRegistry,
@@ -137,6 +158,15 @@ func marshalRaw(v any) (json.RawMessage, error) {
 		return nil, err
 	}
 	return json.RawMessage(b), nil
+}
+
+func stateHash(parts ...json.RawMessage) string {
+	h := sha256.New()
+	for _, part := range parts {
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(part)
+	}
+	return fmt.Sprintf("%x", h.Sum(nil))
 }
 
 func sanitizeID(id string) string {

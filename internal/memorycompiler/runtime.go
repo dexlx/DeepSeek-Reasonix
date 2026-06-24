@@ -201,13 +201,16 @@ type EquilibriumTrace struct {
 }
 
 type ProductionHardeningTrace struct {
-	Sandbox          runtimesandbox.ExecutionSnapshot `json:"sandbox,omitempty"`
-	ResourceDecision runtimeresource.Decision         `json:"resource_decision,omitempty"`
-	Canary           runtimecanary.Evaluation         `json:"canary,omitempty"`
-	SnapshotID       string                           `json:"snapshot_id,omitempty"`
-	RollbackDecision runtimerollback.Decision         `json:"rollback_decision,omitempty"`
-	Allowed          bool                             `json:"allowed"`
-	BlockReasons     []string                         `json:"block_reasons,omitempty"`
+	Sandbox              runtimesandbox.ExecutionSnapshot `json:"sandbox,omitempty"`
+	ResourceReservation  runtimeresource.Reservation      `json:"resource_reservation,omitempty"`
+	ResourceDecision     runtimeresource.Decision         `json:"resource_decision,omitempty"`
+	Canary               runtimecanary.Evaluation         `json:"canary,omitempty"`
+	CanaryDiff           runtimecanary.BehaviorDiff       `json:"canary_diff,omitempty"`
+	SnapshotID           string                           `json:"snapshot_id,omitempty"`
+	RollbackDecision     runtimerollback.Decision         `json:"rollback_decision,omitempty"`
+	EnforcementAuthority string                           `json:"enforcement_authority,omitempty"`
+	Allowed              bool                             `json:"allowed"`
+	BlockReasons         []string                         `json:"block_reasons,omitempty"`
 }
 
 type CompilerMutation struct {
@@ -331,6 +334,7 @@ type DriftReport struct {
 type ProductionState struct {
 	Budget                  runtimeresource.ResourceBudget `json:"budget,omitempty"`
 	Canary                  runtimecanary.Policy           `json:"canary,omitempty"`
+	CanaryBaseline          runtimecanary.BehaviorSample   `json:"canary_baseline,omitempty"`
 	ExecutionCount          int                            `json:"execution_count,omitempty"`
 	ExecutionsSinceSnapshot int                            `json:"executions_since_snapshot,omitempty"`
 	LastSnapshotID          string                         `json:"last_snapshot_id,omitempty"`
@@ -453,7 +457,7 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	st := r.loadState()
 	ir, policy := buildIRWithPolicy(goal, input, st)
 	now := time.Now().UTC()
-	hardening := hardeningTraceForStart(ir, input, st, now)
+	hardening := hardeningTraceForStart(ctx, ir, input, st, now)
 	t := &Turn{
 		rt:        r,
 		ir:        ir,
@@ -1320,10 +1324,14 @@ func equilibriumTraceForPolicy(policy ControlPolicy) *EquilibriumTrace {
 	}
 }
 
-func hardeningTraceForStart(ir PlannerIR, input string, st state, now time.Time) *ProductionHardeningTrace {
+func hardeningTraceForStart(ctx context.Context, ir PlannerIR, input string, st state, now time.Time) *ProductionHardeningTrace {
 	prod := normalizeProductionState(st.Production)
 	usage := hardeningUsageForStart(ir, input, st)
-	resourceDecision := runtimeresource.Enforce(prod.Budget, usage)
+	if !hasUsefulIR(ir) || len(ir.ExecutionSteps) == 0 {
+		usage.ToolCalls = prod.Budget.MaxToolCalls
+	}
+	reservation := runtimeresource.Reserve(prod.Budget, usage)
+	resourceDecision := reservation.Decision()
 	canaryDecision := runtimecanary.Evaluate(prod.Canary, ir.Goal+"\x00"+ir.SourceEvent)
 	sandboxExec := runtimesandbox.Start(sandboxContextForProduction(prod), now)
 	var sandboxErr error
@@ -1336,11 +1344,18 @@ func hardeningTraceForStart(ir PlannerIR, input string, st state, now time.Time)
 	if sandboxErr == nil {
 		sandboxErr = sandboxExec.AddToolCalls(usage.ToolCalls, now)
 	}
+	isolationSnapshot, isolationErr := runtimesandbox.RunIsolated(ctx, sandboxContextForProduction(prod), now, func(context.Context) error {
+		return nil
+	})
+	sandboxSnapshot := sandboxExec.Snapshot()
+	sandboxSnapshot.Isolation = isolationSnapshot.Isolation
 	trace := &ProductionHardeningTrace{
-		Sandbox:          sandboxExec.Snapshot(),
-		ResourceDecision: resourceDecision,
-		Canary:           canaryDecision,
-		Allowed:          resourceDecision.Allowed && canaryDecision.Enabled && sandboxErr == nil,
+		Sandbox:              sandboxSnapshot,
+		ResourceReservation:  reservation,
+		ResourceDecision:     resourceDecision,
+		Canary:               canaryDecision,
+		EnforcementAuthority: "production_hardening",
+		Allowed:              resourceDecision.Allowed && canaryDecision.Enabled && sandboxErr == nil && isolationErr == nil && !sandboxSnapshot.Isolation.PotentialLeak,
 	}
 	if !resourceDecision.Allowed {
 		trace.BlockReasons = append(trace.BlockReasons, resourceDecision.Reasons...)
@@ -1351,6 +1366,12 @@ func hardeningTraceForStart(ir PlannerIR, input string, st state, now time.Time)
 	if sandboxErr != nil {
 		trace.BlockReasons = append(trace.BlockReasons, sandboxErr.Error())
 	}
+	if isolationErr != nil {
+		trace.BlockReasons = append(trace.BlockReasons, isolationErr.Error())
+	}
+	if sandboxSnapshot.Isolation.PotentialLeak {
+		trace.BlockReasons = append(trace.BlockReasons, "sandbox isolated execution did not terminate after cancellation")
+	}
 	trace.BlockReasons = limitStrings(canonicalStrings(trace.BlockReasons), 6)
 	return trace
 }
@@ -1359,8 +1380,25 @@ func hardeningUsageForStart(ir PlannerIR, input string, st state) runtimeresourc
 	return runtimeresource.Usage{
 		Tokens:      estimateTokens(input) + estimateIRTokens(ir),
 		ToolCalls:   len(ir.ExecutionSteps),
-		MemoryNodes: len(st.Nodes),
+		MemoryNodes: len(st.Nodes) + estimatedMemoryWritebackGrowth(ir),
 	}
+}
+
+func estimatedMemoryWritebackGrowth(ir PlannerIR) int {
+	growth := 3 + len(ir.ExecutionSteps)
+	if len(ir.MemoryReferences) > 0 {
+		growth += 1
+	}
+	if len(ir.Constraints) > 0 {
+		growth += 1
+	}
+	if growth < 6 {
+		return 6
+	}
+	if growth > 24 {
+		return 24
+	}
+	return growth
 }
 
 func estimateIRTokens(ir PlannerIR) int {
@@ -1927,7 +1965,7 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 	st.Production = normalizeProductionState(st.Production)
 	if tr.ProductionHardening == nil {
 		ir := PlannerIR{Version: version, Goal: tr.Goal, SourceEvent: tr.Goal, ExecutionSteps: append([]Step(nil), tr.Steps...)}
-		tr.ProductionHardening = hardeningTraceForStart(ir, tr.Goal, st, tr.StartedAt)
+		tr.ProductionHardening = hardeningTraceForStart(context.Background(), ir, tr.Goal, st, tr.StartedAt)
 	}
 	hardening := *tr.ProductionHardening
 	actualUsage := runtimeresource.Usage{
@@ -1938,7 +1976,12 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 	if actualUsage.Tokens <= 0 {
 		actualUsage.Tokens = estimateTokens(tr.Goal)
 	}
-	resourceDecision := runtimeresource.Enforce(st.Production.Budget, actualUsage)
+	reservation := hardening.ResourceReservation
+	if reservation.Budget.MaxTokens == 0 && reservation.Budget.MaxToolCalls == 0 && reservation.Budget.MaxMemoryNodes == 0 {
+		reservation = runtimeresource.Reserve(st.Production.Budget, actualUsage)
+	}
+	resourceDecision := reservation.Commit(actualUsage)
+	hardening.ResourceReservation = reservation
 	hardening.ResourceDecision = resourceDecision
 	sandboxStart := tr.StartedAt
 	if sandboxStart.IsZero() {
@@ -1959,7 +2002,13 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 	if sandboxErr == nil {
 		sandboxErr = sandboxExec.AddToolCalls(actualUsage.ToolCalls, sandboxEnd)
 	}
-	hardening.Sandbox = sandboxExec.Snapshot()
+	isolationSnapshot, isolationErr := runtimesandbox.RunIsolated(context.Background(), sandboxContextForProduction(st.Production), sandboxStart, func(context.Context) error {
+		return nil
+	})
+	sandboxSnapshot := sandboxExec.Snapshot()
+	sandboxSnapshot.Isolation = isolationSnapshot.Isolation
+	hardening.Sandbox = sandboxSnapshot
+	hardening.EnforcementAuthority = "production_hardening"
 	if !resourceDecision.Allowed {
 		hardening.Allowed = false
 		hardening.BlockReasons = append(hardening.BlockReasons, resourceDecision.Reasons...)
@@ -1967,6 +2016,14 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 	if sandboxErr != nil {
 		hardening.Allowed = false
 		hardening.BlockReasons = append(hardening.BlockReasons, sandboxErr.Error())
+	}
+	if isolationErr != nil {
+		hardening.Allowed = false
+		hardening.BlockReasons = append(hardening.BlockReasons, isolationErr.Error())
+	}
+	if sandboxSnapshot.Isolation.PotentialLeak {
+		hardening.Allowed = false
+		hardening.BlockReasons = append(hardening.BlockReasons, "sandbox isolated execution did not terminate after cancellation")
 	}
 	if !hardening.Canary.Enabled && hardening.Canary.Mode == "" {
 		hardening.Canary = runtimecanary.Evaluate(st.Production.Canary, tr.Goal+"\x00"+tr.ID)
@@ -1983,11 +2040,18 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 		tr.Outcome = "partial_success"
 		tr.FailureReason = "production hardening blocked unsafe execution: " + strings.Join(hardening.BlockReasons, "; ")
 	}
+	sample := productionBehaviorSample(tr, hardening)
+	if st.Production.Canary.Mode == runtimecanary.CanaryMode && hardening.Canary.Enabled {
+		hardening.CanaryDiff = runtimecanary.CompareBehavior(sample, st.Production.CanaryBaseline)
+	} else if tr.Outcome == "success" && hardening.Allowed {
+		st.Production.CanaryBaseline = sample
+	}
 	st.Production.ExecutionCount++
 	st.Production.ExecutionsSinceSnapshot++
 	if shouldCreateProductionSnapshot(st.Production, tr, resourceDecision) {
 		stable := stableProductionSnapshot(tr, resourceDecision, policy, hardening)
-		snap, err := runtimesnapshot.Capture(productionSnapshotID(tr), productionSnapshotState(st, policy), stable, st.Production.ExecutionCount, now)
+		barrier := runtimesnapshot.NewBarrier(productionSnapshotID(tr), now)
+		snap, err := runtimesnapshot.CaptureAtomic(productionSnapshotID(tr), productionSnapshotState(st, policy), stable, st.Production.ExecutionCount, barrier)
 		if err == nil {
 			if err := runtimesnapshot.Save(r.dir, snap); err == nil {
 				hardening.SnapshotID = snap.ID
@@ -2046,9 +2110,29 @@ func stableProductionSnapshot(tr ExecutionTrace, decision runtimeresource.Decisi
 	return tr.Outcome == "success" &&
 		decision.Allowed &&
 		hardening.Allowed &&
+		!hardening.CanaryDiff.Diverged &&
 		hardening.Sandbox.KillReason == "" &&
 		len(tr.SemanticDriftHard) == 0 &&
 		policy.OscillationIndex < 0.8
+}
+
+func productionBehaviorSample(tr ExecutionTrace, hardening ProductionHardeningTrace) runtimecanary.BehaviorSample {
+	return runtimecanary.BehaviorSample{
+		Decision: hardening.EnforcementAuthority,
+		Strategy: firstNonEmpty(tr.StrategyUsed, classifyStrategy(tr.Goal)),
+		Outcome:  tr.Outcome,
+		Steps:    stepIDs(tr.Steps),
+	}
+}
+
+func stepIDs(steps []Step) []string {
+	out := make([]string, 0, len(steps))
+	for _, step := range steps {
+		if strings.TrimSpace(step.ID) != "" {
+			out = append(out, step.ID)
+		}
+	}
+	return out
 }
 
 func productionSnapshotID(tr ExecutionTrace) string {
@@ -2147,6 +2231,20 @@ func rollbackSignalsForState(st state, tr ExecutionTrace, policy ControlPolicy) 
 	if tr.Outcome == "failure" && len(recent) == 0 {
 		failures = 1
 	}
+	budgetViolations := 0
+	sandboxViolations := 0
+	canaryDivergences := 0
+	if tr.ProductionHardening != nil {
+		if !tr.ProductionHardening.ResourceDecision.Allowed {
+			budgetViolations++
+		}
+		if tr.ProductionHardening.Sandbox.KillReason != "" || tr.ProductionHardening.Sandbox.Isolation.PotentialLeak {
+			sandboxViolations++
+		}
+		if tr.ProductionHardening.CanaryDiff.Diverged {
+			canaryDivergences++
+		}
+	}
 	corrupted := 0
 	for _, node := range st.Nodes {
 		if node.Quality == QualityCorrupted {
@@ -2169,6 +2267,9 @@ func rollbackSignalsForState(st state, tr ExecutionTrace, policy ControlPolicy) 
 	return runtimerollback.Signals{
 		RecentExecutions:     recentExecutions,
 		RecentFailures:       failures,
+		BudgetViolations:     budgetViolations,
+		SandboxViolations:    sandboxViolations,
+		CanaryDivergences:    canaryDivergences,
 		OscillationIndex:     policy.OscillationIndex,
 		CorruptedMemoryNodes: corrupted,
 		ActiveStrategies:     activeStrategies,
@@ -2281,9 +2382,12 @@ func cloneProductionHardeningTrace(in *ProductionHardeningTrace) *ProductionHard
 		return nil
 	}
 	out := *in
+	out.ResourceReservation.Reasons = append([]string(nil), in.ResourceReservation.Reasons...)
 	out.ResourceDecision.Reasons = append([]string(nil), in.ResourceDecision.Reasons...)
 	out.Canary.Reasons = append([]string(nil), in.Canary.Reasons...)
+	out.CanaryDiff.Reasons = append([]string(nil), in.CanaryDiff.Reasons...)
 	out.RollbackDecision.Reasons = append([]string(nil), in.RollbackDecision.Reasons...)
+	out.RollbackDecision.FailureClasses = append([]runtimerollback.FailureClass(nil), in.RollbackDecision.FailureClasses...)
 	out.BlockReasons = append([]string(nil), in.BlockReasons...)
 	return &out
 }
