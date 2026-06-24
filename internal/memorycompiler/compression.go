@@ -23,6 +23,7 @@ const (
 	mediumOscillationWarning   = 0.35
 	highOscillationWarning     = 0.55
 	maxPredictionAdvisories    = 3
+	maxLongTailSafetySignals   = 3
 )
 
 type CompressionReport struct {
@@ -126,6 +127,9 @@ type ObserverLoopReport struct {
 	TemporalSync         TemporalSyncReport      `json:"temporal_sync,omitempty"`
 	SignalBacklog        PredictiveSignalBacklog `json:"signal_backlog,omitempty"`
 	AdvisoryBridge       PredictionActionBridge  `json:"advisory_bridge,omitempty"`
+	PredictionBias       PredictionBiasGuard     `json:"prediction_bias,omitempty"`
+	TemporalVariance     TemporalVarianceReport  `json:"temporal_variance,omitempty"`
+	LongTailSafety       LongTailSafetyReport    `json:"long_tail_safety,omitempty"`
 	FeedbackEligible     bool                    `json:"feedback_eligible,omitempty"`
 	FeedbackSignals      []string                `json:"feedback_signals,omitempty"`
 	Damping              GlobalDampingEnvelope   `json:"damping,omitempty"`
@@ -179,6 +183,36 @@ type PredictionActionBridge struct {
 	BacklogResolved           bool     `json:"backlog_resolved,omitempty"`
 }
 
+type PredictionBiasGuard struct {
+	Mode                       string   `json:"mode,omitempty"`
+	CounterfactualChecks       []string `json:"counterfactual_checks,omitempty"`
+	DriftRisk                  string   `json:"drift_risk,omitempty"`
+	PlanningDriftBlocked       bool     `json:"planning_drift_blocked"`
+	ExplorationPreserved       bool     `json:"exploration_preserved"`
+	AdvisoryNeutralityEnforced bool     `json:"advisory_neutrality_enforced"`
+}
+
+type TemporalVarianceReport struct {
+	Mode              string  `json:"mode,omitempty"`
+	LogicalClock      string  `json:"logical_clock,omitempty"`
+	PhysicalClock     string  `json:"physical_clock,omitempty"`
+	PhysicalLatencyMs int64   `json:"physical_latency_ms,omitempty"`
+	JitterIndex       float64 `json:"jitter_index,omitempty"`
+	VarianceBand      string  `json:"variance_band,omitempty"`
+	Normalization     string  `json:"normalization,omitempty"`
+	VarianceVisible   bool    `json:"variance_visible"`
+}
+
+type LongTailSafetyReport struct {
+	Mode              string   `json:"mode,omitempty"`
+	RetentionFloor    int      `json:"retention_floor,omitempty"`
+	RetainedSignals   []string `json:"retained_signals,omitempty"`
+	DecayedSignals    []string `json:"decayed_signals,omitempty"`
+	ProtectedSignals  []string `json:"protected_signals,omitempty"`
+	RareSignalCount   int      `json:"rare_signal_count,omitempty"`
+	LongTailPreserved bool     `json:"long_tail_preserved"`
+}
+
 type GlobalDampingEnvelope struct {
 	State             string   `json:"state,omitempty"`
 	Factor            float64  `json:"factor,omitempty"`
@@ -205,7 +239,7 @@ func buildCompressionReport(st state, tr ExecutionTrace, learning SystemLearning
 	memory := compressMemoryGraph(st, now)
 	alignment := crossGraphAlignment(causal, memory)
 	dynamics := causalSignalDynamics(causal, alignment)
-	observer := observerLoopReport(st.CompressionReports, dynamics, policy)
+	observer := observerLoopReport(st.CompressionReports, dynamics, policy, executionLatencyMs(tr))
 	bias := CompressionBiasReport{
 		AnchorBudget:      maxCompressedCausalAnchors,
 		LongTailRetained:  len(causal.LongTailEdges),
@@ -387,6 +421,16 @@ func compressExecutionTrace(tr ExecutionTrace, learning SystemLearning) Executio
 		CostBand:    tokenBand(tr.Cost.EstimatedInputTokens + tr.Cost.EstimatedCompiledTokens),
 		LatencyBand: latencyBand(tr.Cost.LatencyMs),
 	}
+}
+
+func executionLatencyMs(tr ExecutionTrace) int64 {
+	if tr.Cost.LatencyMs > 0 {
+		return tr.Cost.LatencyMs
+	}
+	if !tr.StartedAt.IsZero() && !tr.CompletedAt.IsZero() && tr.CompletedAt.After(tr.StartedAt) {
+		return tr.CompletedAt.Sub(tr.StartedAt).Milliseconds()
+	}
+	return 0
 }
 
 func compressControlGraph(st state, policy ControlPolicy) ControlGraphCompression {
@@ -603,6 +647,10 @@ func cloneCompressionReport(in *CompressionReport) *CompressionReport {
 	out.ObserverLoop.SignalBacklog.PendingSignals = append([]string(nil), in.ObserverLoop.SignalBacklog.PendingSignals...)
 	out.ObserverLoop.SignalBacklog.StaleSignals = append([]string(nil), in.ObserverLoop.SignalBacklog.StaleSignals...)
 	out.ObserverLoop.AdvisoryBridge.AdvisorySignals = append([]string(nil), in.ObserverLoop.AdvisoryBridge.AdvisorySignals...)
+	out.ObserverLoop.PredictionBias.CounterfactualChecks = append([]string(nil), in.ObserverLoop.PredictionBias.CounterfactualChecks...)
+	out.ObserverLoop.LongTailSafety.RetainedSignals = append([]string(nil), in.ObserverLoop.LongTailSafety.RetainedSignals...)
+	out.ObserverLoop.LongTailSafety.DecayedSignals = append([]string(nil), in.ObserverLoop.LongTailSafety.DecayedSignals...)
+	out.ObserverLoop.LongTailSafety.ProtectedSignals = append([]string(nil), in.ObserverLoop.LongTailSafety.ProtectedSignals...)
 	out.ObserverLoop.Damping.SuppressedSignals = append([]string(nil), in.ObserverLoop.Damping.SuppressedSignals...)
 	return &out
 }
@@ -963,7 +1011,7 @@ func amplitudeBand(gradient float64) string {
 	}
 }
 
-func observerLoopReport(history []CompressionReport, current CausalSignalDynamics, policy ControlPolicy) ObserverLoopReport {
+func observerLoopReport(history []CompressionReport, current CausalSignalDynamics, policy ControlPolicy, physicalLatencyMs int64) ObserverLoopReport {
 	lagWindow := adaptiveObserverLagWindow(policy)
 	samples := laggedDynamicsSamples(history, lagWindow.Size)
 	feedbackSignals := laggedFeedbackSignals(samples)
@@ -976,6 +1024,9 @@ func observerLoopReport(history []CompressionReport, current CausalSignalDynamic
 	temporal := temporalSyncReport(lagWindow.Size, dampingWindow)
 	backlog := predictiveSignalBacklog(history, shadow)
 	bridge := predictionActionBridge(shadow, backlog)
+	bias := predictionBiasGuard(bridge, policy)
+	variance := temporalVarianceReport(history, temporal, physicalLatencyMs)
+	longTail := longTailSafetyReport(backlog)
 	report := ObserverLoopReport{
 		Timeline:             "lagged",
 		ReadOnlyProjection:   true,
@@ -986,6 +1037,9 @@ func observerLoopReport(history []CompressionReport, current CausalSignalDynamic
 		TemporalSync:         temporal,
 		SignalBacklog:        backlog,
 		AdvisoryBridge:       bridge,
+		PredictionBias:       bias,
+		TemporalVariance:     variance,
+		LongTailSafety:       longTail,
 		FeedbackSignals:      feedbackSignals,
 		Damping:              damping,
 	}
@@ -1159,6 +1213,127 @@ func predictionActionBridge(shadow ShadowObserverReport, backlog PredictiveSigna
 		FeedbackBypassBlocked:     true,
 		BacklogResolved:           backlog.StaleCount > 0,
 	}
+}
+
+func predictionBiasGuard(bridge PredictionActionBridge, policy ControlPolicy) PredictionBiasGuard {
+	checks := []string{
+		"preserve_non_advisory_baseline",
+		"block_implicit_execution_promotion",
+	}
+	if bridge.AdvisoryEligible {
+		checks = append(checks, "compare_advisory_counterfactual")
+	}
+	driftRisk := "none"
+	switch {
+	case bridge.AdvisoryEligible && policy.ExplorationRatePercent <= 0:
+		driftRisk = "medium"
+	case bridge.AdvisoryEligible:
+		driftRisk = "low"
+	}
+	return PredictionBiasGuard{
+		Mode:                       "counterfactual_advisory_guard",
+		CounterfactualChecks:       limitStrings(canonicalStrings(checks), maxCompressionStrings),
+		DriftRisk:                  driftRisk,
+		PlanningDriftBlocked:       bridge.FeedbackBypassBlocked && !bridge.AffectsExecution,
+		ExplorationPreserved:       policy.ExplorationRatePercent > 0,
+		AdvisoryNeutralityEnforced: !bridge.AffectsExecution,
+	}
+}
+
+func temporalVarianceReport(history []CompressionReport, temporal TemporalSyncReport, physicalLatencyMs int64) TemporalVarianceReport {
+	latencies := previousPhysicalLatencies(history, maxObserverLagWindow-1)
+	if physicalLatencyMs > 0 {
+		latencies = append(latencies, physicalLatencyMs)
+	}
+	jitter := physicalLatencyJitterIndex(latencies)
+	return TemporalVarianceReport{
+		Mode:              "dual_clock_visible",
+		LogicalClock:      temporal.Clock,
+		PhysicalClock:     "execution_latency",
+		PhysicalLatencyMs: physicalLatencyMs,
+		JitterIndex:       jitter,
+		VarianceBand:      varianceBand(jitter),
+		Normalization:     temporal.Status,
+		VarianceVisible:   true,
+	}
+}
+
+func previousPhysicalLatencies(history []CompressionReport, limit int) []int64 {
+	if limit <= 0 || len(history) == 0 {
+		return nil
+	}
+	start := 0
+	if len(history) > limit {
+		start = len(history) - limit
+	}
+	out := make([]int64, 0, len(history)-start)
+	for _, report := range history[start:] {
+		latency := report.ObserverLoop.TemporalVariance.PhysicalLatencyMs
+		if latency > 0 {
+			out = append(out, latency)
+		}
+	}
+	return out
+}
+
+func physicalLatencyJitterIndex(latencies []int64) float64 {
+	if len(latencies) < 2 {
+		return 0
+	}
+	var minLatency, maxLatency int64
+	for i, latency := range latencies {
+		if i == 0 || latency < minLatency {
+			minLatency = latency
+		}
+		if latency > maxLatency {
+			maxLatency = latency
+		}
+	}
+	if maxLatency <= 0 {
+		return 0
+	}
+	return roundScore(float64(maxLatency-minLatency) / float64(maxLatency))
+}
+
+func varianceBand(jitter float64) string {
+	switch {
+	case jitter >= 0.6:
+		return "high"
+	case jitter >= 0.25:
+		return "medium"
+	case jitter > 0:
+		return "low"
+	default:
+		return "none"
+	}
+}
+
+func longTailSafetyReport(backlog PredictiveSignalBacklog) LongTailSafetyReport {
+	protected := prioritizedPredictiveSignals(longTailSafetyCandidates(backlog.StaleSignals), maxLongTailSafetySignals)
+	decayed := stringsNotIn(backlog.StaleSignals, protected)
+	retained := append([]string(nil), backlog.PendingSignals...)
+	retained = append(retained, protected...)
+	retained = prioritizedPredictiveSignals(retained, maxCompressionStrings)
+	return LongTailSafetyReport{
+		Mode:              "non_uniform_decay",
+		RetentionFloor:    maxLongTailSafetySignals,
+		RetainedSignals:   retained,
+		DecayedSignals:    limitStrings(decayed, maxCompressionStrings),
+		ProtectedSignals:  protected,
+		RareSignalCount:   len(protected),
+		LongTailPreserved: len(protected) > 0,
+	}
+}
+
+func longTailSafetyCandidates(signals []string) []string {
+	out := []string{}
+	for _, signal := range canonicalStrings(signals) {
+		if signal == "" || signal == "predicted_observer_oscillation" {
+			continue
+		}
+		out = append(out, signal)
+	}
+	return out
 }
 
 func prioritizedPredictiveSignals(signals []string, limit int) []string {

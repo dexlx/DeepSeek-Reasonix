@@ -387,7 +387,7 @@ func TestObserverLoopDampsOscillatingFeedback(t *testing.T) {
 		{TraceID: "r4", Dynamics: CausalSignalDynamics{OverRegularized: false}},
 		{TraceID: "r5", Dynamics: CausalSignalDynamics{OverRegularized: true, AmplifiedSignals: []string{"weakened_outcome"}}},
 	}}
-	report := observerLoopReport(st.CompressionReports, CausalSignalDynamics{}, defaultControlPolicy())
+	report := observerLoopReport(st.CompressionReports, CausalSignalDynamics{}, defaultControlPolicy(), 0)
 	if report.Damping.State != "damped" {
 		t.Fatalf("damping state = %q, want damped: %+v", report.Damping.State, report)
 	}
@@ -409,7 +409,7 @@ func TestShadowObserverWarnsWithoutFeedback(t *testing.T) {
 		AmplifiedSignals: []string{"supported_outcome"},
 		EntropySpikes:    []string{"rare_relation"},
 	}
-	report := observerLoopReport(st.CompressionReports, current, defaultControlPolicy())
+	report := observerLoopReport(st.CompressionReports, current, defaultControlPolicy(), 0)
 	if !report.ShadowObserver.CurrentTraceObserved || report.ShadowObserver.AffectsExecution {
 		t.Fatalf("shadow observer is not read-only: %+v", report.ShadowObserver)
 	}
@@ -436,14 +436,14 @@ func TestObserverLoopAdaptsLagWindowToSystemStability(t *testing.T) {
 	stablePolicy := defaultControlPolicy()
 	stablePolicy.SystemStabilityScore = 0.95
 	stablePolicy.OscillationIndex = 0.1
-	stable := observerLoopReport(history, CausalSignalDynamics{}, stablePolicy)
+	stable := observerLoopReport(history, CausalSignalDynamics{}, stablePolicy, 0)
 	if stable.LagWindow.Size != minObserverLagWindow || stable.LaggedSamples != minObserverLagWindow {
 		t.Fatalf("stable lag window = %+v, samples=%d", stable.LagWindow, stable.LaggedSamples)
 	}
 	unstablePolicy := defaultControlPolicy()
 	unstablePolicy.SystemStabilityScore = 0.2
 	unstablePolicy.OscillationIndex = 0.7
-	unstable := observerLoopReport(history, CausalSignalDynamics{}, unstablePolicy)
+	unstable := observerLoopReport(history, CausalSignalDynamics{}, unstablePolicy, 0)
 	if unstable.LagWindow.Size != maxObserverLagWindow || unstable.LaggedSamples != len(history) {
 		t.Fatalf("unstable lag window = %+v, samples=%d", unstable.LagWindow, unstable.LaggedSamples)
 	}
@@ -459,7 +459,7 @@ func TestPredictionActionBridgeIsAdvisoryOnly(t *testing.T) {
 		AmplifiedSignals: []string{"supported_outcome"},
 		EntropySpikes:    []string{"rare_relation"},
 	}
-	report := observerLoopReport(st.CompressionReports, current, defaultControlPolicy())
+	report := observerLoopReport(st.CompressionReports, current, defaultControlPolicy(), 0)
 	if !report.AdvisoryBridge.AdvisoryEligible {
 		t.Fatalf("missing advisory bridge signal: %+v", report.AdvisoryBridge)
 	}
@@ -485,7 +485,7 @@ func TestTemporalSyncSeparatesLagAndDampingClocks(t *testing.T) {
 	stablePolicy := defaultControlPolicy()
 	stablePolicy.SystemStabilityScore = 0.95
 	stablePolicy.OscillationIndex = 0.1
-	report := observerLoopReport(history, CausalSignalDynamics{}, stablePolicy)
+	report := observerLoopReport(history, CausalSignalDynamics{}, stablePolicy, 0)
 	if report.TemporalSync.LagWindow != minObserverLagWindow || report.TemporalSync.DampingWindow != defaultObserverLagWindow {
 		t.Fatalf("unexpected synchronized windows: %+v", report.TemporalSync)
 	}
@@ -512,7 +512,7 @@ func TestPredictiveSignalBacklogDecaysStaleWarnings(t *testing.T) {
 		OverRegularized: true,
 		EntropySpikes:   []string{"rare_relation"},
 	}
-	report := observerLoopReport(history, current, defaultControlPolicy())
+	report := observerLoopReport(history, current, defaultControlPolicy(), 0)
 	if !containsString(report.SignalBacklog.PendingSignals, "predicted_observer_oscillation") {
 		t.Fatalf("missing active warning in backlog: %+v", report.SignalBacklog)
 	}
@@ -521,5 +521,67 @@ func TestPredictiveSignalBacklogDecaysStaleWarnings(t *testing.T) {
 	}
 	if report.SignalBacklog.PendingCount > report.SignalBacklog.MaxSignals {
 		t.Fatalf("backlog exceeded bound: %+v", report.SignalBacklog)
+	}
+}
+
+func TestPredictionBiasGuardBlocksImplicitPlanningDrift(t *testing.T) {
+	current := CausalSignalDynamics{
+		OverRegularized:  true,
+		AmplifiedSignals: []string{"supported_outcome"},
+	}
+	report := observerLoopReport(nil, current, defaultControlPolicy(), 0)
+	if !report.PredictionBias.PlanningDriftBlocked || !report.PredictionBias.AdvisoryNeutralityEnforced {
+		t.Fatalf("prediction bias guard did not block implicit drift: %+v", report.PredictionBias)
+	}
+	if !containsString(report.PredictionBias.CounterfactualChecks, "compare_advisory_counterfactual") {
+		t.Fatalf("missing advisory counterfactual check: %+v", report.PredictionBias.CounterfactualChecks)
+	}
+	if report.AdvisoryBridge.AffectsExecution || report.FeedbackEligible {
+		t.Fatalf("prediction guard leaked into execution/feedback: %+v", report)
+	}
+}
+
+func TestTemporalVarianceKeepsPhysicalLatencyVisible(t *testing.T) {
+	history := []CompressionReport{{
+		TraceID: "slow",
+		ObserverLoop: ObserverLoopReport{
+			TemporalVariance: TemporalVarianceReport{PhysicalLatencyMs: 1000},
+		},
+	}}
+	report := observerLoopReport(history, CausalSignalDynamics{}, defaultControlPolicy(), 100)
+	if report.TemporalVariance.LogicalClock != "causal_observation_window" || report.TemporalVariance.PhysicalClock != "execution_latency" {
+		t.Fatalf("temporal variance clocks not recorded: %+v", report.TemporalVariance)
+	}
+	if report.TemporalVariance.PhysicalLatencyMs != 100 || report.TemporalVariance.JitterIndex < 0.8 {
+		t.Fatalf("physical jitter was hidden: %+v", report.TemporalVariance)
+	}
+	if !report.TemporalVariance.VarianceVisible || report.TemporalVariance.VarianceBand != "high" {
+		t.Fatalf("physical variance was not surfaced: %+v", report.TemporalVariance)
+	}
+}
+
+func TestLongTailSafetyPreservesRareStaleSignals(t *testing.T) {
+	history := []CompressionReport{}
+	for i := 0; i < maxObserverLagWindow+2; i++ {
+		signals := []string{"predicted_observer_oscillation"}
+		if i == 0 {
+			signals = []string{"rare_slow_burn_failure"}
+		}
+		history = append(history, CompressionReport{
+			TraceID: fmt.Sprintf("r%d", i),
+			ObserverLoop: ObserverLoopReport{
+				ShadowObserver: ShadowObserverReport{ObservationOnlySignals: signals},
+			},
+		})
+	}
+	report := observerLoopReport(history, CausalSignalDynamics{}, defaultControlPolicy(), 0)
+	if !report.LongTailSafety.LongTailPreserved || !containsString(report.LongTailSafety.ProtectedSignals, "rare_slow_burn_failure") {
+		t.Fatalf("rare stale signal was not protected: %+v", report.LongTailSafety)
+	}
+	if containsString(report.LongTailSafety.DecayedSignals, "rare_slow_burn_failure") {
+		t.Fatalf("protected long-tail signal also decayed: %+v", report.LongTailSafety)
+	}
+	if report.LongTailSafety.RareSignalCount > report.LongTailSafety.RetentionFloor {
+		t.Fatalf("long-tail retention exceeded floor: %+v", report.LongTailSafety)
 	}
 }
