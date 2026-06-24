@@ -254,6 +254,36 @@ func TestEnsureBlankTabOpensExistingProjectSidebarBlankTopic(t *testing.T) {
 	}
 }
 
+func TestEnsureBlankTabDoesNotReuseProjectTopicWithSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := robustTempDir(t)
+	app := NewApp()
+	topic, err := app.CreateTopic("project", projectRoot, "")
+	if err != nil {
+		t.Fatalf("CreateTopic: %v", err)
+	}
+	dir := desktopSessionDir(projectRoot)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	existingPath := writeTopicSession(t, dir, "existing.jsonl", topic.ID, defaultTopicTitle, projectRoot)
+	if got, _ := app.findTopicSessionForTarget("project", projectRoot, topic.ID); got != existingPath {
+		t.Fatalf("precondition topic session = %q, want %q", got, existingPath)
+	}
+
+	meta, err := app.EnsureBlankTab("project", projectRoot)
+	if err != nil {
+		t.Fatalf("EnsureBlankTab: %v", err)
+	}
+	if meta.TopicID == topic.ID {
+		t.Fatalf("EnsureBlankTab reused topic %q even though it already has session %q", topic.ID, existingPath)
+	}
+	if got, _ := app.findTopicSessionForTarget("project", projectRoot, topic.ID); got != existingPath {
+		t.Fatalf("existing topic session changed = %q, want %q", got, existingPath)
+	}
+}
+
 // NewSession skips the snapshot when the current tab has no real conversation content.
 
 func TestNewSessionNoopsWhenCurrentTabIsBlank(t *testing.T) {
