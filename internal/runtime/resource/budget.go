@@ -47,10 +47,15 @@ type CoordinatorSnapshot struct {
 }
 
 func DefaultBudget() ResourceBudget {
+	// These are advisory observability ceilings, not tight per-turn limits.
+	// MaxMemoryNodes in particular must stay comfortably above the memory-graph
+	// GC cap (memorycompiler.maxMemoryGraphNodes, currently 300) plus per-turn
+	// writeback growth — otherwise a fully-populated graph permanently trips the
+	// budget and the hardening verdict is stuck blocked forever.
 	return ResourceBudget{
-		MaxTokens:      32000,
-		MaxToolCalls:   20,
-		MaxMemoryNodes: 300,
+		MaxTokens:      200000,
+		MaxToolCalls:   200,
+		MaxMemoryNodes: 2000,
 	}
 }
 

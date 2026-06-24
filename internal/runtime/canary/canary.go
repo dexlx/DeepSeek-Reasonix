@@ -52,10 +52,16 @@ type CausalFactor struct {
 	Severity string `json:"severity"`
 }
 
+// DefaultPolicy is the policy used when no canary state has been initialised.
+// A local single-user runtime has no "traffic" to split, so the default is full
+// production (always enabled) rather than a 10% canary. This matches what
+// normalizeProductionState seeds, keeping a single source of truth and avoiding
+// the previous mismatch where DefaultPolicy claimed 10% while the runtime ran at
+// 100%.
 func DefaultPolicy() Policy {
 	return Policy{
-		Mode:           CanaryMode,
-		TrafficPercent: 10,
+		Mode:           FullProductionMode,
+		TrafficPercent: 100,
 		MinStableRuns:  5,
 	}
 }

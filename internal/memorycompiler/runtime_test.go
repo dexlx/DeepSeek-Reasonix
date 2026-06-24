@@ -801,7 +801,7 @@ func TestTruthLockedNodeCannotBeOverwritten(t *testing.T) {
 	}
 }
 
-func TestProductionHardeningBlocksBudgetExceededCompilerInjection(t *testing.T) {
+func TestProductionHardeningRecordsBudgetExceededButStillInjects(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC()
 	st := state{
@@ -830,16 +830,21 @@ func TestProductionHardeningBlocksBudgetExceededCompilerInjection(t *testing.T) 
 	if err := writeJSON(filepath.Join(dir, stateFile), st); err != nil {
 		t.Fatal(err)
 	}
-	ctx, turn := New(dir).StartTurn(context.Background(), "fix a bug", nil)
-	if ctx != "" {
-		t.Fatalf("budget exceeded turn injected contract:\n%s", ctx)
+	contract, turn := New(dir).StartTurn(context.Background(), "fix a bug", nil)
+	// Hardening is observability only: an over-budget verdict must NOT suppress
+	// the cache-safe contract. The contract is plain input text and the real
+	// execution that follows is still bounded by tool permissions. (Regression
+	// guard: gating here once made the whole compiler fall silent forever once
+	// learned memory reached the GC cap.)
+	if contract == "" {
+		t.Fatal("over-budget turn must still inject the contract; hardening must not gate it")
 	}
 	if turn == nil || turn.trace.ProductionHardening == nil {
 		t.Fatalf("missing production hardening trace: %+v", turn)
 	}
 	hardening := turn.trace.ProductionHardening
 	if hardening.Allowed {
-		t.Fatalf("hardening allowed exceeded budget: %+v", hardening)
+		t.Fatalf("hardening should record not-allowed when over budget: %+v", hardening)
 	}
 	if !strings.Contains(strings.Join(hardening.BlockReasons, "\n"), "memory node budget exceeded") {
 		t.Fatalf("missing memory budget reason: %+v", hardening.BlockReasons)
@@ -899,7 +904,7 @@ func TestProductionHardeningCreatesSnapshotAndRestoresState(t *testing.T) {
 	}
 }
 
-func TestProductionHardeningBlocksUnreservedToolCallGrowth(t *testing.T) {
+func TestProductionHardeningRecordsUnreservedToolCallButKeepsOutcome(t *testing.T) {
 	now := time.Now().UTC()
 	rt := New(t.TempDir())
 	st := state{Production: normalizeProductionState(ProductionState{}), NoisyRefs: map[string]int{}}
@@ -923,11 +928,18 @@ func TestProductionHardeningBlocksUnreservedToolCallGrowth(t *testing.T) {
 		CompletedAt:         now.Add(time.Second),
 	}
 	_, tr = rt.applyProductionHardening(st, tr, defaultControlPolicy(), now)
-	if tr.Outcome != "partial_success" {
-		t.Fatalf("outcome = %q, want partial_success for unreserved tool growth", tr.Outcome)
+	// The turn genuinely succeeded (err==nil); hardening must NOT rewrite the real
+	// outcome. A budget overrun is recorded as an advisory observation only.
+	// (Regression guard: this previously demoted every >budget success to
+	// partial_success, poisoning the trace log.)
+	if tr.Outcome != "success" {
+		t.Fatalf("outcome = %q, want success preserved (hardening must not demote real results)", tr.Outcome)
 	}
 	if tr.ProductionHardening == nil || tr.ProductionHardening.ResourceDecision.Allowed {
-		t.Fatalf("resource decision allowed unreserved tool growth: %+v", tr.ProductionHardening)
+		t.Fatalf("resource decision should record unreserved tool growth: %+v", tr.ProductionHardening)
+	}
+	if tr.ProductionHardening.Allowed {
+		t.Fatalf("hardening should record not-allowed for unreserved tool growth: %+v", tr.ProductionHardening)
 	}
 	if !strings.Contains(strings.Join(tr.ProductionHardening.BlockReasons, "\n"), "unreserved tool call usage") {
 		t.Fatalf("missing unreserved tool-call reason: %+v", tr.ProductionHardening.BlockReasons)

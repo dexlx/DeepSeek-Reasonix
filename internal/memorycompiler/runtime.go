@@ -500,9 +500,11 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	if !hasUsefulIR(ir) {
 		return "", t
 	}
-	if hardening != nil && !hardening.Allowed {
-		return "", t
-	}
+	// Production hardening is an observability signal recorded on the trace; it
+	// must not gate whether the cache-safe contract is injected. The contract is
+	// plain input text (not a privileged action), and the execution that follows
+	// is still bounded by tool permissions. Gating here previously made the whole
+	// compiler fall silent once learned memory nodes reached their GC cap.
 	compiled, err := compileExecutionContract(ir)
 	if err != nil {
 		return "", t
@@ -1352,30 +1354,17 @@ func hardeningTraceForStartWithCoordinator(ctx context.Context, ir PlannerIR, in
 	reservation := reserveProductionBudget(coordinator, reservationID, prod.Budget, usage, sandboxContextForProduction(prod), now)
 	resourceDecision := reservation.Decision()
 	canaryDecision := runtimecanary.Evaluate(prod.Canary, ir.Goal+"\x00"+ir.SourceEvent)
-	sandboxExec := runtimesandbox.Start(sandboxContextForProduction(prod), now)
-	var sandboxErr error
-	for range ir.ExecutionSteps {
-		if err := sandboxExec.Step(now); err != nil {
-			sandboxErr = err
-			break
-		}
-	}
-	if sandboxErr == nil {
-		sandboxErr = sandboxExec.AddToolCalls(usage.ToolCalls, now)
-	}
-	isolationSnapshot, isolationErr := runtimesandbox.RunIsolated(ctx, sandboxContextForProduction(prod), now, func(context.Context) error {
-		return nil
-	})
-	sandboxSnapshot := sandboxExec.Snapshot()
-	sandboxSnapshot.Isolation = isolationSnapshot.Isolation
+	// Production hardening is observability only: it records a budget/canary view
+	// of the turn. It no longer runs a per-turn sandbox replay or an isolated
+	// goroutine — that work produced trace metadata that never reached the model
+	// yet cost a goroutine + CPU on every single turn.
 	trace := &ProductionHardeningTrace{
-		Sandbox:              sandboxSnapshot,
 		ResourceReservation:  reservation,
 		ResourceDecision:     resourceDecision,
 		BudgetCoordinator:    coordinatorSnapshot(coordinator, now),
 		Canary:               canaryDecision,
 		EnforcementAuthority: "production_hardening",
-		Allowed:              resourceDecision.Allowed && canaryDecision.Enabled && sandboxErr == nil && isolationErr == nil && !sandboxHasActiveEscape(sandboxSnapshot),
+		Allowed:              resourceDecision.Allowed && canaryDecision.Enabled,
 	}
 	if !resourceDecision.Allowed {
 		trace.BlockReasons = append(trace.BlockReasons, resourceDecision.Reasons...)
@@ -1383,16 +1372,6 @@ func hardeningTraceForStartWithCoordinator(ctx context.Context, ir PlannerIR, in
 	if !canaryDecision.Enabled {
 		trace.BlockReasons = append(trace.BlockReasons, canaryDecision.Reasons...)
 	}
-	if sandboxErr != nil {
-		trace.BlockReasons = append(trace.BlockReasons, sandboxErr.Error())
-	}
-	if isolationErr != nil {
-		trace.BlockReasons = append(trace.BlockReasons, isolationErr.Error())
-	}
-	if sandboxSnapshot.Isolation.PotentialLeak {
-		trace.BlockReasons = append(trace.BlockReasons, "sandbox isolated execution did not terminate after cancellation")
-	}
-	trace.BlockReasons = append(trace.BlockReasons, sandboxEscapeReasons(sandboxSnapshot)...)
 	trace.BlockReasons = limitStrings(canonicalStrings(trace.BlockReasons), 6)
 	return trace
 }
@@ -1447,21 +1426,6 @@ func sandboxHasActiveEscape(snapshot runtimesandbox.ExecutionSnapshot) bool {
 	return runtimesandbox.HasActiveEscape(snapshot.Isolation.EscapeReport)
 }
 
-func sandboxEscapeReasons(snapshot runtimesandbox.ExecutionSnapshot) []string {
-	out := []string{}
-	for _, finding := range snapshot.Isolation.EscapeReport.Active {
-		if finding.Class == "" {
-			continue
-		}
-		reason := "sandbox escape class " + finding.Class
-		if finding.Evidence != "" {
-			reason += ": " + finding.Evidence
-		}
-		out = append(out, reason)
-	}
-	return out
-}
-
 func estimatedMemoryWritebackGrowth(ir PlannerIR) int {
 	growth := 3 + len(ir.ExecutionSteps)
 	if len(ir.MemoryReferences) > 0 {
@@ -1490,11 +1454,7 @@ func estimateIRTokens(ir PlannerIR) int {
 func normalizeProductionState(prod ProductionState) ProductionState {
 	prod.Budget = runtimeresource.Normalize(prod.Budget)
 	if prod.Canary.Mode == "" {
-		prod.Canary = runtimecanary.Policy{
-			Mode:           runtimecanary.FullProductionMode,
-			TrafficPercent: 100,
-			MinStableRuns:  5,
-		}
+		prod.Canary = runtimecanary.DefaultPolicy()
 	}
 	prod.Canary = runtimecanary.Normalize(prod.Canary)
 	if prod.ExecutionCount < 0 {
@@ -2063,67 +2023,23 @@ func (r *Runtime) applyProductionHardening(st state, tr ExecutionTrace, policy C
 	hardening.ResourceReservation = reservation
 	hardening.ResourceDecision = resourceDecision
 	hardening.BudgetCoordinator = coordinatorSnapshot(budgetCoordinatorForDir(r.dir), now)
-	sandboxStart := tr.StartedAt
-	if sandboxStart.IsZero() {
-		sandboxStart = now
-	}
-	sandboxEnd := tr.CompletedAt
-	if sandboxEnd.IsZero() {
-		sandboxEnd = now
-	}
-	sandboxExec := runtimesandbox.Start(sandboxContextForProduction(st.Production), sandboxStart)
-	var sandboxErr error
-	for range tr.Steps {
-		if err := sandboxExec.Step(sandboxEnd); err != nil {
-			sandboxErr = err
-			break
-		}
-	}
-	if sandboxErr == nil {
-		sandboxErr = sandboxExec.AddToolCalls(actualUsage.ToolCalls, sandboxEnd)
-	}
-	isolationSnapshot, isolationErr := runtimesandbox.RunIsolated(context.Background(), sandboxContextForProduction(st.Production), sandboxStart, func(context.Context) error {
-		return nil
-	})
-	sandboxSnapshot := sandboxExec.Snapshot()
-	sandboxSnapshot.Isolation = isolationSnapshot.Isolation
-	hardening.Sandbox = sandboxSnapshot
 	hardening.EnforcementAuthority = "production_hardening"
+	hardening.BlockReasons = nil
 	if !resourceDecision.Allowed {
-		hardening.Allowed = false
 		hardening.BlockReasons = append(hardening.BlockReasons, resourceDecision.Reasons...)
-	}
-	if sandboxErr != nil {
-		hardening.Allowed = false
-		hardening.BlockReasons = append(hardening.BlockReasons, sandboxErr.Error())
-	}
-	if isolationErr != nil {
-		hardening.Allowed = false
-		hardening.BlockReasons = append(hardening.BlockReasons, isolationErr.Error())
-	}
-	if sandboxSnapshot.Isolation.PotentialLeak {
-		hardening.Allowed = false
-		hardening.BlockReasons = append(hardening.BlockReasons, "sandbox isolated execution did not terminate after cancellation")
-	}
-	if sandboxHasActiveEscape(sandboxSnapshot) {
-		hardening.Allowed = false
-		hardening.BlockReasons = append(hardening.BlockReasons, sandboxEscapeReasons(sandboxSnapshot)...)
 	}
 	if !hardening.Canary.Enabled && hardening.Canary.Mode == "" {
 		hardening.Canary = runtimecanary.Evaluate(st.Production.Canary, tr.Goal+"\x00"+tr.ID)
 	}
 	if !hardening.Canary.Enabled {
-		hardening.Allowed = false
 		hardening.BlockReasons = append(hardening.BlockReasons, hardening.Canary.Reasons...)
 	}
-	if len(hardening.BlockReasons) == 0 {
-		hardening.Allowed = true
-	}
+	hardening.Allowed = resourceDecision.Allowed && hardening.Canary.Enabled
 	hardening.BlockReasons = limitStrings(canonicalStrings(hardening.BlockReasons), 6)
-	if !hardening.Allowed && tr.Outcome == "success" {
-		tr.Outcome = "partial_success"
-		tr.FailureReason = "production hardening blocked unsafe execution: " + strings.Join(hardening.BlockReasons, "; ")
-	}
+	// Hardening NEVER rewrites tr.Outcome. The turn already executed and its real
+	// result stands; a not-Allowed verdict is recorded on the trace as an advisory
+	// budget/canary observation only. (Previously a successful turn with >20 tool
+	// calls was silently demoted to partial_success, poisoning the trace log.)
 	sample := productionBehaviorSample(tr, hardening)
 	if st.Production.Canary.Mode == runtimecanary.CanaryMode && hardening.Canary.Enabled {
 		hardening.CanaryDiff = runtimecanary.CompareBehavior(sample, st.Production.CanaryBaseline)
