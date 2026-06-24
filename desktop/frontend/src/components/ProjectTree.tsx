@@ -1047,6 +1047,7 @@ export function ProjectTree({
               className="project-tree__topic-input"
               value={topicDraft}
               onChange={(event) => setTopicDraft(event.target.value)}
+              onFocus={(event) => event.target.select()}
               onKeyDown={(event) => {
                 if (event.key === "Enter") void commitRenameTopic(topicId);
                 if (event.key === "Escape") setEditingTopic(null);
