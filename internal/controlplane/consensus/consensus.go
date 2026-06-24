@@ -122,18 +122,32 @@ func capDominantWeights(weights []float64) []float64 {
 	if len(weights) < 2 {
 		return weights
 	}
-	total := 0.0
-	for _, w := range weights {
-		total += w
-	}
-	if total <= 0 {
-		return weights
-	}
-	capValue := total * maxNodeShare
-	for i, w := range weights {
-		if w > capValue {
-			weights[i] = capValue
+	// Bound each node to maxNodeShare of the POST-cap total. Capping against the
+	// pre-cap total is ineffective: clamping [100,1] to 0.55*101=55.55 still
+	// leaves that node at 55.55/56.55 ≈ 98% of the total. For a dominant node we
+	// need w/(w+others) == maxNodeShare, i.e. w = maxNodeShare*others/(1-maxNodeShare).
+	// Capping one node lowers the total for the rest, so iterate (at most one new
+	// dominant node can appear per pass, bounded by len(weights)).
+	for range weights {
+		total := 0.0
+		for _, w := range weights {
+			total += w
 		}
+		if total <= 0 {
+			return weights
+		}
+		capValue := total * maxNodeShare
+		idx := -1
+		for i, w := range weights {
+			if w > capValue+1e-9 && (idx == -1 || w > weights[idx]) {
+				idx = i
+			}
+		}
+		if idx == -1 {
+			break
+		}
+		others := total - weights[idx]
+		weights[idx] = maxNodeShare * others / (1 - maxNodeShare)
 	}
 	return weights
 }

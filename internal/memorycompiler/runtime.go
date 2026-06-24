@@ -463,7 +463,13 @@ func (r *Runtime) StartTurn(ctx context.Context, input string, _ []provider.Mess
 	if r == nil {
 		return "", nil
 	}
-	goal := summarizeGoal(input)
+	// Classify the goal from the user's actual text, not the "Referenced context:"
+	// preamble + file blocks the controller injects on @-references — otherwise
+	// summarizeGoal and strategy matching key off file contents. SourceEvent (the
+	// full input passed to buildIRWithPolicy) is kept intact on purpose: when the
+	// compiled contract replaces the user turn, source_event is the model's only
+	// view of the referenced files.
+	goal := summarizeGoal(stripReferencedContext(input))
 	st := r.loadState()
 	ir, policy := buildIRWithPolicy(goal, input, st)
 	now := time.Now().UTC()
@@ -1347,10 +1353,11 @@ func (r *Runtime) hardeningTraceForStart(ctx context.Context, ir PlannerIR, inpu
 
 func hardeningTraceForStartWithCoordinator(ctx context.Context, ir PlannerIR, input string, st state, now time.Time, coordinator *runtimeresource.Coordinator, reservationID string) *ProductionHardeningTrace {
 	prod := normalizeProductionState(st.Production)
+	// Reserve only what the injected IR plan actually uses (its execution steps),
+	// not the full MaxToolCalls. An empty / un-useful IR injects no contract, so
+	// it must not reserve the entire tool budget — with the shared per-workspace
+	// coordinator that let concurrent tabs starve each other's reservations.
 	usage := hardeningUsageForStart(ir, input, st)
-	if !hasUsefulIR(ir) || len(ir.ExecutionSteps) == 0 {
-		usage.ToolCalls = prod.Budget.MaxToolCalls
-	}
 	reservation := reserveProductionBudget(coordinator, reservationID, prod.Budget, usage, sandboxContextForProduction(prod), now)
 	resourceDecision := reservation.Decision()
 	canaryDecision := runtimecanary.Evaluate(prod.Canary, ir.Goal+"\x00"+ir.SourceEvent)
@@ -1891,7 +1898,11 @@ func outcomeFor(records []ToolRecord, err error) string {
 		return "failure"
 	}
 	if len(records) == 0 {
-		return "partial_success"
+		// A turn that finishes without error and without tool calls is a
+		// successful plain-text answer, not a partial success. Returning
+		// partial_success here made updateStrategy count every no-tool turn as a
+		// strategy failure, poisoning scores once Memory v5 is on by default.
+		return "success"
 	}
 	for i := len(records) - 1; i >= 0; i-- {
 		if strings.TrimSpace(records[i].Name) == "" {
@@ -3279,6 +3290,44 @@ func summarizeGoal(input string) string {
 		return string(r[:180]) + "..."
 	}
 	return input
+}
+
+// stripReferencedContext removes the "Referenced context:" preamble and the XML
+// reference blocks (<file>/<dir>/<resource>/<image>) the controller injects when
+// the user @-references files, returning the user's actual text. Used only for
+// goal classification (not SourceEvent). This duplicates
+// control.StripReferencedContextPrefix on purpose: memorycompiler cannot import
+// control because control imports the agent package that drives this runtime, so
+// the two must stay in sync by convention.
+func stripReferencedContext(content string) string {
+	const preamble = "Referenced context:"
+	s := strings.TrimSpace(content)
+	if !strings.HasPrefix(s, preamble) {
+		return content
+	}
+	s = strings.TrimSpace(s[len(preamble):])
+	for {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return ""
+		}
+		if !strings.HasPrefix(s, "<file ") && !strings.HasPrefix(s, "<dir ") &&
+			!strings.HasPrefix(s, "<resource ") && !strings.HasPrefix(s, "<image ") {
+			break
+		}
+		tagEnd := strings.IndexByte(s, ' ')
+		if tagEnd < 0 {
+			break
+		}
+		tagName := s[1:tagEnd]
+		closeTag := "</" + tagName + ">"
+		closeIdx := strings.Index(s, closeTag)
+		if closeIdx < 0 {
+			break
+		}
+		s = strings.TrimSpace(s[closeIdx+len(closeTag):])
+	}
+	return s
 }
 
 func traceID(t time.Time) string {
