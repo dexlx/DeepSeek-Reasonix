@@ -419,7 +419,7 @@ export function Composer({
   modelLabel: string;
   tabId?: string;
   effort?: EffortInfo;
-  onSend: (displayText: string, submitText?: string) => void;
+  onSend: (displayText: string, submitText?: string) => void | Promise<void>;
   // Returns the un-sent text when cancelling before the server replied (so it can
   // be restored to the input); undefined for a normal cancel.
   onCancel: () => string | undefined;
@@ -1100,25 +1100,27 @@ export function Composer({
     submittingRef.current = true;
     setSubmitting(true);
     try {
-    const orderedAttachments = sortComposerAttachments(attachments);
-    const refs = [
-      ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
-      ...orderedAttachments.map((a) => `@${a.path}`),
-    ].join(" ");
-    const displayRefs = [
-      ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
-      ...orderedAttachments.map(formatAttachmentDisplayReference),
-    ].join(" ");
-    const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
-    // PR-B: when past:chats refs are attached, prepend their formatted transcript
-    // to submitText only (displayText stays unchanged so the user still sees their
-    // original prompt in the input preview). With no refs we keep the original
-    // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
-    const sessionContext = sessionRefs.length === 0 ? "" : await buildSessionContext(sessionRefs);
-    const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
-    const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
-    onSend(displayText, submitText);
-    clearSubmittedDraft(submitDraftKey);
+      const orderedAttachments = sortComposerAttachments(attachments);
+      const refs = [
+        ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
+        ...orderedAttachments.map((a) => `@${a.path}`),
+      ].join(" ");
+      const displayRefs = [
+        ...workspaceRefs.map((ref) => formatWorkspaceReference(ref.path, ref.isDir)),
+        ...orderedAttachments.map(formatAttachmentDisplayReference),
+      ].join(" ");
+      const displayText = [trimmedText, displayRefs].filter(Boolean).join(trimmedText && displayRefs ? " " : "");
+      // PR-B: when past:chats refs are attached, prepend their formatted transcript
+      // to submitText only (displayText stays unchanged so the user still sees their
+      // original prompt in the input preview). With no refs we keep the original
+      // submitText verbatim — no header, no rewording, byte-identical to pre-PR-B.
+      const sessionContext = sessionRefs.length === 0 ? "" : await buildSessionContext(sessionRefs);
+      const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
+      const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+      await onSend(displayText, submitText);
+      clearSubmittedDraft(submitDraftKey);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : String(error), "warn");
     } finally {
       submittingRef.current = false;
       setSubmitting(false);

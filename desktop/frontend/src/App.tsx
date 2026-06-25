@@ -1113,6 +1113,7 @@ export default function App() {
   const footerRef = useRef<HTMLElement>(null);
   const runningRef = useRef(state.running);
   const activeTabIdRef = useRef(activeTabId);
+  const commitThenSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
   const preferredWorkspacePanelWidth = rightDockDetailActive ? rightDockPreviewWidth : rightDockTreeWidth;
   const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
@@ -1464,8 +1465,10 @@ export default function App() {
     if (!pendingPlanRevision || state.running) return;
     const text = pendingPlanRevision;
     setPendingPlanRevision(null);
-    commitThenSend(text);
-  }, [pendingPlanRevision, send, state.running]);
+    void commitThenSendRef.current(text).catch((err) => {
+      console.warn("Failed to submit pending plan revision", err);
+    });
+  }, [pendingPlanRevision, state.running]);
 
   useEffect(() => {
     setClearContextPending(false);
@@ -1513,7 +1516,7 @@ export default function App() {
           notice("usage: !<command>  (e.g. !ls -la)");
           return;
         }
-        runShell(cmd);
+        await runShell(cmd);
         return;
       }
       const model = /^\/model\s+(\S+)$/.exec(trimmed);
@@ -1549,13 +1552,13 @@ export default function App() {
           applyGoal("");
         }
         if (!controllerReady) return;
-        commitThenSend(trimmed, submitText.trim());
+        await commitThenSendRef.current(trimmed, submitText.trim());
         return;
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         if (!controllerReady) return;
         applyGoal(trimmed);
-        commitThenSend(trimmed, `/goal ${submitText.trim()}`);
+        await commitThenSendRef.current(trimmed, `/goal ${submitText.trim()}`);
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -1592,12 +1595,12 @@ export default function App() {
         notice(t("settings.themeUnknown", { name: arg }), "warn");
         return;
       }
-      if (runningRef.current) { steer(submitText.trim()); return; }
+      if (runningRef.current) { await steer(submitText.trim()); return; }
       if (!controllerReady) return;
       await setControllerCollaborationMode(controllerComposerProfileCollaborationMode(composerProfile));
       await setControllerToolApprovalMode(toolApprovalMode);
       if (goal.trim()) await setControllerGoal(goal);
-      commitThenSend(trimmed, submitText.trim());
+      await commitThenSendRef.current(trimmed, submitText.trim());
     },
     [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, send, runShell, notice, setControllerCollaborationMode, setControllerGoal, setControllerToolApprovalMode, steer, switchModel, t, toolApprovalMode, showToast],
   );
@@ -2115,8 +2118,8 @@ export default function App() {
 
   // send wrapper: commits any pending optimistic rewind before sending.
   const commitThenSend = useCallback(async (displayText: string, submitText?: string) => {
-    if (activeTab?.readOnly) return;
-    if (!controllerReady) return;
+    if (activeTab?.readOnly) throw new Error("channel session is read-only");
+    if (!controllerReady) throw new Error("workspace is still starting");
     const rs = rewindStateRef.current;
     if (rs) {
       rewindStateRef.current = null;
@@ -2132,7 +2135,7 @@ export default function App() {
         // Rewind failed: the Go conversation is intact. Do not send; the
         // controller emits a notice with the reason.
         setRewindState(null);
-        return;
+        throw new Error("rewind failed");
       }
       setRewindSignal((v) => v + 1);
       if (rs.scope === "both") {
@@ -2141,13 +2144,16 @@ export default function App() {
         setProjectRevision((v) => v + 1);
       }
     }
-    send(displayText, submitText);
+    await send(displayText, submitText);
   }, [activeTab?.readOnly, controllerReady, send, rewind]);
 
   const handleTranscriptPrompt = useCallback((text: string) => {
     if (!controllerReady) return;
-    void commitThenSend(text);
+    void commitThenSend(text).catch((err) => {
+      console.warn("Failed to submit transcript prompt", err);
+    });
   }, [commitThenSend, controllerReady]);
+  commitThenSendRef.current = commitThenSend;
 
   const handleMessageAction = useCallback((turn: number, scope: string) => {
     if (activeTab?.readOnly) return;
@@ -2226,8 +2232,12 @@ export default function App() {
     const ok = await rewind(turn, "conversation");
     if (!ok) return false;
     setRewindSignal((v) => v + 1);
-    sendToTab(sourceTabId, next, submit);
-    return true;
+    try {
+      await sendToTab(sourceTabId, next, submit);
+      return true;
+    } catch {
+      return false;
+    }
   }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.messageAction, state.running, rewind]);
 
   const handleOpenTopic = useCallback(async (scope: string, workspaceRoot: string, topicId: string, sessionPath?: string) => {

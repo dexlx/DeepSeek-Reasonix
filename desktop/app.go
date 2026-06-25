@@ -647,22 +647,25 @@ func (a *App) domReady(_ context.Context) {
 
 // Submit runs raw user input as a turn; slash commands and @-references are
 // resolved by the controller. Output arrives asynchronously on eventChannel.
-func (a *App) Submit(input string) {
-	a.SubmitToTab("", input)
+func (a *App) Submit(input string) error {
+	return a.SubmitToTab("", input)
 }
 
-func (a *App) SubmitToTab(tabID, input string) {
-	if a.tabReadOnly(tabID) {
-		return
+func (a *App) SubmitToTab(tabID, input string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if tab != nil && tab.ReadOnly {
+		return readOnlyChannelErr()
 	}
 	trimmed := strings.TrimSpace(input)
 	if trimmed == "/effort" || strings.HasPrefix(trimmed, "/effort ") {
 		a.runEffortCommandForTab(tabID, trimmed)
-		return
+		return nil
 	}
-	if ctrl := a.ctrlByTabID(tabID); ctrl != nil {
-		ctrl.SubmitDisplay(input, input)
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
 	}
+	ctrl.SubmitDisplay(input, input)
+	return nil
 }
 
 func (a *App) submitUserTurnToTab(tabID, input string) bool {
@@ -679,34 +682,38 @@ func (a *App) submitUserTurnToTab(tabID, input string) bool {
 
 // RunShell executes a shell command directly (bypassing the model) and streams
 // output as events on eventChannel.
-func (a *App) RunShell(command string) {
-	a.RunShellForTab("", command)
+func (a *App) RunShell(command string) error {
+	return a.RunShellForTab("", command)
 }
 
-func (a *App) RunShellForTab(tabID, command string) {
-	if a.tabReadOnly(tabID) {
-		return
+func (a *App) RunShellForTab(tabID, command string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if tab != nil && tab.ReadOnly {
+		return readOnlyChannelErr()
 	}
-	if ctrl := a.ctrlByTabID(tabID); ctrl != nil {
-		ctrl.RunShell(command)
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
 	}
+	ctrl.RunShell(command)
+	return nil
 }
 
 // SubmitDisplay runs input as a turn while recording a shorter UI-only display
 // string for the saved desktop transcript. The model still receives input.
-func (a *App) SubmitDisplay(display, input string) {
-	a.SubmitDisplayToTab("", display, input)
+func (a *App) SubmitDisplay(display, input string) error {
+	return a.SubmitDisplayToTab("", display, input)
 }
 
-func (a *App) SubmitDisplayToTab(tabID, display, input string) {
-	if a.tabReadOnly(tabID) {
-		return
+func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if tab != nil && tab.ReadOnly {
+		return readOnlyChannelErr()
 	}
-	ctrl := a.ctrlByTabID(tabID)
 	if ctrl == nil {
-		return
+		return workspaceNotReadyErr(tab)
 	}
 	ctrl.SubmitDisplay(display, input)
+	return nil
 }
 
 func (a *App) bindControllerDisplayRecorder(ctrl control.SessionAPI) {
@@ -734,23 +741,36 @@ func (a *App) CancelTab(tabID string) {
 }
 
 // Steer sends mid-turn guidance to the agent without interrupting the in-flight request.
-func (a *App) Steer(text string) {
-	a.SteerForTab("", text)
+func (a *App) Steer(text string) error {
+	return a.SteerForTab("", text)
 }
 
 // SteerForTab sends mid-turn guidance to a specific tab's agent.
-func (a *App) SteerForTab(tabID, text string) {
-	if a.tabReadOnly(tabID) {
-		return
+func (a *App) SteerForTab(tabID, text string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if tab != nil && tab.ReadOnly {
+		return readOnlyChannelErr()
 	}
-	if ctrl := a.ctrlByTabID(tabID); ctrl != nil {
-		ctrl.Steer(text)
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
 	}
+	ctrl.Steer(text)
+	return nil
 }
 
 func (a *App) tabReadOnly(tabID string) bool {
 	tab := a.tabByID(tabID)
 	return tab != nil && tab.ReadOnly
+}
+
+func (a *App) tabAndCtrlByID(tabID string) (*WorkspaceTab, control.SessionAPI) {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	tab := a.tabByIDLocked(tabID)
+	if tab == nil {
+		return nil, nil
+	}
+	return tab, tab.Ctrl
 }
 
 func readOnlyChannelErr() error {

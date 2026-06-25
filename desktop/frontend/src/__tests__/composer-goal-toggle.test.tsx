@@ -100,7 +100,9 @@ async function renderComposer(props: Partial<Parameters<typeof Composer>[0]> = {
     goal: "",
     cwd: "/repo",
     modelLabel: "DeepSeek-R1",
-    onSend: (displayText) => calls.send.push(displayText),
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+    },
     onCancel: () => undefined,
     onCycleMode: () => {},
     onSetMode: () => {},
@@ -366,6 +368,72 @@ console.log("\ncomposer goal toggle");
 
   await act(async () => {
     dropNavRoot.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  let rejectSubmit: (err: Error) => void = () => {};
+  const rejectedSubmit = new Promise<void>((_, reject) => {
+    rejectSubmit = reject;
+  });
+  rejectedSubmit.catch(() => {});
+  const { root, calls, rerender } = await renderComposer({
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+      return rejectedSubmit;
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  await rerender({ insertRequest: { id: 2, text: "keep this draft", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await act(async () => {
+    sendButton.click();
+    rejectSubmit(new Error("workspace is still starting"));
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "keep this draft", "rejected submit attempts the send once");
+  eq(textarea.value, "keep this draft", "rejected submit preserves the composer draft");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+      return Promise.resolve();
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  await rerender({ insertRequest: { id: 3, text: "send this draft", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "send this draft", "successful submit attempts the send once");
+  eq(textarea.value, "", "successful submit clears the composer draft");
+
+  await act(async () => {
+    root.unmount();
   });
   dom.window.close();
 }

@@ -517,7 +517,8 @@ function applyEvent(s: State, e: WireEvent): State {
     if (e.kind === "turn_done") return { ...s, discardTurn: false, running: false, turnActive: false, pendingPrompt: false, cancelRequested: false, cancellable: false, currentAssistant: undefined, live: undefined };
     return s;
   }
-  if (e.kind === "memory_compiler_stats") {
+  if (e.kind === "memory_compiler_stats" || e.kind === "mcp_surface_ready") {
+    // Background-only events must not confirm an optimistic user bubble.
     return s;
   }
   if (s.pendingUser !== undefined && e.kind !== "turn_done") {
@@ -1209,46 +1210,58 @@ export function useController() {
     replayPendingPromptsForActiveTab(activeTabId);
   }, [activeTabId]);
 
-  const sendToTab = useCallback((tabId: string, displayText: string, submitText = displayText) => {
-    if (!tabId) return;
+  const sendToTab = useCallback(async (tabId: string, displayText: string, submitText = displayText) => {
+    if (!tabId) throw new Error("workspace is still starting");
     const seq = getOrCreateState(statesRef.current, tabId).seq;
     const display = displayText.trim();
     const submit = submitText.trim();
     dispatchTo(tabId, { type: "user", text: displayText, submitText: display !== submit ? submit : undefined, seq });
     invalidateCache();
-    (display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit)).catch((error) => {
+    try {
+      await (display !== submit ? app.SubmitDisplayToTab(tabId, display, submit) : app.SubmitToTab(tabId, submit));
+    } catch (error) {
       dispatchTo(tabId, { type: "send_failed", error: `Send failed: ${error instanceof Error ? error.message : String(error)}` });
-    });
+      throw error;
+    }
   }, [dispatchTo]);
 
   const send = useCallback((displayText: string, submitText = displayText) => {
     const tabId = activeTabIdRef.current ?? activeTabId;
     if (tabId) {
-      sendToTab(tabId, displayText, submitText);
-      return;
+      return sendToTab(tabId, displayText, submitText);
     }
-    void activeTabFromBackend().then((active) => {
-      if (!active?.id) return;
+    return activeTabFromBackend().then((active) => {
+      if (!active?.id) throw new Error("workspace is still starting");
       setActiveTabId(active.id);
       activeTabIdRef.current = active.id;
       confirmBackendActiveTab(active.id);
-      sendToTab(active.id, displayText, submitText);
+      return sendToTab(active.id, displayText, submitText);
     });
   }, [activeTabFromBackend, activeTabId, confirmBackendActiveTab, sendToTab]);
 
-  const runShell = useCallback((command: string) => {
-    if (!activeTabId) return;
+  const runShell = useCallback(async (command: string) => {
+    if (!activeTabId) throw new Error("workspace is still starting");
     dispatchTo(activeTabId, { type: "user", text: `!${command}`, seq: getOrCreateState(statesRef.current, activeTabId).seq });
-    app.RunShellForTab(activeTabId, command).catch(() => {});
+    try {
+      await app.RunShellForTab(activeTabId, command);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "send_failed", error: `Command failed: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
+    }
   }, [activeTabId, dispatchTo]);
 
-  const steer = useCallback((text: string) => {
-    if (!activeTabId) return;
+  const steer = useCallback(async (text: string) => {
+    if (!activeTabId) throw new Error("workspace is still starting");
     // No optimistic user bubble: rewind/fork map turns by counting user items,
     // and a steer is not a backend turn — the Steer event's ↪ notice is the
     // visible confirmation (#3660).
-    app.SteerForTab(activeTabId, text).catch(() => {});
-  }, [activeTabId]);
+    try {
+      await app.SteerForTab(activeTabId, text);
+    } catch (error) {
+      dispatchTo(activeTabId, { type: "local_notice", level: "warn", text: `Steer failed: ${error instanceof Error ? error.message : String(error)}` });
+      throw error;
+    }
+  }, [activeTabId, dispatchTo]);
 
   const notice = useCallback((text: string, level: "info" | "warn" = "info") => {
     if (!activeTabId) return;

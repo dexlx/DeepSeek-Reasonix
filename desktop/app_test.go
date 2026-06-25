@@ -3063,6 +3063,64 @@ func TestOpenChannelSessionForTabIsReadOnly(t *testing.T) {
 	}
 }
 
+func TestUserTriggeredCommandsReturnErrorsWhenUnavailable(t *testing.T) {
+	tests := []struct {
+		name string
+		app  *App
+		call func(*App) error
+		want string
+	}{
+		{
+			name: "submit read-only",
+			app: &App{
+				tabs:        map[string]*WorkspaceTab{"test": {ID: "test", Scope: "global", ReadOnly: true}},
+				activeTabID: "test",
+			},
+			call: func(app *App) error { return app.SubmitToTab("test", "hello") },
+			want: "read-only",
+		},
+		{
+			name: "submit workspace unavailable",
+			app: &App{
+				tabs:        map[string]*WorkspaceTab{"test": {ID: "test", Scope: "global", StartupErr: "boom"}},
+				activeTabID: "test",
+			},
+			call: func(app *App) error { return app.SubmitToTab("test", "hello") },
+			want: "workspace failed to start: boom",
+		},
+		{
+			name: "run shell workspace unavailable",
+			app: &App{
+				tabs:        map[string]*WorkspaceTab{"test": {ID: "test", Scope: "global"}},
+				activeTabID: "test",
+			},
+			call: func(app *App) error { return app.RunShellForTab("test", "echo hi") },
+			want: "workspace is still starting",
+		},
+		{
+			name: "steer workspace unavailable",
+			app: &App{
+				tabs:        map[string]*WorkspaceTab{"test": {ID: "test", Scope: "global"}},
+				activeTabID: "test",
+			},
+			call: func(app *App) error { return app.SteerForTab("test", "please continue") },
+			want: "workspace is still starting",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := tt.call(tt.app)
+			if err == nil {
+				t.Fatalf("expected error containing %q", tt.want)
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("error = %q, want to contain %q", err, tt.want)
+			}
+		})
+	}
+}
+
 func TestCloseReadOnlyChannelTabDoesNotSnapshotTranscript(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

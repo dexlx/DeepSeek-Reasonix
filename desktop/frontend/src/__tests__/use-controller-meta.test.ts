@@ -3,6 +3,8 @@
 import { foregroundRunningFromRuntimeMeta, initialState, metaFromTab, reducer, sameMeta, shouldReconcileStaleTurn } from "../lib/useController";
 import type { Meta, TabMeta, WireUsage } from "../lib/types";
 
+type LooseTabMeta = Omit<TabMeta, "toolApprovalMode"> & { toolApprovalMode?: TabMeta["toolApprovalMode"] | "" };
+
 let passed = 0;
 let failed = 0;
 
@@ -37,7 +39,7 @@ function meta(overrides: Partial<Meta> = {}): Meta {
   };
 }
 
-function tab(overrides: Partial<TabMeta> = {}): TabMeta {
+function tab(overrides: Partial<LooseTabMeta> = {}): TabMeta {
   return {
     id: "tab-1",
     scope: "project",
@@ -59,7 +61,7 @@ function tab(overrides: Partial<TabMeta> = {}): TabMeta {
     active: true,
     cwd: "/repo",
     ...overrides,
-  };
+  } as TabMeta;
 }
 
 function usage(source: string): WireUsage {
