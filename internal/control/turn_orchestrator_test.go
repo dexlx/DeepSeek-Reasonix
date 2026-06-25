@@ -285,7 +285,9 @@ func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
 		}
 		var p hook.Payload
 		json.Unmarshal([]byte(in.Stdin), &p)
-		if p.Event == hook.Stop { stopCalls++ }
+		if p.Event == hook.Stop {
+			stopCalls++
+		}
 		return hook.SpawnResult{ExitCode: 0}
 	}, nil)
 	c := New(Options{Runner: ag, Executor: ag, Hooks: hooks})
