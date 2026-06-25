@@ -21,9 +21,10 @@ func wrapTranscript(s string, width int) string {
 	return lipgloss.NewStyle().Width(width).Render(s)
 }
 
-// copyToClipboard writes text to the system clipboard via OSC 52, which works
-// over SSH, tmux, and modern terminals. The local platform clipboard tool is
-// not needed — OSC 52 is widely supported.
+// copyToClipboard writes text through the terminal via OSC 52. That targets the
+// terminal-side clipboard in common SSH/tmux setups when the terminal permits it;
+// platform clipboard tools can instead succeed on the remote host and skip the
+// terminal clipboard path entirely.
 func copyToClipboard(text string) tea.Cmd {
 	return tea.SetClipboard(text)
 }
