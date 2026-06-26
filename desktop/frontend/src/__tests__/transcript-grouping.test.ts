@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { buildTurnGroups, warmPagination } from "../lib/transcriptGrouping";
+import { buildTurnGroups, createWarmLayerState, warmLayerForSession, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination } from "../lib/transcriptGrouping";
 import type { Item } from "../lib/useController";
 
 let passed = 0;
@@ -92,6 +92,23 @@ console.log("\ntranscript grouping contract");
   eq(shortTranscript.warmStartTurn, 0, "short transcripts have no warm zone");
   eq(shortTranscript.warmEndTurn, 0, "short transcripts have no warm boundary");
   eq(shortTranscript.coldTurnCount, 0, "short transcripts have no cold turns");
+}
+
+{
+  let state = createWarmLayerState("tab-a|0|a-u0");
+  state = warmLayerWithNextColdPage(state, "tab-a|0|a-u0");
+  state = warmLayerWithNextColdPage(state, "tab-a|0|a-u0");
+  state = warmLayerWithNextColdPage(state, "tab-a|0|a-u0");
+  state = warmLayerWithExpandedTurn(state, "tab-a|0|a-u0", 10, true);
+  eq(state.coldPage, 3, "loading earlier history advances the current session page");
+  ok(state.expandedWarmTurns.has(10), "expanded warm turns stay scoped to the current session");
+
+  const switched = warmLayerForSession(state, "tab-b|1|b-u0");
+  eq(switched.coldPage, 0, "switching sessions resets warm pagination before rendering");
+  eq(switched.expandedWarmTurns.size, 0, "switching sessions clears expanded warm turns");
+
+  const switchedPage = warmPagination({ turnCount: 100, hotTurns: 30, pageSize: 20, coldPage: switched.coldPage });
+  eq(switchedPage.warmStartTurn, 50, "switched long transcripts render only the latest warm page first");
 }
 
 console.log(`\n${passed} passed, ${failed} failed`);

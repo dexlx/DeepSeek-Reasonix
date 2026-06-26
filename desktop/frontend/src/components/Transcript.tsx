@@ -14,7 +14,7 @@ import { isReadOnlyTool } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
-import { buildTurnGroups, compactQuestionText, questionAnchorId, scrollVersion, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup } from "../lib/transcriptGrouping";
+import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, scrollVersion, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -132,6 +132,7 @@ export function Transcript({
   const autoScrollFrame = useRef<number | null>(null);
   const pendingRevealBottomScroll = useRef(false);
   const sessionKey = useMemo(() => `${items[0]?.id ?? ""}|${items[items.length - 1]?.id ?? ""}`, [items]);
+  const warmLayerSessionKey = useMemo(() => `${tabId ?? ""}|${revealSignal}|${items[0]?.id ?? ""}`, [items, revealSignal, tabId]);
   const entranceRef = useEntranceAnimation<HTMLDivElement>(sessionKey, items.length);
 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => getDisplayMode());
@@ -251,8 +252,12 @@ export function Transcript({
   }, [items]);
 
   // ── Layer state ────────────────────────────────────────────────────────────
-  const [expandedWarmTurns, setExpandedWarmTurns] = useState<Set<number>>(new Set());
-  const [coldPage, setColdPage] = useState(0);
+  const [warmLayerState, setWarmLayerState] = useState<WarmLayerState>(() => createWarmLayerState(warmLayerSessionKey));
+  const defaultWarmLayerState = useMemo<WarmLayerState>(() => createWarmLayerState(warmLayerSessionKey), [warmLayerSessionKey]);
+  const activeWarmLayerState = warmLayerState.sessionKey === warmLayerSessionKey
+    ? warmLayerState
+    : defaultWarmLayerState;
+  const { expandedWarmTurns, coldPage } = activeWarmLayerState;
 
   // Compute turn groups from the structural item list. Streaming text updates
   // keep the same items[] reference, so this stays out of the token hot path.
@@ -303,13 +308,10 @@ export function Transcript({
     // Auto-expand the warm turn when jumping to an old question.
     const warmTurnStart = turnGroups.length - HOT_TURNS;
     if (question.turn < warmTurnStart) {
-      setExpandedWarmTurns((prev) => {
-        if (prev.has(question.turn)) return prev;
-        return new Set([...prev, question.turn]);
-      });
+      setWarmLayerState((prev) => warmLayerWithExpandedTurn(prev, warmLayerSessionKey, question.turn, true));
     }
     jumpToQuestion(question);
-  }, [turnGroups.length]);
+  }, [turnGroups.length, warmLayerSessionKey]);
 
   // ── Hot zone: fully rendered from hotStartIdx to end ─────────────────────
   // Memoized separately from the assembly so streaming tokens don't rebuild
@@ -627,13 +629,9 @@ export function Transcript({
               warmOnEdit={onEditPrompt}
               tabId={tabId}
               creationMode={creationMode}
-              onToggleColdPage={() => setColdPage((p) => p + 1)}
+              onToggleColdPage={() => setWarmLayerState((prev) => warmLayerWithNextColdPage(prev, warmLayerSessionKey))}
               onToggleWarmTurn={(g, expand) => {
-                setExpandedWarmTurns((prev) => {
-                  const next = new Set(prev);
-                  if (expand) next.add(g); else next.delete(g);
-                  return next;
-                });
+                setWarmLayerState((prev) => warmLayerWithExpandedTurn(prev, warmLayerSessionKey, g, expand));
               }}
             />
           )}

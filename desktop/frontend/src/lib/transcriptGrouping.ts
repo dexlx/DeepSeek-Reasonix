@@ -11,6 +11,33 @@ export interface TurnGroup {
   endIdx: number;
 }
 
+export type WarmLayerState = {
+  sessionKey: string;
+  expandedWarmTurns: ReadonlySet<number>;
+  coldPage: number;
+};
+
+export function createWarmLayerState(sessionKey: string): WarmLayerState {
+  return { sessionKey, expandedWarmTurns: new Set(), coldPage: 0 };
+}
+
+export function warmLayerForSession(state: WarmLayerState, sessionKey: string): WarmLayerState {
+  return state.sessionKey === sessionKey ? state : createWarmLayerState(sessionKey);
+}
+
+export function warmLayerWithNextColdPage(state: WarmLayerState, sessionKey: string): WarmLayerState {
+  const current = warmLayerForSession(state, sessionKey);
+  return { ...current, coldPage: current.coldPage + 1 };
+}
+
+export function warmLayerWithExpandedTurn(state: WarmLayerState, sessionKey: string, turn: number, expand: boolean): WarmLayerState {
+  const current = warmLayerForSession(state, sessionKey);
+  const expandedWarmTurns = new Set(current.expandedWarmTurns);
+  if (expand) expandedWarmTurns.add(turn);
+  else expandedWarmTurns.delete(turn);
+  return { ...current, expandedWarmTurns };
+}
+
 export function questionAnchorId(id: string): string {
   return `question-anchor-${id}`;
 }
