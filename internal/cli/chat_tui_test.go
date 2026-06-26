@@ -1435,8 +1435,9 @@ func TestQueueIndicatorHiddenWhenIdle(t *testing.T) {
 }
 
 // TestViewAltScreenFillsHeight proves the switch to alt-screen: View requests
-// the alt buffer without mouse reporting, and the frame is exactly the terminal
-// height (the transcript viewport pads to fill above the pinned bottom region).
+// the alt buffer with mouse reporting for wheel scrolling and in-app text
+// selection, and the frame is exactly the terminal height (the transcript
+// viewport pads to fill above the pinned bottom region).
 func TestViewAltScreenFillsHeight(t *testing.T) {
 	ctrl := control.New(control.Options{})
 	m := newChatTUI(ctrl, "", make(chan event.Event, 1), 80)
@@ -1447,8 +1448,8 @@ func TestViewAltScreenFillsHeight(t *testing.T) {
 	if !v.AltScreen {
 		t.Error("View must request alt-screen so resize repaints the whole grid")
 	}
-	if v.MouseMode != tea.MouseModeNone {
-		t.Error("View must leave terminal mouse selection available by default")
+	if v.MouseMode != tea.MouseModeCellMotion {
+		t.Error("View must enable mouse so the wheel scrolls the transcript")
 	}
 	if lines := strings.Count(v.Content, "\n") + 1; lines != 24 {
 		t.Errorf("alt-screen frame = %d lines, want 24 (full terminal height)", lines)
