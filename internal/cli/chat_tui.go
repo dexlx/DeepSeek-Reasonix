@@ -3366,7 +3366,7 @@ func (m *chatTUI) runSlashCommand(input string) tea.Cmd {
 		m.showMemory()
 	case "/migrate", "/migration":
 		m.echoLocalCommand(input)
-		migration.RunLegacyRescue(event.FuncSink(func(e event.Event) {
+		migration.RunLegacyRescueCommand(strings.TrimSpace(strings.TrimPrefix(input, cmd)), event.FuncSink(func(e event.Event) {
 			if e.Kind == event.Notice {
 				m.notice(e.Text)
 			}

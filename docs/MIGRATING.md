@@ -80,7 +80,10 @@ config and credentials, scans legacy memory and session directories, imports
 memory files and sessions that were not previously imported, and summarizes the
 result. `/migrate` keeps the same safety rules as startup migration: it does not
 overwrite an existing `config.toml` or memory file, it respects session import
-markers, and it is not available in the legacy 0.x TypeScript line. See
+markers, and it is not available in the legacy 0.x TypeScript line. If the old
+v0.x sessions are in a custom Windows install/data directory, use
+`/migrate --from "D:\OldReasonix"` to import sessions from that explicit source.
+See
 [Configuration paths](./CONFIG_PATHS.md) for the full path list and limitations.
 
 ## What's the same
