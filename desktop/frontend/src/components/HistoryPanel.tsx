@@ -615,7 +615,7 @@ function sessionLocation(s: SessionMeta, tr: ReturnType<typeof useT>): string {
 }
 
 function sessionDisplayTitle(s: SessionMeta, fallback: string): string {
-  return s.topicTitle || s.title || s.preview || fallback;
+  return s.title || s.topicTitle || s.preview || fallback;
 }
 
 function sessionMetaLine(s: SessionMeta, tr: ReturnType<typeof useT>, isTrash = false): string {

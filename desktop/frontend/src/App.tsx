@@ -2472,6 +2472,7 @@ export default function App() {
       group: t("palette.group.sessions"),
       title: s.topicTitle || s.title?.trim() || s.preview || t("history.emptySession"),
       hint: s.workspaceRoot || undefined,
+      keywords: [s.title?.trim(), s.preview].filter(Boolean) as string[],
       meta: dayLabel(sessionActivityTime(s)),
       badge: t(s.turns === 1 ? "history.turnOne" : "history.turnOther", { n: s.turns }),
       run: () => void onResumeSession(s),
