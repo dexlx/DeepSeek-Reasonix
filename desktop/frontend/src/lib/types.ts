@@ -396,6 +396,10 @@ export interface ContextInfo {
   window: number;
   sessionTokens: number;
   compactRatio?: number;
+  sessionCost?: number;
+  sessionCurrency?: string;
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
 }
 
 export interface Meta {

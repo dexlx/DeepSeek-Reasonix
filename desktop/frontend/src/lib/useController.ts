@@ -786,7 +786,11 @@ export function reducer(s: State, a: Action): State {
       const sessionTokens = typeof a.context.sessionTokens === "number"
         ? Math.max(0, a.context.sessionTokens)
         : s.sessionTokens;
-      return { ...s, context: a.context, sessionTokens };
+      const sessionCost = typeof a.context.sessionCost === "number" && a.context.sessionCost > 0
+        ? a.context.sessionCost
+        : s.sessionCost;
+      const sessionCurrency = a.context.sessionCurrency || s.sessionCurrency;
+      return { ...s, context: a.context, sessionTokens, sessionCost, sessionCurrency };
     }
     case "balance": return { ...s, balance: a.balance };
     case "effort": return { ...s, effort: a.effort };
