@@ -3,7 +3,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
-import { buildTurnGroups, createWarmLayerState, warmColdPageForTurn, warmLayerForSession, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination } from "../lib/transcriptGrouping";
+import { buildTurnGroups, createWarmLayerState, questionTurnsById, warmColdPageForTurn, warmLayerForSession, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination } from "../lib/transcriptGrouping";
 import type { Item } from "../lib/useController";
 
 let passed = 0;
@@ -66,6 +66,24 @@ console.log("\ntranscript grouping contract");
   eq(groups[0].endIdx, 4, "first group end index");
   eq(groups[0].toolCount, 2, "counts top-level tools in a turn");
   eq(groups[2].assistantPreview, "answer 2", "keeps latest assistant preview for each turn");
+}
+
+{
+  const visibleTurns = questionTurnsById([
+    { id: "u0", text: "first", turn: 0 },
+    { id: "u1", text: "second", turn: 1 },
+  ]);
+  eq(visibleTurns.get("u0"), 0, "falls back to visible ordinal when no checkpoint turns exist");
+  eq(visibleTurns.get("u1"), 1, "visible ordinal fallback increments by question");
+
+  const backendTurns = questionTurnsById([
+    { id: "u0", text: "first", turn: 0, checkpointTurn: 0 },
+    { id: "u1", text: "live without server stamp yet", turn: 1 },
+    { id: "u2", text: "after hidden synthetic", turn: 2, checkpointTurn: 3 },
+  ]);
+  eq(backendTurns.get("u0"), 0, "uses backend checkpoint turn zero when present");
+  eq(backendTurns.get("u2"), 3, "uses non-contiguous backend checkpoint turn");
+  ok(!backendTurns.has("u1"), "does not mix visible ordinal fallback into authoritative checkpoint sessions");
 }
 
 {

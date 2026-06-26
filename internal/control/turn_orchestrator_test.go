@@ -348,6 +348,40 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 	}
 }
 
+func TestTurnOrchestratorSyntheticTurnDoesNotCreateCheckpoint(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	runner := &recordingSessionRunner{session: sess}
+	c := New(Options{
+		Runner:      runner,
+		Executor:    exec,
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+	})
+	o := newTurnOrchestrator(c)
+	if err := o.runTurnWithRawDisplay(context.Background(), "real prompt", "real prompt", ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.runSyntheticTurnWithRawDisplay(context.Background(), "hidden follow-up", "hidden follow-up", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	cps := c.Checkpoints()
+	if len(cps) != 1 {
+		t.Fatalf("checkpoints = %+v, want exactly the visible user turn", cps)
+	}
+	if cps[0].Turn != 0 || cps[0].Prompt != "real prompt" {
+		t.Fatalf("checkpoint = %+v, want turn 0 real prompt", cps[0])
+	}
+	turns := c.CheckpointTurnsByMessageIndex()
+	if len(turns) != 1 || turns[1] != 0 {
+		t.Fatalf("checkpoint turns by message index = %v, want {1:0}", turns)
+	}
+}
+
 func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{textTurn("done")}}
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)

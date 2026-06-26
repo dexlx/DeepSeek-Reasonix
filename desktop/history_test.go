@@ -86,6 +86,40 @@ func TestHistoryMessagesDoNotReplayMemoryCompilerContract(t *testing.T) {
 	assertNoHistoryMemoryContract(t, got[0].Content)
 }
 
+func TestHistoryMessagesCarryCheckpointTurnsAcrossHiddenSyntheticUsers(t *testing.T) {
+	msgs := []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "first visible"},
+		{Role: provider.RoleAssistant, Content: "first answer"},
+		{Role: provider.RoleUser, Content: "Continue pursuing the active goal. If it is complete, provide the concise final result."},
+		{Role: provider.RoleAssistant, Content: "hidden continuation"},
+		{Role: provider.RoleUser, Content: "second visible"},
+		{Role: provider.RoleAssistant, Content: "second answer"},
+	}
+
+	got := historyMessagesWithPlannerDisplays(
+		msgs,
+		func(content string) string { return content },
+		nil,
+		map[int]int{1: 0, 5: 2},
+	)
+	var users []HistoryMessage
+	for _, msg := range got {
+		if msg.Role == "user" {
+			users = append(users, msg)
+		}
+	}
+	if len(users) != 2 {
+		t.Fatalf("visible users = %d, want 2: %+v", len(users), got)
+	}
+	if users[0].CheckpointTurn == nil || *users[0].CheckpointTurn != 0 {
+		t.Fatalf("first checkpoint turn = %v, want 0", users[0].CheckpointTurn)
+	}
+	if users[1].CheckpointTurn == nil || *users[1].CheckpointTurn != 2 {
+		t.Fatalf("second checkpoint turn = %v, want 2", users[1].CheckpointTurn)
+	}
+}
+
 func TestHistoryForTabRestoresPlannerDisplayAfterReload(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")

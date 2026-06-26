@@ -159,5 +159,23 @@ console.log("\nuse controller meta");
   eq(activeHelper.sessionCost, 0.001, "helper usage inside a turn still counts toward session cost");
 }
 
+{
+  let s = reducer(initialState, { type: "user", text: "first", seq: 0 });
+  s = reducer(s, { type: "event", e: { kind: "turn_started" } });
+  s = reducer(s, { type: "event", e: { kind: "notice", level: "info", text: "runtime notice" } });
+  s = reducer(s, { type: "event", e: { kind: "turn_done" } });
+  const merged = reducer(s, {
+    type: "history_checkpoint_turns",
+    messages: [
+      { role: "user", content: "first", checkpointTurn: 0 },
+      { role: "assistant", content: "done" },
+    ],
+  });
+  const user = merged.items.find((item) => item.kind === "user");
+  const notice = merged.items.find((item) => item.kind === "notice" && item.text === "runtime notice");
+  eq(user?.kind === "user" && user.checkpointTurn, 0, "turn_done checkpoint merge stamps user turn zero");
+  eq(Boolean(notice), true, "turn_done checkpoint merge preserves runtime notices");
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

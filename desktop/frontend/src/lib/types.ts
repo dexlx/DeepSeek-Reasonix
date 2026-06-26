@@ -296,6 +296,7 @@ export interface HistoryMessage {
   role: string;
   content: string;
   submitText?: string;
+  checkpointTurn?: number;
   createdAt?: number;
   reasoning?: string;
   memoryCitations?: MemoryCitation[];

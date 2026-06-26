@@ -2177,18 +2177,35 @@ export default function App() {
     }
 
     const items = state.items;
-    // Find the boundary: index of the Nth user message where N = turn.
-    let boundaryIdx = 0;
+    const hasCheckpointTurns = items.some((it) => it.kind === "user" && it.checkpointTurn != null);
+    let boundaryIdx = -1;
     let userCount = 0;
+    let targetUserCount = -1;
     for (let i = 0; i < items.length; i++) {
       if (items[i].kind === "user") {
-        if (userCount === turn) { boundaryIdx = i; break; }
+        const item = items[i] as Extract<Item, { kind: "user" }>;
+        const matches = hasCheckpointTurns ? item.checkpointTurn === turn : userCount === turn;
+        if (matches) {
+          boundaryIdx = i;
+          targetUserCount = userCount;
+          break;
+        }
         userCount++;
       }
     }
+    if (boundaryIdx < 0) {
+      rewind(turn, scope).then((ok) => {
+        if (!ok) return;
+        if (scope === "both") {
+          setDockRefreshKey((v) => v + 1);
+          setProjectRevision((v) => v + 1);
+        }
+      });
+      return;
+    }
 
     const prevUserCount = items.filter((it) => it.kind === "user").length;
-    const turnDiff = prevUserCount - userCount;
+    const turnDiff = prevUserCount - targetUserCount;
 
     // Save full items for undo.
     const userItem = items[boundaryIdx]?.kind === "user" ? items[boundaryIdx] as Extract<Item, { kind: "user" }> : undefined;

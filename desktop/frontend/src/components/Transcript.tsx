@@ -14,7 +14,7 @@ import { isReadOnlyTool } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
-import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
+import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, questionTurnsById, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -144,7 +144,7 @@ export function Transcript({
     let turn = 0;
     for (const it of items) {
       if (it.kind !== "user") continue;
-      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn });
+      anchors.push({ id: it.id, text: compactQuestionText(it.text), turn, checkpointTurn: it.checkpointTurn });
       turn += 1;
     }
     return anchors;
@@ -304,7 +304,7 @@ export function Transcript({
     return () => document.removeEventListener("mousedown", onDown);
   }, [openAction]);
 
-  const userTurn = useMemo(() => new Map(questions.map((question) => [question.id, question.turn])), [questions]);
+  const userTurn = useMemo(() => questionTurnsById(questions), [questions]);
   const checkpointsByTurn = useMemo(() => new Map(checkpoints.map((checkpoint) => [checkpoint.turn, checkpoint])), [checkpoints]);
 
   // ── JumpBar integration ───────────────────────────────────────────────────

@@ -61,9 +61,14 @@ func (o *turnOrchestrator) runOrchestratedTurn(ctx context.Context, turn orchest
 	startMessages := c.messageCount()
 	defer c.snapshotActivityIfChanged(startMessages)
 	defer c.recordDisplayForNewUser(startMessages, turn.display)
-	// Open a checkpoint for this turn before the user message is appended, so the
-	// recorded message boundary precedes it and pre-edit snapshots land here.
-	c.beginCheckpoint(input)
+	// Open a checkpoint only for visible user turns before the user message is
+	// appended, so the recorded message boundary precedes it and pre-edit
+	// snapshots land here. Synthetic continuations stay attached to the visible
+	// turn that spawned them; otherwise hidden user-role messages would advance
+	// backend checkpoint turns without a matching frontend turn.
+	if !turn.synthetic {
+		c.beginCheckpoint(input)
+	}
 	if c.guardianSess != nil {
 		c.guardianSess.ResetTurn()
 	}
