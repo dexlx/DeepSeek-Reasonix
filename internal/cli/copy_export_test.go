@@ -38,6 +38,21 @@ func requireClipboardCommand(t *testing.T, cmd tea.Cmd, want string) {
 	}
 }
 
+func sessionExportFiles(t *testing.T, dir string) []string {
+	t.Helper()
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var exported []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), "session-") && strings.HasSuffix(entry.Name(), ".md") {
+			exported = append(exported, filepath.Join(dir, entry.Name()))
+		}
+	}
+	return exported
+}
+
 func TestSlashCopyDirectIndexUsesCurrentTurnNewestFirst(t *testing.T) {
 	m := newTestChatTUIWithMessages(t, "",
 		provider.Message{Role: provider.RoleUser, Content: "old prompt"},
@@ -108,16 +123,7 @@ func TestSlashExportFiltersInternalAndReferencedContext(t *testing.T) {
 
 	m.runExportCommand("/export")
 
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var exported []string
-	for _, entry := range entries {
-		if strings.HasPrefix(entry.Name(), "session-") && strings.HasSuffix(entry.Name(), ".md") {
-			exported = append(exported, filepath.Join(dir, entry.Name()))
-		}
-	}
+	exported := sessionExportFiles(t, dir)
 	if len(exported) != 1 {
 		t.Fatalf("exported files = %v, want one session markdown file", exported)
 	}
@@ -150,5 +156,40 @@ func TestSlashExportFiltersInternalAndReferencedContext(t *testing.T) {
 		if strings.Contains(got, unwanted) {
 			t.Fatalf("export leaked %q:\n%s", unwanted, got)
 		}
+	}
+}
+
+func TestSlashExportDoesNotWriteEmptyMarkdown(t *testing.T) {
+	tests := []struct {
+		name string
+		msgs []provider.Message
+	}{
+		{
+			name: "system only",
+		},
+		{
+			name: "filtered only",
+			msgs: []provider.Message{
+				{Role: provider.RoleUser, Content: agent.MidTurnSteerPrefix + "\ninternal steer should not export"},
+				{Role: provider.RoleUser, Content: control.PlanModeMarker},
+				{Role: provider.RoleAssistant, Content: "   "},
+				{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "tool output should not export"},
+			},
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			dir := t.TempDir()
+			m := newTestChatTUIWithMessages(t, dir, tt.msgs...)
+
+			m.runExportCommand("/export")
+
+			if exported := sessionExportFiles(t, dir); len(exported) != 0 {
+				t.Fatalf("exported files = %v, want none", exported)
+			}
+			if out := strings.Join(m.transcript, "\n"); !strings.Contains(out, "no messages to export") {
+				t.Fatalf("missing empty-export notice in transcript:\n%s", out)
+			}
+		})
 	}
 }

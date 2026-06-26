@@ -3535,6 +3535,7 @@ func (m *chatTUI) runExportCommand(input string) {
 	var b strings.Builder
 	b.WriteString("# reasonix session\n\n")
 	lastRole := provider.Role("")
+	exportedMessages := 0
 	for _, msg := range msgs {
 		switch msg.Role {
 		case provider.RoleUser:
@@ -3551,6 +3552,7 @@ func (m *chatTUI) runExportCommand(input string) {
 			}
 			b.WriteString(content)
 			b.WriteString("\n\n")
+			exportedMessages++
 			lastRole = provider.RoleUser
 		case provider.RoleAssistant:
 			content := strings.TrimSpace(msg.Content)
@@ -3562,8 +3564,13 @@ func (m *chatTUI) runExportCommand(input string) {
 			}
 			b.WriteString(content)
 			b.WriteString("\n\n")
+			exportedMessages++
 			lastRole = provider.RoleAssistant
 		}
+	}
+	if exportedMessages == 0 {
+		m.notice(i18n.M.SlashExportEmpty)
+		return
 	}
 
 	// Choose a filename. If the workspace has a root, save there; otherwise
