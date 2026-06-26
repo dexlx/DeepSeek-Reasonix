@@ -389,7 +389,7 @@ func TestCompilerContractCanonicalizesSemanticOrder(t *testing.T) {
 	}
 }
 
-func TestCompilerContractIncludesBoundedIRExplanation(t *testing.T) {
+func TestCompilerContractIsCompact(t *testing.T) {
 	ir := PlannerIR{
 		Version:     version,
 		Goal:        "optimize a workflow",
@@ -401,20 +401,35 @@ func TestCompilerContractIncludesBoundedIRExplanation(t *testing.T) {
 		MemoryReferences: []MemoryRef{
 			{ID: "memory:latency", Content: "user prefers low latency", Quality: string(QualityHighSignal), Influence: "constraint"},
 		},
-		StrategySelection: &StrategyPick{Selected: "general", Reason: "matched prior low-latency pattern"},
+		AvailableStrategies: []StrategyRef{
+			{ID: "general", SuccessRate: 0.9, Samples: 10, Score: 0.8, Reason: "ranked top"},
+			{ID: "bugfix-reproduce-first", SuccessRate: 0.5, Samples: 4},
+		},
+		StrategySelection: &StrategyPick{Selected: "general", Reason: "matched prior low-latency pattern", Score: 0.8, Rejected: []RejectedStrategy{{ID: "z", Score: 0.1}}},
 	}
 	contract, err := compileExecutionContract(ir)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(contract, `"ir_explanation"`) {
-		t.Fatalf("compiled contract missing IR explanation:\n%s", contract)
+	// The load-bearing fields the model acts on must survive compaction.
+	if !strings.Contains(contract, `"source_event":"optimize a workflow"`) {
+		t.Fatalf("compiled contract dropped source_event:\n%s", contract)
 	}
-	if !strings.Contains(contract, `"constraint_mapping":["must_use constraint from memory:latency: prefer low latency"]`) {
-		t.Fatalf("compiled contract missing constraint explanation:\n%s", contract)
+	if !strings.Contains(contract, `"prefer low latency"`) {
+		t.Fatalf("compiled contract dropped the active constraint:\n%s", contract)
 	}
-	if !strings.Contains(contract, `"memory_influence":["memory:latency influenced decision as constraint (HIGH_SIGNAL)"]`) {
-		t.Fatalf("compiled contract missing memory influence explanation:\n%s", contract)
+	if !strings.Contains(contract, `"selected":"general"`) {
+		t.Fatalf("compiled contract dropped the selected strategy:\n%s", contract)
+	}
+	if !strings.Contains(contract, `"memory:latency"`) {
+		t.Fatalf("compiled contract dropped the high-signal memory reference:\n%s", contract)
+	}
+	// The compacted-away fields (prose explanation, ranked candidate table,
+	// rejected strategies) must NOT bloat the per-turn contract.
+	for _, banned := range []string{`"ir_explanation"`, `"available_strategies"`, `"rejected"`, `"constraint_mapping"`} {
+		if strings.Contains(contract, banned) {
+			t.Fatalf("compiled contract still carries bloat field %s:\n%s", banned, contract)
+		}
 	}
 }
 

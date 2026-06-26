@@ -246,13 +246,6 @@ type MutationEvaluation struct {
 	Trials   int     `json:"trials"`
 }
 
-type IRExplanation struct {
-	DecisionSummary   string   `json:"decision_summary"`
-	ConstraintMapping []string `json:"constraint_mapping"`
-	MemoryInfluence   []string `json:"memory_influence"`
-	StrategyReason    string   `json:"strategy_reason"`
-}
-
 type IRValidationResult struct {
 	Findings     []string
 	HardFindings []string
@@ -697,18 +690,38 @@ func hasUsefulIR(ir PlannerIR) bool {
 	return len(ir.Constraints) > 0 || len(ir.MemoryReferences) > 0 || len(ir.RiskNotes) > 0
 }
 
+// contractIR is the bounded, model-facing projection of PlannerIR that gets
+// serialized into the per-turn prompt contract. It is deliberately a separate
+// type from PlannerIR with omitempty everywhere so the injected JSON carries no
+// zero-value/null noise. The display layer (agent.memoryCompilerSourceEvent)
+// only needs planner_ir.source_event, which is preserved.
+type contractIR struct {
+	Version           string            `json:"version,omitempty"`
+	Goal              string            `json:"goal,omitempty"`
+	SourceEvent       string            `json:"source_event"`
+	RuntimeMode       string            `json:"runtime_mode,omitempty"`
+	Constraints       []Constraint      `json:"constraints,omitempty"`
+	StrategySelection *contractStrategy `json:"strategy_selection,omitempty"`
+	MemoryReferences  []MemoryRef       `json:"memory_references,omitempty"`
+	ExecutionSteps    []Step            `json:"execution_steps,omitempty"`
+	RiskNotes         []string          `json:"risk_notes,omitempty"`
+}
+
+type contractStrategy struct {
+	Selected string `json:"selected"`
+	Reason   string `json:"reason,omitempty"`
+	Mode     string `json:"mode,omitempty"`
+}
+
 func compileExecutionContract(ir PlannerIR) (string, error) {
-	ir = canonicalizeIR(ir)
 	contract := struct {
-		Type        string        `json:"type"`
-		Instruction string        `json:"instruction"`
-		Explanation IRExplanation `json:"ir_explanation"`
-		PlannerIR   PlannerIR     `json:"planner_ir"`
+		Type        string     `json:"type"`
+		Instruction string     `json:"instruction"`
+		PlannerIR   contractIR `json:"planner_ir"`
 	}{
 		Type:        "memory_v5_execution_contract",
 		Instruction: "Execute source_event through planner_ir. Treat constraints, risk_notes, strategy_selection, and execution_steps as the controlling plan for this turn. Do not bypass contradictory or quarantined memory outside this IR.",
-		Explanation: explainIR(ir, nil),
-		PlannerIR:   ir,
+		PlannerIR:   compactContractIR(canonicalizeIR(ir)),
 	}
 	body, err := json.Marshal(contract)
 	if err != nil {
@@ -717,45 +730,45 @@ func compileExecutionContract(ir PlannerIR) (string, error) {
 	return "<memory-compiler-execution>\n" + string(body) + "\n</memory-compiler-execution>", nil
 }
 
-func explainIR(ir PlannerIR, result *ExecutionTrace) IRExplanation {
-	ir = canonicalizeIR(ir)
-	explanation := IRExplanation{
-		DecisionSummary:   "Use strategy " + selectedStrategy(ir) + " for goal: " + ir.Goal,
-		ConstraintMapping: []string{},
-		MemoryInfluence:   []string{},
-		StrategyReason:    "default strategy selection",
+// compactContractIR projects the full canonical IR onto the model-facing
+// contractIR by dropping only the fields the model cannot act on. It does NOT
+// cap or re-truncate the actionable fields, so the constraints, memory
+// references, execution steps, risk notes, and selected strategy it injects are
+// byte-identical to what the previous full contract carried. The full IR is
+// still recorded on the execution trace for learning (writeTraceAndLearn keeps
+// the canonical IR); only the prompt copy is slimmed.
+//
+// Before this the contract re-serialized the entire planner IR every turn,
+// including a prose ir_explanation that just restated the constraints and
+// memory references, the ranked available_strategies candidate table, and each
+// strategy's rejected/score/exploration-rate control-loop state. On short user
+// turns that inflated the user message ~20-50x and grew unbounded as the
+// candidate table and explanation accreted. None of the dropped fields carry
+// guidance the kept fields don't already supply; the canonical IR's own limits
+// keep the kept fields bounded.
+func compactContractIR(ir PlannerIR) contractIR {
+	out := contractIR{
+		Version:          ir.Version,
+		Goal:             ir.Goal,
+		SourceEvent:      ir.SourceEvent,
+		RuntimeMode:      ir.RuntimeMode,
+		Constraints:      ir.Constraints,
+		MemoryReferences: ir.MemoryReferences,
+		ExecutionSteps:   ir.ExecutionSteps,
+		RiskNotes:        ir.RiskNotes,
 	}
+	// Keep only the chosen strategy and its reason/mode; the rejected
+	// candidates, numeric score, and exploration rate are internal control-loop
+	// state the model cannot act on, and the ranked available_strategies table
+	// is dropped entirely for the same reason.
 	if ir.StrategySelection != nil {
-		explanation.StrategyReason = ir.StrategySelection.Reason
-		if result != nil && result.Outcome != "" {
-			explanation.DecisionSummary += " with prior outcome context: " + result.Outcome
+		out.StrategySelection = &contractStrategy{
+			Selected: ir.StrategySelection.Selected,
+			Reason:   ir.StrategySelection.Reason,
+			Mode:     ir.StrategySelection.Mode,
 		}
 	}
-	for _, c := range ir.Constraints {
-		entry := c.Type + " constraint"
-		if c.Source != "" {
-			entry += " from " + c.Source
-		}
-		entry += ": " + c.Text
-		explanation.ConstraintMapping = append(explanation.ConstraintMapping, entry)
-		if len(explanation.ConstraintMapping) >= 5 {
-			break
-		}
-	}
-	for _, ref := range ir.MemoryReferences {
-		entry := ref.ID + " influenced decision"
-		if ref.Influence != "" {
-			entry += " as " + ref.Influence
-		}
-		if ref.Quality != "" {
-			entry += " (" + ref.Quality + ")"
-		}
-		explanation.MemoryInfluence = append(explanation.MemoryInfluence, entry)
-		if len(explanation.MemoryInfluence) >= 5 {
-			break
-		}
-	}
-	return canonicalizeExplanation(explanation)
+	return out
 }
 
 func memoryCitationsForIR(ir PlannerIR) []provider.MemoryCitation {
@@ -819,20 +832,6 @@ func selectedStrategy(ir PlannerIR) string {
 		return strings.TrimSpace(ir.StrategySelection.Selected)
 	}
 	return "general"
-}
-
-func canonicalizeExplanation(in IRExplanation) IRExplanation {
-	in.DecisionSummary = summarizeText(in.DecisionSummary, 220)
-	in.StrategyReason = summarizeText(in.StrategyReason, 180)
-	in.ConstraintMapping = limitStrings(canonicalStrings(in.ConstraintMapping), 5)
-	in.MemoryInfluence = limitStrings(canonicalStrings(in.MemoryInfluence), 5)
-	if in.ConstraintMapping == nil {
-		in.ConstraintMapping = []string{}
-	}
-	if in.MemoryInfluence == nil {
-		in.MemoryInfluence = []string{}
-	}
-	return in
 }
 
 func canonicalizeIR(ir PlannerIR) PlannerIR {
