@@ -3,6 +3,7 @@ package control
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +11,7 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/event"
+	"reasonix/internal/evidence"
 	"reasonix/internal/hook"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
@@ -33,13 +35,126 @@ func TestTurnOrchestratorRunsForegroundUnit(t *testing.T) {
 	}
 }
 
-type recordingSessionRunner struct {
-	session *agent.Session
-	inputs  []string
+func TestTurnOrchestratorSkipsMemoryCompilerForSyntheticTurns(t *testing.T) {
+	// A genuine user turn supplies a Memory v5 source and is not skipped; a
+	// synthetic controller-injected turn (the goal-loop continuation) is marked
+	// to bypass compilation so its contract can't be re-injected and loop
+	// (#5342, #5329).
+	runner := &fakeTurnRunner{}
+	c := New(Options{Runner: runner})
+	o := newTurnOrchestrator(c)
+
+	real := "fix the login bug"
+	if err := o.runTurnWithRawDisplay(context.Background(), real, real, ""); err != nil {
+		t.Fatal(err)
+	}
+	if err := o.runTurnWithRawDisplay(context.Background(), goalContinueTurn, goalContinueTurn, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.memoryCompilerSkips) != 2 {
+		t.Fatalf("runs = %d, want 2", len(runner.memoryCompilerSkips))
+	}
+	if runner.memoryCompilerSkips[0] {
+		t.Fatalf("genuine user turn was marked skip-compile")
+	}
+	if !runner.memoryCompilerSkips[1] {
+		t.Fatalf("synthetic goal-continuation turn was NOT marked skip-compile")
+	}
+	// The genuine turn supplies a source; the synthetic one must not.
+	if len(runner.memoryCompilerInputs) != 1 || runner.memoryCompilerInputs[0] != real {
+		t.Fatalf("memory compiler sources = %v, want exactly [%q]", runner.memoryCompilerInputs, real)
+	}
 }
 
-func (r *recordingSessionRunner) Run(_ context.Context, input string) error {
+func TestTurnOrchestratorTypedSyntheticTurnDoesNotDependOnPrefix(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	c := New(Options{AutoPlan: "on", Runner: runner})
+	o := newTurnOrchestrator(c)
+
+	turn := "Controller-created follow-up with a brand-new synthetic wording:\n- inspect\n- edit\n- verify"
+	if IsSyntheticUserMessage(turn) {
+		t.Fatalf("test setup: %q unexpectedly matched the legacy synthetic prefix list", turn)
+	}
+	if err := o.runSyntheticTurnWithRawDisplay(context.Background(), turn, turn, ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want 1", len(runner.inputs))
+	}
+	if strings.HasPrefix(runner.inputs[0], PlanModeMarker) {
+		t.Fatalf("typed synthetic turn should not be auto-planned, got %q", runner.inputs[0])
+	}
+	if len(runner.memoryCompilerSkips) != 1 || !runner.memoryCompilerSkips[0] {
+		t.Fatalf("typed synthetic turn was not marked skip-compile: %+v", runner.memoryCompilerSkips)
+	}
+	if len(runner.memoryCompilerInputs) != 0 {
+		t.Fatalf("typed synthetic turn supplied Memory v5 source input: %+v", runner.memoryCompilerInputs)
+	}
+}
+
+func TestTurnOrchestratorLegacySyntheticPrefixStillSkipsMemoryCompiler(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	c := New(Options{Runner: runner})
+	o := newTurnOrchestrator(c)
+
+	if err := o.runTurnWithRawDisplay(context.Background(), goalContinueTurn, goalContinueTurn, ""); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.memoryCompilerSkips) != 1 || !runner.memoryCompilerSkips[0] {
+		t.Fatalf("legacy synthetic prefix was not marked skip-compile: %+v", runner.memoryCompilerSkips)
+	}
+	if len(runner.memoryCompilerInputs) != 0 {
+		t.Fatalf("legacy synthetic prefix supplied Memory v5 source input: %+v", runner.memoryCompilerInputs)
+	}
+}
+
+func TestTurnOrchestratorStopHookIgnoresCanceledTurnContext(t *testing.T) {
+	runCtx, cancel := context.WithCancel(context.Background())
+	var stopCalls int
+	var stopErr error
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "record-stop"},
+		Event:      hook.Stop,
+		Scope:      hook.ScopeProject,
+	}}, "", func(ctx context.Context, in hook.SpawnInput) hook.SpawnResult {
+		stopCalls++
+		stopErr = ctx.Err()
+		return hook.SpawnResult{ExitCode: 0}
+	}, nil)
+	c := New(Options{
+		Runner: cancelingRunner{cancel: cancel},
+		Hooks:  hooks,
+	})
+
+	o := newTurnOrchestrator(c)
+	if err := o.runTurnWithRawDisplay(runCtx, "hello", "hello", ""); err != nil {
+		t.Fatal(err)
+	}
+
+	if runCtx.Err() != context.Canceled {
+		t.Fatalf("turn context err = %v, want %v", runCtx.Err(), context.Canceled)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("Stop hook calls = %d, want 1", stopCalls)
+	}
+	if stopErr != nil {
+		t.Fatalf("Stop hook context err = %v, want nil", stopErr)
+	}
+}
+
+type recordingSessionRunner struct {
+	session              *agent.Session
+	inputs               []string
+	memoryCompilerInputs []string
+}
+
+func (r *recordingSessionRunner) Run(ctx context.Context, input string) error {
 	r.inputs = append(r.inputs, input)
+	if source, ok := agent.MemoryCompilerSourceInputFromContext(ctx); ok {
+		r.memoryCompilerInputs = append(r.memoryCompilerInputs, source)
+	}
 	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
 	return nil
 }
@@ -175,6 +290,9 @@ func TestTurnOrchestratorRefTurnRecordsVisibleDisplay(t *testing.T) {
 	if !strings.Contains(runner.inputs[0], "Referenced context:") || !strings.Contains(runner.inputs[0], "referenced evidence") {
 		t.Fatalf("model input should include resolved reference context, got %q", runner.inputs[0])
 	}
+	if len(runner.memoryCompilerInputs) != 1 || runner.memoryCompilerInputs[0] != visible {
+		t.Fatalf("memory compiler source input = %+v, want %q", runner.memoryCompilerInputs, visible)
+	}
 	if gotDisplay != visible {
 		t.Fatalf("display recorder display = %q, want visible prompt %q", gotDisplay, visible)
 	}
@@ -228,4 +346,169 @@ func TestTurnOrchestratorCheckpointBoundaryPrecedesUserMessage(t *testing.T) {
 	if len(sess.Messages) != 1 {
 		t.Fatalf("session messages after rewind = %d, want boundary before user message", len(sess.Messages))
 	}
+}
+
+func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
+	prov := &scriptedTurns{turns: [][]provider.Chunk{textTurn("done")}}
+	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
+	var stopCalls int
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "stop"},
+		Event:      hook.Stop,
+		Scope:      hook.ScopeProject,
+	}}, "", func(ctx context.Context, in hook.SpawnInput) hook.SpawnResult {
+		if ctx.Err() != nil {
+			t.Errorf("Stop hook spawner ctx.Err()=%v; want nil", ctx.Err())
+		}
+		var p hook.Payload
+		json.Unmarshal([]byte(in.Stdin), &p)
+		if p.Event == hook.Stop {
+			stopCalls++
+		}
+		return hook.SpawnResult{ExitCode: 0}
+	}, nil)
+	c := New(Options{Runner: ag, Executor: ag, Hooks: hooks})
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	o := newTurnOrchestrator(c)
+	if err := o.runTurnWithRawDisplay(ctx, "test", "test", ""); err != nil && err != context.Canceled {
+		t.Fatal(err)
+	}
+	if stopCalls != 1 {
+		t.Fatalf("Stop hooks called = %d; want 1", stopCalls)
+	}
+}
+
+// TestTurnOrchestratorCancelStripsIncompleteTurn verifies that when the user
+// explicitly cancels a turn (Ctrl+C), the incomplete turn's messages are
+// stripped from the session so the next turn starts clean.  Without this, the
+// model sees leftover in-progress todo items and partial tool calls and may
+// re-execute the interrupted work.  See #5286.
+func TestTurnOrchestratorCancelStripsIncompleteTurn(t *testing.T) {
+	sess := agent.NewSession("you are a helpful agent")
+	// Pre-populate with a few messages from an earlier turn.
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "previous work"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	preCount := len(sess.Messages)
+
+	// runner that simulates a cancelled turn: it adds the user message plus
+	// some tool-call garbage the real agent would leave behind, then returns
+	// context.Canceled.
+	runner := &cancelStrippingRunner{
+		session: sess,
+		add: []provider.Message{
+			{Role: provider.RoleAssistant, Content: "let me do that", ToolCalls: []provider.ToolCall{
+				{ID: "c1", Name: "todo_write", Arguments: `{"todos":[{"content":"add abc","status":"in_progress"}]}`},
+			}},
+			{Role: provider.RoleTool, Content: "Todos updated: 1 total — 0 completed, 1 in_progress, 0 pending.", ToolCallID: "c1", Name: "todo_write"},
+		},
+		err: context.Canceled,
+	}
+
+	ex := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Runner: runner, Executor: ex})
+	// Simulate a user-initiated cancel: set the cancelling flag.
+	c.mu.Lock()
+	c.canceling = true
+	c.mu.Unlock()
+
+	// Pre-seed todoState as if a successful todo_write from the cancelled turn
+	// had already updated it — this is the state the runner leaves behind before
+	// returning context.Canceled, and what RebuildTodoState must clear.
+	ex.ReplaceTodoState([]evidence.TodoItem{{Content: "add abc", Status: "in_progress"}})
+
+	o := newTurnOrchestrator(c)
+	err := o.runTurnWithRawDisplay(context.Background(), "add config file abc", "add config file abc", "")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// The incomplete turn (user prompt + assistant + tool result) must be
+	// stripped; the session must only contain the pre-turn messages.
+	msgs := sess.Messages
+	if len(msgs) != preCount {
+		t.Fatalf("session messages after cancel = %d, want pre-turn count %d: %+v", len(msgs), preCount, msgs)
+	}
+
+	// todoState must also be reset: the in_progress todo written by the
+	// cancelled turn must not survive the strip.
+	if todos := c.Todos(); len(todos) != 0 {
+		t.Fatalf("Todos() after cancel = %v, want empty — cancelled todo_write leaked into canonical state", todos)
+	}
+}
+
+// TestTurnOrchestratorCancelFlushesCleanTranscriptToDisk verifies that after a
+// user-cancel strip the cleaned transcript is written to disk, so a restart or
+// session resume does not reload the partial turn from a stale mid-turn
+// autosave.  See #5286.
+func TestTurnOrchestratorCancelFlushesCleanTranscriptToDisk(t *testing.T) {
+	sess := agent.NewSession("system")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "earlier turn"})
+	sess.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	// Count only non-system messages; the system prompt is not written to the
+	// .jsonl by Session.Save (it is reconstructed from the session options).
+	wantNonSystem := 0
+	for _, m := range sess.Messages {
+		if m.Role != provider.RoleSystem {
+			wantNonSystem++
+		}
+	}
+
+	runner := &cancelStrippingRunner{
+		session: sess,
+		add: []provider.Message{
+			{Role: provider.RoleAssistant, Content: "working…", ToolCalls: []provider.ToolCall{
+				{ID: "d1", Name: "todo_write", Arguments: `{"todos":[{"content":"task","status":"in_progress"}]}`},
+			}},
+			{Role: provider.RoleTool, Content: "Todos updated.", ToolCallID: "d1", Name: "todo_write"},
+		},
+		err: context.Canceled,
+	}
+
+	sessionPath := agent.NewSessionPath(t.TempDir(), "test-model")
+	c := New(Options{
+		Runner:      runner,
+		Executor:    agent.New(nil, nil, sess, agent.Options{}, event.Discard),
+		SessionPath: sessionPath,
+	})
+	c.mu.Lock()
+	c.canceling = true
+	c.mu.Unlock()
+
+	o := newTurnOrchestrator(c)
+	if err := o.runTurnWithRawDisplay(context.Background(), "do something", "do something", ""); !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected context.Canceled, got %v", err)
+	}
+
+	// Load the session file written after the strip and verify it contains only
+	// the pre-cancel messages — not the partial assistant/tool messages.
+	loaded, err := agent.LoadSession(sessionPath)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	nonSystem := 0
+	for _, m := range loaded.Messages {
+		if m.Role != provider.RoleSystem {
+			nonSystem++
+		}
+	}
+	if nonSystem != wantNonSystem {
+		t.Fatalf("on-disk message count (non-system) = %d, want %d — stale partial turn still on disk", nonSystem, wantNonSystem)
+	}
+}
+
+// cancelStrippingRunner adds messages to a session then returns a fixed error,
+// simulating an agent that was interrupted mid-turn.
+type cancelStrippingRunner struct {
+	session *agent.Session
+	add     []provider.Message
+	err     error
+}
+
+func (r *cancelStrippingRunner) Run(ctx context.Context, input string) error {
+	r.session.Add(provider.Message{Role: provider.RoleUser, Content: input})
+	for _, m := range r.add {
+		r.session.Add(m)
+	}
+	return r.err
 }
