@@ -14,7 +14,7 @@ import { isReadOnlyTool } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
-import { buildTurnGroups, compactQuestionText, questionAnchorId, scrollVersion, warmUserPreview, type QuestionAnchor, type TurnGroup } from "../lib/transcriptGrouping";
+import { buildTurnGroups, compactQuestionText, createWarmLayerState, questionAnchorId, scrollVersion, warmColdPageForTurn, warmLayerWithColdPageAtLeast, warmLayerWithExpandedTurn, warmLayerWithNextColdPage, warmPagination, warmUserPreview, type QuestionAnchor, type TurnGroup, type WarmLayerState } from "../lib/transcriptGrouping";
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
@@ -131,7 +131,9 @@ export function Transcript({
   } = useScrollManager();
   const autoScrollFrame = useRef<number | null>(null);
   const pendingRevealBottomScroll = useRef(false);
+  const pendingQuestionJump = useRef<QuestionAnchor | null>(null);
   const sessionKey = useMemo(() => `${items[0]?.id ?? ""}|${items[items.length - 1]?.id ?? ""}`, [items]);
+  const warmLayerSessionKey = useMemo(() => `${tabId ?? ""}|${revealSignal}|${items[0]?.id ?? ""}`, [items, revealSignal, tabId]);
   const entranceRef = useEntranceAnimation<HTMLDivElement>(sessionKey, items.length);
 
   const [displayMode, setDisplayMode] = useState<DisplayMode>(() => getDisplayMode());
@@ -251,8 +253,12 @@ export function Transcript({
   }, [items]);
 
   // ── Layer state ────────────────────────────────────────────────────────────
-  const [expandedWarmTurns, setExpandedWarmTurns] = useState<Set<number>>(new Set());
-  const [coldPage, setColdPage] = useState(0);
+  const [warmLayerState, setWarmLayerState] = useState<WarmLayerState>(() => createWarmLayerState(warmLayerSessionKey));
+  const defaultWarmLayerState = useMemo<WarmLayerState>(() => createWarmLayerState(warmLayerSessionKey), [warmLayerSessionKey]);
+  const activeWarmLayerState = warmLayerState.sessionKey === warmLayerSessionKey
+    ? warmLayerState
+    : defaultWarmLayerState;
+  const { expandedWarmTurns, coldPage } = activeWarmLayerState;
 
   // Compute turn groups from the structural item list. Streaming text updates
   // keep the same items[] reference, so this stays out of the token hot path.
@@ -271,9 +277,20 @@ export function Transcript({
   }, [items]);
 
   // How many turns are in the cold zone (not yet shown).
-  const warmTurnCount = turnGroups.length - Math.min(turnGroups.length, HOT_TURNS);
-  const shownWarmStart = Math.max(0, warmTurnCount - coldPage * WARM_PAGE_SIZE);
-  const coldTurnCount = shownWarmStart;
+  const { warmStartTurn, warmEndTurn, coldTurnCount } = useMemo(
+    () => warmPagination({ turnCount: turnGroups.length, hotTurns: HOT_TURNS, pageSize: WARM_PAGE_SIZE, coldPage }),
+    [coldPage, turnGroups.length],
+  );
+
+  useLayoutEffect(() => {
+    const question = pendingQuestionJump.current;
+    if (!question) return;
+    const node = document.getElementById(questionAnchorId(question.id));
+    if (!node) return;
+    pendingQuestionJump.current = null;
+    stick.current = false;
+    smoothScrollTo(node, 12);
+  }, [expandedWarmTurns, smoothScrollTo, stick, warmStartTurn]);
 
   // ── The turn action menu ──────────────────────────────────────────────────
   const [openAction, setOpenAction] = useState<OpenTurnAction | null>(null);
@@ -294,21 +311,29 @@ export function Transcript({
   const jumpToQuestion = (question: QuestionAnchor) => {
     const node = document.getElementById(questionAnchorId(question.id));
     if (!node) return;
+    pendingQuestionJump.current = null;
     stick.current = false;
     smoothScrollTo(node, 12);
   };
 
   const handleJumpToQuestion = useCallback((question: QuestionAnchor) => {
+    pendingQuestionJump.current = question;
     // Auto-expand the warm turn when jumping to an old question.
     const warmTurnStart = turnGroups.length - HOT_TURNS;
     if (question.turn < warmTurnStart) {
-      setExpandedWarmTurns((prev) => {
-        if (prev.has(question.turn)) return prev;
-        return new Set([...prev, question.turn]);
+      const neededColdPage = warmColdPageForTurn({
+        turn: question.turn,
+        turnCount: turnGroups.length,
+        hotTurns: HOT_TURNS,
+        pageSize: WARM_PAGE_SIZE,
+      });
+      setWarmLayerState((prev) => {
+        const paged = warmLayerWithColdPageAtLeast(prev, warmLayerSessionKey, neededColdPage);
+        return warmLayerWithExpandedTurn(paged, warmLayerSessionKey, question.turn, true);
       });
     }
     jumpToQuestion(question);
-  }, [turnGroups.length]);
+  }, [turnGroups.length, warmLayerSessionKey]);
 
   // ── Hot zone: fully rendered from hotStartIdx to end ─────────────────────
   // Memoized separately from the assembly so streaming tokens don't rebuild
@@ -609,7 +634,8 @@ export function Transcript({
             <WarmZone
               turnGroups={turnGroups}
               expandedWarmTurns={expandedWarmTurns}
-              shownWarmStart={shownWarmStart}
+              warmStartTurn={warmStartTurn}
+              warmEndTurn={warmEndTurn}
               coldTurnCount={coldTurnCount}
               scrollRef={scrollRef}
               warmItems={items}
@@ -625,13 +651,9 @@ export function Transcript({
               warmOnEdit={onEditPrompt}
               tabId={tabId}
               creationMode={creationMode}
-              onToggleColdPage={() => setColdPage((p) => p + 1)}
+              onToggleColdPage={() => setWarmLayerState((prev) => warmLayerWithNextColdPage(prev, warmLayerSessionKey))}
               onToggleWarmTurn={(g, expand) => {
-                setExpandedWarmTurns((prev) => {
-                  const next = new Set(prev);
-                  if (expand) next.add(g); else next.delete(g);
-                  return next;
-                });
+                setWarmLayerState((prev) => warmLayerWithExpandedTurn(prev, warmLayerSessionKey, g, expand));
               }}
             />
           )}
@@ -667,7 +689,8 @@ export function Transcript({
 const WarmZone = memo(function WarmZone({
   turnGroups,
   expandedWarmTurns,
-  shownWarmStart,
+  warmStartTurn,
+  warmEndTurn,
   coldTurnCount,
   scrollRef,
   warmItems,
@@ -688,7 +711,8 @@ const WarmZone = memo(function WarmZone({
 }: {
   turnGroups: TurnGroup[];
   expandedWarmTurns: ReadonlySet<number>;
-  shownWarmStart: number;
+  warmStartTurn: number;
+  warmEndTurn: number;
   coldTurnCount: number;
   scrollRef: React.RefObject<HTMLDivElement | null>;
   warmItems: readonly Item[];
@@ -725,10 +749,8 @@ const WarmZone = memo(function WarmZone({
   }
 
   // 2. Warm zone: collapsed/expanded warm turn cards.
-  let warmStartTurn = 0;
   if (turnGroups.length > HOT_TURNS) {
-    warmStartTurn = turnGroups.length - HOT_TURNS - shownWarmStart;
-    for (let g = warmStartTurn; g < turnGroups.length - HOT_TURNS; g++) {
+    for (let g = warmStartTurn; g < warmEndTurn; g++) {
       const group = turnGroups[g];
       if (!group) continue;
       const expanded = expandedWarmTurns.has(g);
