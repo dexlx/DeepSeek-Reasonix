@@ -1544,6 +1544,65 @@ func TestQueueNewMessageOnEnterDuringRunning(t *testing.T) {
 	}
 }
 
+func TestQueuedFoldedPasteExpandsBeforeInterjectSend(t *testing.T) {
+	runner := &recordingTurnRunner{}
+	events := make(chan event.Event, 8)
+	ctrl := control.New(control.Options{
+		Runner:     runner,
+		Sink:       event.FuncSink(func(e event.Event) { events <- e }),
+		SessionDir: t.TempDir(),
+		Label:      "test",
+	})
+	m := newTestChatTUI()
+	m.ctrl = ctrl
+	m.eventCh = make(chan event.Event, 8)
+	m.state = tuiRunning
+
+	pasted := strings.Repeat("queued pasted content\n", 10)
+	model, _ := m.Update(tea.PasteMsg{Content: pasted})
+	m = model.(chatTUI)
+
+	display := strings.TrimSpace(m.input.Value())
+	if !strings.Contains(display, "[Pasted text #1") {
+		t.Fatalf("paste should be folded, got %q", display)
+	}
+
+	model, _ = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = model.(chatTUI)
+
+	if len(m.pendingInterject) != 1 {
+		t.Fatalf("queue should have 1 item, got %d", len(m.pendingInterject))
+	}
+	queued := m.pendingInterject[0]
+	if queued == display {
+		t.Fatalf("queued interject kept the folded placeholder: %q", queued)
+	}
+	for _, want := range []string{
+		"queued pasted content",
+		"--- Begin [Pasted text #1",
+		"--- End [Pasted text #1",
+	} {
+		if !strings.Contains(queued, want) {
+			t.Fatalf("queued interject missing %q in:\n%s", want, queued)
+		}
+	}
+
+	model, _ = m.Update(agentEventMsg(event.Event{Kind: event.TurnDone}))
+	m = model.(chatTUI)
+	waitForCLIEvent(t, events, event.TurnDone)
+
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner should receive queued interject, inputs=%q", runner.inputs)
+	}
+	sent := runner.inputs[0]
+	if sent == display {
+		t.Fatalf("runner received the folded placeholder: %q", sent)
+	}
+	if !strings.Contains(sent, "queued pasted content") {
+		t.Fatalf("runner input missing pasted content:\n%s", sent)
+	}
+}
+
 func TestQueueNavigationResetOnNonUpDownKey(t *testing.T) {
 	m := newTestChatTUI()
 	m.state = tuiRunning
