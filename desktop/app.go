@@ -3714,10 +3714,14 @@ func firstNonEmpty(values ...string) string {
 // ContextInfo is the prompt-vs-window gauge payload plus session totals. Used
 // and Window both zero means no context-window data yet.
 type ContextInfo struct {
-	Used          int     `json:"used"`
-	Window        int     `json:"window"`
-	SessionTokens int     `json:"sessionTokens"`
-	CompactRatio  float64 `json:"compactRatio,omitempty"`
+	Used            int     `json:"used"`
+	Window          int     `json:"window"`
+	SessionTokens   int     `json:"sessionTokens"`
+	CompactRatio    float64 `json:"compactRatio,omitempty"`
+	SessionCost     float64 `json:"sessionCost,omitempty"`
+	SessionCurrency string  `json:"sessionCurrency,omitempty"`
+	CacheHitTokens  int     `json:"cacheHitTokens,omitempty"`
+	CacheMissTokens int     `json:"cacheMissTokens,omitempty"`
 }
 
 // ContextUsage returns the latest context-window gauge numbers.
@@ -3734,15 +3738,23 @@ func (a *App) ContextUsageForTab(tabID string) ContextInfo {
 	}
 	a.mu.RUnlock()
 
-	var sessionTokens int
+	var info ContextInfo
 	if tab != nil {
-		sessionTokens = tab.telemetrySnapshot().Usage.TotalTokens
+		snap := tab.telemetrySnapshot()
+		info.SessionTokens = snap.Usage.TotalTokens
+		info.SessionCost = snap.Usage.SessionCost
+		info.SessionCurrency = snap.Usage.SessionCurrency
+		info.CacheHitTokens = snap.Usage.CacheHitTokens
+		info.CacheMissTokens = snap.Usage.CacheMissTokens
 	}
 	if ctrl == nil {
-		return ContextInfo{SessionTokens: sessionTokens}
+		return info
 	}
 	used, window := ctrl.ContextSnapshot()
-	return ContextInfo{Used: used, Window: window, SessionTokens: sessionTokens, CompactRatio: ctrl.CompactRatio()}
+	info.Used = used
+	info.Window = window
+	info.CompactRatio = ctrl.CompactRatio()
+	return info
 }
 
 // BalanceInfo is the wallet-balance readout for the status bar. Available is true

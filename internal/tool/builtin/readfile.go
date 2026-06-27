@@ -26,12 +26,14 @@ const (
 func init() { tool.RegisterBuiltin(readFile{}) }
 
 // readFile reads a text file. workDir, when non-empty, is the directory a
-// relative path is resolved against (see resolveIn); paths maps session-scoped
+// relative path is resolved against (see resolveIn). paths maps session-scoped
 // external read aliases to local roots without changing the model-visible tool
-// schema.
+// schema. forbidRoots lists directories the tool may not read from (resolved,
+// absolute paths).
 type readFile struct {
-	workDir string
-	paths   *PathResolver
+	workDir     string
+	paths       *PathResolver
+	forbidRoots []string
 }
 
 const (
@@ -73,6 +75,13 @@ func (r readFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	rp := resolveReadablePath(r.workDir, p.Path, r.paths)
 	p.Path = rp.Path
 	displayPath := rp.DisplayPath
+	if confineRead(r.forbidRoots, p.Path) {
+		err := &os.PathError{Op: "open", Path: p.Path, Err: os.ErrNotExist}
+		if rp.External {
+			return "", fmt.Errorf("read %s: %s", displayPath, rp.ErrorText(err))
+		}
+		return "", err
+	}
 	if p.Offset < 0 {
 		p.Offset = 0
 	}

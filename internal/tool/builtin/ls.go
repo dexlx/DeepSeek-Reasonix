@@ -15,10 +15,12 @@ func init() { tool.RegisterBuiltin(listDir{}) }
 
 // listDir lists a directory. workDir, when non-empty, is the directory a
 // relative path resolves against (see resolveIn). paths resolves session-scoped
-// read aliases for external folder refs.
+// read aliases for external folder refs. forbidRoots lists directories the tool
+// may not list or recurse into.
 type listDir struct {
-	workDir string
-	paths   *PathResolver
+	workDir     string
+	paths       *PathResolver
+	forbidRoots []string
 }
 
 func (listDir) Name() string { return "ls" }
@@ -48,6 +50,9 @@ func (l listDir) Execute(ctx context.Context, args json.RawMessage) (string, err
 	}
 	rp := resolveReadablePath(l.workDir, p.Path, l.paths)
 	p.Path = rp.Path
+	if confineRead(l.forbidRoots, p.Path) {
+		return "(empty directory)", nil
+	}
 
 	// Recursive mode: walk the whole tree depth-first.
 	if p.Recursive {
@@ -94,6 +99,9 @@ func (l listDir) listRecursive(root string, rp ResolvedPath) (string, error) {
 		if d.IsDir() {
 			switch d.Name() {
 			case ".git", "node_modules", ".DS_Store", "__pycache__", ".idea", ".vscode":
+				return filepath.SkipDir
+			}
+			if skipForbidDir(p, l.forbidRoots) {
 				return filepath.SkipDir
 			}
 		}

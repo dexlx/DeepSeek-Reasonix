@@ -819,7 +819,11 @@ export function reducer(s: State, a: Action): State {
       const sessionTokens = typeof a.context.sessionTokens === "number"
         ? Math.max(0, a.context.sessionTokens)
         : s.sessionTokens;
-      return { ...s, context: a.context, sessionTokens };
+      const sessionCost = typeof a.context.sessionCost === "number" && a.context.sessionCost > 0
+        ? a.context.sessionCost
+        : s.sessionCost;
+      const sessionCurrency = a.context.sessionCurrency || s.sessionCurrency;
+      return { ...s, context: a.context, sessionTokens, sessionCost, sessionCurrency };
     }
     case "balance": return { ...s, balance: a.balance };
     case "effort": return { ...s, effort: a.effort };
@@ -850,7 +854,7 @@ export function reducer(s: State, a: Action): State {
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
     case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false };
     case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false };
-    case "reset": return { ...initialState, meta: s.meta, context: { ...s.context, used: 0, sessionTokens: 0 }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
+    case "reset": return { ...initialState, meta: s.meta, context: { used: 0, window: s.context.window, sessionTokens: 0, compactRatio: s.context.compactRatio }, balance: s.balance, effort: s.effort, jobs: s.jobs, hydrating: s.hydrating, hydrateReason: s.hydrateReason, hydrateError: s.hydrateError, hydrateHistoryLoaded: s.hydrateHistoryLoaded, hydratePlaceholderItems: s.hydratePlaceholderItems, backendActivationPending: s.backendActivationPending, sessionGen: s.sessionGen + 1 };
     case "event": return applyEvent(s, a.e);
     default: return s;
   }

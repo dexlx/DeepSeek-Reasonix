@@ -16,10 +16,12 @@ func init() { tool.RegisterBuiltin(globTool{}) }
 
 // globTool matches files by pattern. workDir, when non-empty, is the directory
 // a relative pattern resolves against (see resolveIn). paths resolves
-// session-scoped read aliases for external folder refs.
+// session-scoped read aliases for external folder refs. forbidRoots lists
+// directories the tool may not search inside.
 type globTool struct {
-	workDir string
-	paths   *PathResolver
+	workDir     string
+	paths       *PathResolver
+	forbidRoots []string
 }
 
 func (globTool) Name() string { return "glob" }
@@ -57,7 +59,7 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 
 	// If the pattern contains **, use recursive matching via filepath.WalkDir.
 	if strings.Contains(p.Pattern, "**") {
-		return globRecursive(ctx, p.Pattern, displayPattern, rp)
+		return g.globRecursive(ctx, p.Pattern, displayPattern, rp)
 	}
 
 	// For patterns without **, try filepath.Glob first. If no matches are
@@ -73,9 +75,10 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 		}
 		return "", fmt.Errorf("glob %q: %w", displayPattern, err)
 	}
+	matches = filterForbidMatches(matches, g.forbidRoots)
 	if len(matches) == 0 && !strings.ContainsAny(rawPattern, "/\\") {
 		fallback := filepath.Join(g.workDir, "**", rawPattern)
-		return globRecursive(ctx, fallback, fallback, ResolvedPath{})
+		return g.globRecursive(ctx, fallback, fallback, ResolvedPath{})
 	}
 	if len(matches) == 0 {
 		return "(no matches)", nil
@@ -88,11 +91,24 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 	return strings.Join(matches, "\n"), nil
 }
 
+func filterForbidMatches(matches, forbidRoots []string) []string {
+	if len(forbidRoots) == 0 || len(matches) == 0 {
+		return matches
+	}
+	out := matches[:0]
+	for _, match := range matches {
+		if !confineRead(forbidRoots, match) {
+			out = append(out, match)
+		}
+	}
+	return out
+}
+
 // globRecursive handles patterns containing ** by walking the filesystem.
 // It splits the pattern at ** to get a root prefix and a suffix to match
 // against each file path found during the walk. Accepts a context so the
 // walk can be interrupted on cancellation.
-func globRecursive(ctx context.Context, pattern, displayPattern string, rp ResolvedPath) (string, error) {
+func (g globTool) globRecursive(ctx context.Context, pattern, displayPattern string, rp ResolvedPath) (string, error) {
 	// Split on ** to find the root directory and the remaining pattern.
 	parts := strings.SplitN(pattern, "**", 2)
 	root := parts[0]
@@ -130,9 +146,12 @@ func globRecursive(ctx context.Context, pattern, displayPattern string, rp Resol
 			return nil // skip unreadable entries
 		}
 		if d.IsDir() {
-			if skipWalkDir(root, path, d.Name()) {
+			if skipWalkDir(root, path, d.Name()) || skipForbidDir(path, g.forbidRoots) {
 				return filepath.SkipDir
 			}
+			return nil
+		}
+		if confineRead(g.forbidRoots, path) {
 			return nil
 		}
 		// If there's no suffix, every file matches.

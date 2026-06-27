@@ -774,6 +774,9 @@ func TestDriftControlReportsStaleConflictingAndOverusedState(t *testing.T) {
 	assertNode(t, next.Nodes, func(n MemoryNode) bool {
 		return n.ID == "old-fact" && n.Quality == QualityNoise
 	}, "stale node marked as noise")
+	assertNode(t, next.Nodes, func(n MemoryNode) bool {
+		return n.ID == "old-fact" && n.Confidence == 0.1
+	}, "drift control should not persist decayed confidence")
 }
 
 func TestTruthLockedNodeCannotBeOverwritten(t *testing.T) {
@@ -798,6 +801,46 @@ func TestTruthLockedNodeCannotBeOverwritten(t *testing.T) {
 	})
 	if nodes[0].Content != "original result" {
 		t.Fatalf("truth-locked node was overwritten: %+v", nodes[0])
+	}
+}
+
+func TestLoadStateBacksUpCorruptState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, stateFile)
+	if err := os.WriteFile(path, []byte("{not-json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := New(dir)
+	st := r.loadState()
+	if st.NoisyRefs == nil {
+		t.Fatal("loadState should return initialized empty state")
+	}
+	matches, err := filepath.Glob(path + ".corrupt-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) != 1 {
+		t.Fatalf("corrupt backup count = %d, want 1", len(matches))
+	}
+	b, err := os.ReadFile(matches[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(b) != "{not-json" {
+		t.Fatalf("backup content = %q", b)
+	}
+}
+
+func TestTraceIDIncludesCollisionGuard(t *testing.T) {
+	now := time.Unix(123, 456).UTC()
+	a := traceID(now)
+	b := traceID(now)
+	prefix := now.Format("20060102T150405.000000000") + "-"
+	if !strings.HasPrefix(a, prefix) || !strings.HasPrefix(b, prefix) {
+		t.Fatalf("trace IDs missing timestamp prefix: %q %q", a, b)
+	}
+	if a == b {
+		t.Fatalf("trace IDs collided for the same timestamp: %q", a)
 	}
 }
 

@@ -70,6 +70,27 @@ command = "example-mcp-server"
 不要把 API key 的真实值写进 `config.toml`。这个文件是普通配置：可以查看、编辑、
 迁移，也可以在常规脱敏后用于诊断。密钥值属于下面的全局 `.env`。
 
+### 自定义 provider 的 `api_key_env` 命名
+
+通过桌面端设置或 `reasonix setup` 添加自定义 provider 时，Reasonix 会把生成的
+`api_key_env` 保存到 `config.toml`，并把真实密钥值写入全局 `.env` 中同名的 key。
+生成结果是稳定的，因此同一个 provider 重启后仍会读取同一个凭据槽位。
+
+Reasonix 会根据 provider 名称生成默认值。能规范化成 ASCII 的名称会得到可读的
+env 名，例如 `LOCAL_GATEWAY_API_KEY`；如果名称全部由中文等非 ASCII 字符组成，则会
+生成带稳定 hash 后缀的名称，例如 `CUSTOM_d39b9067_API_KEY`，避免多个中文 provider
+都共用 `CUSTOM_API_KEY`。
+
+CLI 的自定义 provider 向导会先根据 base URL 生成 provider 名称，再套用同一套
+provider-name 规则。例如 `https://token.sensenova.cn/v1` 会生成 provider 名
+`custom-token-sensenova-cn`，默认 key env 是 `CUSTOM_TOKEN_SENSENOVA_CN_API_KEY`。
+直接回车会接受这个默认值；如果你确实想让多个 provider 共用一个凭据，也可以手动输入
+`CUSTOM_API_KEY` 或其他自定义 env 名。
+
+升级时不会自动改写已有配置。旧配置中已经使用 `CUSTOM_API_KEY` 的自定义 provider 会继续
+读取这个 key。若多个旧自定义 provider 已经意外共用了 `CUSTOM_API_KEY`，需要手动把各自的
+`api_key_env` 改成不同名称，并重新保存对应的 API key。
+
 ## 全局 `.env`
 
 `<Reasonix home>/.env` 是 Reasonix 保存的 provider API key 的唯一运行时来源。
