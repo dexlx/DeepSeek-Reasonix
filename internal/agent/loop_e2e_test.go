@@ -201,6 +201,84 @@ func TestRunCompilesMemorySourceFromUnexpandedContext(t *testing.T) {
 	}
 }
 
+func TestRunThrottlesMemoryCompilerInjectionButKeepsLearning(t *testing.T) {
+	rt := memorycompiler.New(t.TempDir())
+	_, seed := rt.StartTurn(context.Background(), "fix a bug", nil)
+	seed.RecordToolResults([]memorycompiler.ToolRecord{
+		{Name: "bash", Error: "exit status 1"},
+		{Name: "bash", Error: "exit status 1"},
+	})
+	seed.Finish(nil)
+
+	mp := testutil.NewMock("m",
+		testutil.Turn{Text: "first done"},
+		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "echo-1", Name: "echo", Arguments: `{"text":"fresh throttled signal"}`}}},
+		testutil.Turn{Text: "second done"},
+	)
+	var stats []event.MemoryCompilerStats
+	sink := event.FuncSink(func(e event.Event) {
+		if e.Kind == event.MemoryCompilerStatsEvent && e.MemoryCompiler != nil {
+			stats = append(stats, *e.MemoryCompiler)
+		}
+	})
+	a := New(mp, echoRegistry(), NewSession(""), Options{MemoryCompiler: rt}, sink)
+
+	if err := a.Run(context.Background(), "first prompt"); err != nil {
+		t.Fatalf("first Run: %v", err)
+	}
+	if err := a.Run(context.Background(), "second prompt"); err != nil {
+		t.Fatalf("second Run: %v", err)
+	}
+
+	reqs := mp.Requests()
+	if len(reqs) != 3 {
+		t.Fatalf("requests = %d, want 3", len(reqs))
+	}
+	firstUser := lastUserMessageFromRequest(t, reqs[0])
+	if !strings.Contains(firstUser.Content, "<memory-compiler-execution>") {
+		t.Fatalf("first useful Memory v5 turn should inject contract:\n%s", firstUser.Content)
+	}
+	secondUser := lastUserMessageFromRequest(t, reqs[1])
+	if strings.Contains(secondUser.Content, "<memory-compiler-execution>") {
+		t.Fatalf("second quick turn should not inject Memory v5 contract:\n%s", secondUser.Content)
+	}
+	if secondUser.Content != "second prompt" {
+		t.Fatalf("second quick turn should preserve raw user input, got:\n%s", secondUser.Content)
+	}
+	if len(stats) != 2 {
+		t.Fatalf("memory compiler stats events = %d, want 2", len(stats))
+	}
+	if !stats[0].Injected || !stats[0].UsefulIR {
+		t.Fatalf("first stats should report injected useful IR: %+v", stats[0])
+	}
+	if stats[1].Injected || !stats[1].UsefulIR || stats[1].CompiledTokens != 0 {
+		t.Fatalf("second stats should report useful but non-injected IR: %+v", stats[1])
+	}
+
+	compiled, turn := rt.StartTurn(context.Background(), "inspect throttled learning", nil)
+	if turn == nil {
+		t.Fatal("StartTurn after throttled run returned nil turn")
+	}
+	defer turn.Finish(nil)
+	if !strings.Contains(compiled, "echo succeeded") {
+		t.Fatalf("throttled turn did not record tool results for learning:\n%s", compiled)
+	}
+}
+
+func lastUserMessageFromRequest(t *testing.T, req provider.Request) provider.Message {
+	t.Helper()
+	var user provider.Message
+	for _, msg := range req.Messages {
+		if msg.Role == provider.RoleUser {
+			user = msg
+		}
+	}
+	if user.Role != provider.RoleUser {
+		t.Fatal("request did not contain a user message")
+	}
+	return user
+}
+
 // TestRunCancelledMidStreamLeavesResumableSession proves a turn cancelled before
 // the model answered leaves the session well-formed: the user message stands,
 // nothing dangling, and the repaired history is sendable as-is on resume.

@@ -34,6 +34,8 @@ const maxFinalReadinessBlocks = 3
 const maxEmptyFinalBlocks = 3
 const maxStreamRecoveries = 3
 const maxExecutorHandoffNudges = 1
+const memoryCompilerInjectionMax = 5
+const memoryCompilerInjectionCooldown = 30 * time.Second
 
 // Renderer redraws the assistant's final-answer text as styled output. It is
 // applied only after a turn's text stream completes, so the user sees raw
@@ -290,6 +292,14 @@ type Agent struct {
 	memoryCompiler   *memorycompiler.Runtime
 	compilerTurn     *memorycompiler.Turn
 
+	// compilerInjectionMu bounds how often Memory v5 may replace a visible user
+	// turn with an execution contract. The runtime can still observe throttled
+	// turns for trace writeback, but prompt injection and UI citations stay
+	// limited so the compiler does not dominate every conversation turn.
+	compilerInjectionMu    sync.Mutex
+	lastCompilerInjectedAt time.Time
+	compilerInjectionCount int
+
 	// planModeAllowedTools declares extra custom tools that the centralized
 	// plan-mode policy may treat as read-only. Known blocked tools still lose.
 	// Populated from Options.PlanModeAllowedTools during construction.
@@ -386,6 +396,7 @@ func (a *Agent) SetMemoryCompiler(rt *memorycompiler.Runtime) {
 	a.memoryCompilerMu.Lock()
 	a.memoryCompiler = rt
 	a.memoryCompilerMu.Unlock()
+	a.resetMemoryCompilerInjectionGate()
 }
 
 func (a *Agent) memoryCompilerRuntime() *memorycompiler.Runtime {
@@ -395,6 +406,44 @@ func (a *Agent) memoryCompilerRuntime() *memorycompiler.Runtime {
 	a.memoryCompilerMu.RLock()
 	defer a.memoryCompilerMu.RUnlock()
 	return a.memoryCompiler
+}
+
+func shouldStartMemoryCompiler(input string) bool {
+	trimmed := strings.TrimSpace(input)
+	if trimmed == "" {
+		return false
+	}
+	// Contract-like leading XML is host-generated control text, not a genuine
+	// user task. Let it pass through normally instead of compiling it again and
+	// risking nested Memory v5 blocks in previews or future source_event fields.
+	return !strings.HasPrefix(trimmed, "<")
+}
+
+func (a *Agent) tryMarkMemoryCompilerInjected(now time.Time) bool {
+	if a == nil {
+		return false
+	}
+	a.compilerInjectionMu.Lock()
+	defer a.compilerInjectionMu.Unlock()
+	if a.compilerInjectionCount >= memoryCompilerInjectionMax {
+		return false
+	}
+	if !a.lastCompilerInjectedAt.IsZero() && now.Sub(a.lastCompilerInjectedAt) < memoryCompilerInjectionCooldown {
+		return false
+	}
+	a.compilerInjectionCount++
+	a.lastCompilerInjectedAt = now
+	return true
+}
+
+func (a *Agent) resetMemoryCompilerInjectionGate() {
+	if a == nil {
+		return
+	}
+	a.compilerInjectionMu.Lock()
+	defer a.compilerInjectionMu.Unlock()
+	a.compilerInjectionCount = 0
+	a.lastCompilerInjectedAt = time.Time{}
 }
 
 // SetGate installs the per-call permission gate. Used by interactive CLI sessions to swap the
@@ -473,6 +522,7 @@ func (a *Agent) SetSession(s *Session) {
 	if s != nil {
 		a.rebuildTodoState(s.Snapshot())
 	}
+	a.resetMemoryCompilerInjectionGate()
 }
 
 // LastUsage returns the most recent per-turn token telemetry the provider
@@ -720,8 +770,12 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		memoryCompilerInput = sourceInput
 	}
 	input = a.withTurnPreferences(rawInput)
-	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) {
+	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) && shouldStartMemoryCompiler(memoryCompilerInput) {
 		if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
+			injected := strings.TrimSpace(compiledInput) != "" && a.tryMarkMemoryCompilerInjected(time.Now())
+			if !injected {
+				turn.SuppressInjection()
+			}
 			a.compilerTurn = turn
 			a.emitMemoryCompilerStats(turn)
 			defer func() {
@@ -730,7 +784,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 					a.compilerTurn = nil
 				}
 			}()
-			if strings.TrimSpace(compiledInput) != "" {
+			if injected {
 				input = a.withTurnPreferences(compiledInput)
 			}
 		}
