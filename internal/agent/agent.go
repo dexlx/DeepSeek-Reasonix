@@ -300,6 +300,9 @@ type Agent struct {
 	lastCompilerInjectedAt time.Time
 	compilerInjectionCount int
 
+	// classifier 用于判断用户输入是任务还是聊天，决定是否启动 Memory v5
+	classifier TaskClassifier
+
 	// planModeAllowedTools declares extra custom tools that the centralized
 	// plan-mode policy may treat as read-only. Known blocked tools still lose.
 	// Populated from Options.PlanModeAllowedTools during construction.
@@ -406,6 +409,16 @@ func (a *Agent) memoryCompilerRuntime() *memorycompiler.Runtime {
 	a.memoryCompilerMu.RLock()
 	defer a.memoryCompilerMu.RUnlock()
 	return a.memoryCompiler
+}
+
+// clearClassifierCache 清除 LLM 分类器的缓存（在会话边界调用）
+func (a *Agent) clearClassifierCache() {
+	if a == nil || a.classifier == nil {
+		return
+	}
+	if llm, ok := a.classifier.(*llmClassifier); ok && llm.cache != nil {
+		llm.cache.Clear()
+	}
 }
 
 func shouldStartMemoryCompiler(input string) bool {
@@ -549,6 +562,8 @@ func (a *Agent) SetSession(s *Session) {
 		a.rebuildTodoState(s.Snapshot())
 	}
 	a.resetMemoryCompilerInjectionGate()
+	// 清除分类缓存（会话边界）
+	a.clearClassifierCache()
 }
 
 // LastUsage returns the most recent per-turn token telemetry the provider
@@ -697,6 +712,10 @@ type Options struct {
 	// MemoryCompiler enables Memory v5 execution trace writeback and cache-safe
 	// execution-contract compilation.
 	MemoryCompiler *memorycompiler.Runtime
+
+	// UseMemoryCompilerLLMClassification 启用 LLM 分类来判断任务 vs 聊天
+	// 默认 false 时使用启发式分类器
+	UseMemoryCompilerLLMClassification bool
 }
 
 // New constructs an Agent. MaxSteps <= 0 means no cap — the run loop continues
@@ -761,6 +780,15 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		planModeAllowedTools:  append([]string(nil), opts.PlanModeAllowedTools...),
 		memoryCompiler:        opts.MemoryCompiler,
 	}
+	// 初始化分类器
+	if opts.UseMemoryCompilerLLMClassification && prov != nil {
+		// 使用 LLM 分类器（Haiku）
+		fallback := newHeuristicClassifier()
+		a.classifier = newLLMClassifier(prov, fallback)
+	} else {
+		// 默认使用启发式分类器
+		a.classifier = newHeuristicClassifier()
+	}
 	a.SetResponseLanguage(opts.ResponseLanguage)
 	a.SetReasoningLanguage(opts.ReasoningLanguage)
 	return a
@@ -797,23 +825,37 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 	input = a.withTurnPreferences(rawInput)
 	if memCompiler := a.memoryCompilerRuntime(); memCompiler != nil && !MemoryCompilerSkipFromContext(ctx) && shouldStartMemoryCompiler(memoryCompilerInput) {
-		if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
-			injected := strings.TrimSpace(compiledInput) != "" &&
-				shouldInjectMemoryCompilerContractForInput(memoryCompilerInput) &&
-				a.tryMarkMemoryCompilerInjected(time.Now())
-			if !injected {
-				turn.SuppressInjection()
+		// 使用分类器判断是否为任务
+		isTask := true // 默认为任务
+		var classifyErr error
+		if a.classifier != nil {
+			isTask, classifyErr = a.classifier.IsTask(ctx, memoryCompilerInput)
+			if classifyErr != nil {
+				// 分类失败时降级到启发式分类器
+				isTask = shouldInjectMemoryCompilerContractForInput(memoryCompilerInput)
 			}
-			a.compilerTurn = turn
-			a.emitMemoryCompilerStats(turn)
-			defer func() {
-				turn.Finish(runErr)
-				if a.compilerTurn == turn {
-					a.compilerTurn = nil
+		}
+
+		// 只有任务才启动 Memory v5
+		if isTask {
+			if compiledInput, turn := memCompiler.StartTurn(ctx, memoryCompilerInput, a.session.Snapshot()); turn != nil {
+				injected := strings.TrimSpace(compiledInput) != "" &&
+					shouldInjectMemoryCompilerContractForInput(memoryCompilerInput) &&
+					a.tryMarkMemoryCompilerInjected(time.Now())
+				if !injected {
+					turn.SuppressInjection()
 				}
-			}()
-			if injected {
-				input = a.withTurnPreferences(compiledInput)
+				a.compilerTurn = turn
+				a.emitMemoryCompilerStats(turn)
+				defer func() {
+					turn.Finish(runErr)
+					if a.compilerTurn == turn {
+						a.compilerTurn = nil
+					}
+				}()
+				if injected {
+					input = a.withTurnPreferences(compiledInput)
+				}
 			}
 		}
 	}
