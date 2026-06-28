@@ -721,6 +721,9 @@ func memoryCitationsForIR(ir PlannerIR) []provider.MemoryCitation {
 		out = append(out, c)
 	}
 	for _, ref := range ir.MemoryReferences {
+		if ref.Influence == "evidence" {
+			continue // tool_result nodes are internal graph state, not user-facing
+		}
 		note := ref.Content
 		if ref.Influence != "" {
 			note = ref.Influence + ": " + note
