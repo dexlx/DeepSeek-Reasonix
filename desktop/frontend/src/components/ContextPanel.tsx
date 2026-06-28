@@ -411,8 +411,8 @@ export function ContextPanel({
               <MetricCard label={t("context.time")} value={fmtDuration(elapsed, t)} />
               <MetricCard label={t("context.requests")} value={requestCount > 0 ? String(requestCount) : "-"} />
               <MetricCard label={t("context.inputCacheHit")} value={sessionCacheHitMetric.display} valueTitle={sessionCacheHitMetric.exact} wide />
-              <MetricCard label={t("context.inputCacheMiss")} value={sessionCacheMissMetric.display} valueTitle={sessionCacheMissMetric.exact} />
-              <MetricCard label={t("context.outputTokens")} value={sessionCompletionMetric.display} valueTitle={sessionCompletionMetric.exact} />
+              <MetricCard label={t("context.inputCacheMiss")} value={sessionCacheMissMetric.display} valueTitle={sessionCacheMissMetric.exact} wide />
+              <MetricCard label={t("context.outputTokens")} value={sessionCompletionMetric.display} valueTitle={sessionCompletionMetric.exact} wide />
               <MetricCard label={t("context.sessionTokens")} value={totalTokensMetric.display} valueTitle={totalTokensMetric.exact} wide />
             </div>
           </section>
