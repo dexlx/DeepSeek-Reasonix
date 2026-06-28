@@ -470,6 +470,28 @@ func TestBackgroundCloseHideStrategyByPlatform(t *testing.T) {
 	}
 }
 
+func TestBackgroundCloseRequiresRestorePath(t *testing.T) {
+	tests := []struct {
+		name        string
+		goos        string
+		trayStarted bool
+		want        bool
+	}{
+		{name: "macOS restores from Dock", goos: "darwin", trayStarted: false, want: true},
+		{name: "Windows tray ready", goos: "windows", trayStarted: true, want: true},
+		{name: "Linux tray ready", goos: "linux", trayStarted: true, want: true},
+		{name: "Linux no tray", goos: "linux", trayStarted: false, want: false},
+		{name: "other Unix no tray", goos: "freebsd", trayStarted: false, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := backgroundCloseHasRestorePathFor(tt.goos, tt.trayStarted); got != tt.want {
+				t.Fatalf("backgroundCloseHasRestorePathFor(%q, %v) = %v, want %v", tt.goos, tt.trayStarted, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBackgroundRestoreMaximiseStrategy(t *testing.T) {
 	tests := []struct {
 		goos      string

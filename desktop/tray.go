@@ -13,14 +13,14 @@ type desktopTray struct {
 	once     sync.Once
 }
 
-func (a *App) startTray() {
+func (a *App) startTray() bool {
 	if !traySupported() {
-		return
+		return false
 	}
 	a.mu.Lock()
 	if a.tray != nil {
 		a.mu.Unlock()
-		return
+		return true
 	}
 	t := &desktopTray{}
 	a.tray = t
@@ -61,6 +61,7 @@ func (a *App) startTray() {
 		a.trayReady = false
 		a.mu.Unlock()
 	})
+	return true
 }
 
 func (a *App) stopTray() {

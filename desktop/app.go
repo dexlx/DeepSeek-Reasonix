@@ -379,6 +379,9 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		cfg = config.LoadForEdit(config.UserConfigPath())
 	}
 	if cfg.DesktopCloseBehavior() == "background" {
+		if !a.backgroundCloseHasRestorePath() {
+			return false
+		}
 		a.backgroundMaximised.Store(runtime.WindowIsMaximised(ctx))
 		a.saveWindowStateSync()
 		a.snapshotAllTabs()
@@ -386,6 +389,13 @@ func (a *App) beforeClose(ctx context.Context) bool {
 		return true
 	}
 	return false
+}
+
+func (a *App) backgroundCloseHasRestorePath() bool {
+	if backgroundCloseUsesApplicationHide(goruntime.GOOS) {
+		return backgroundCloseHasRestorePathFor(goruntime.GOOS, false)
+	}
+	return backgroundCloseHasRestorePathFor(goruntime.GOOS, a.startTray())
 }
 
 func (a *App) showMainWindow() {
@@ -430,6 +440,10 @@ func showFromBackground(ctx context.Context, wasMaximised bool) {
 
 func backgroundCloseUsesApplicationHide(goos string) bool {
 	return goos == "darwin"
+}
+
+func backgroundCloseHasRestorePathFor(goos string, trayStarted bool) bool {
+	return backgroundCloseUsesApplicationHide(goos) || trayStarted
 }
 
 type backgroundRestorePlan struct {
