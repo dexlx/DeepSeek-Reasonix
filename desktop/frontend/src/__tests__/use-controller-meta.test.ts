@@ -219,6 +219,12 @@ console.log("\nuse controller meta");
   eq(s.items.some((item) => item.kind === "user" && item.text === "recent prompt"), true, "history page replace renders the latest window");
   eq(s.historyStartTurn, 60, "history page stores the older cursor");
   eq(s.historyHasOlder, true, "history page records older availability");
+  const checkpointed = reducer(s, {
+    type: "history_checkpoint_turns",
+    turns: Array.from({ length: 61 }, (_, index) => index + 1000),
+  });
+  const recentUser = checkpointed.items.find((item) => item.kind === "user" && item.text === "recent prompt");
+  eq(recentUser?.kind === "user" && recentUser.checkpointTurn, 1060, "paged checkpoint merge uses the window start turn");
   s = reducer(s, { type: "history_older_start" });
   eq(s.historyOlderLoading, true, "older history request marks loading");
   s = reducer(s, {

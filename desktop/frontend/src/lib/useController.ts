@@ -468,13 +468,14 @@ export function historyMessagesToItems(messages: HistoryMessage[], idPrefix: str
   return { items, seq };
 }
 
-function mergeHistoryCheckpointTurns(items: Item[], turns: number[]): Item[] {
+function mergeHistoryCheckpointTurns(items: Item[], turns: number[], startTurn = 0): Item[] {
   if (!turns.some((turn) => turn >= 0)) return items;
+  const offset = Math.max(0, Math.floor(startTurn));
   let userIndex = 0;
   let changed = false;
   const next = items.map((item) => {
     if (item.kind !== "user") return item;
-    const turn = turns[userIndex];
+    const turn = turns[offset + userIndex];
     userIndex += 1;
     if (turn == null || turn < 0 || item.checkpointTurn === turn) return item;
     changed = true;
@@ -894,7 +895,7 @@ export function reducer(s: State, a: Action): State {
     case "history_older_start": return s.historyOlderLoading ? s : { ...s, historyOlderLoading: true };
     case "history_older_error": return s.historyOlderLoading ? { ...s, historyOlderLoading: false } : s;
     case "history_checkpoint_turns":
-      return { ...s, items: mergeHistoryCheckpointTurns(s.items, a.turns) };
+      return { ...s, items: mergeHistoryCheckpointTurns(s.items, a.turns, s.historyStartTurn) };
     case "local_notice": return { ...s, running: false, turnActive: false, seq: s.seq + 1, items: [...s.items, { kind: "notice", id: `n${s.seq}`, level: a.level, text: a.text }] };
     case "clearApproval": return { ...s, approval: undefined, pendingPrompt: false };
     case "clearAsk": return { ...s, ask: undefined, pendingPrompt: false };
