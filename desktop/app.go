@@ -391,11 +391,57 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	return false
 }
 
+const backgroundCloseTrayReadyTimeout = 500 * time.Millisecond
+
 func (a *App) backgroundCloseHasRestorePath() bool {
 	if backgroundCloseUsesApplicationHide(goruntime.GOOS) {
-		return backgroundCloseHasRestorePathFor(goruntime.GOOS, false)
+		return backgroundCloseHasRestorePathFor(goruntime.GOOS, false, false)
 	}
-	return backgroundCloseHasRestorePathFor(goruntime.GOOS, a.startTray())
+	if !a.startTray() {
+		return false
+	}
+	return backgroundCloseHasRestorePathFor(goruntime.GOOS, true, a.waitForTrayReady(backgroundCloseTrayReadyTimeout))
+}
+
+func (a *App) waitForTrayReady(timeout time.Duration) bool {
+	if a.isTrayReady() {
+		return true
+	}
+	ready := a.trayReadySignal()
+	if ready == nil {
+		return false
+	}
+	if timeout <= 0 {
+		select {
+		case <-ready:
+			return a.isTrayReady()
+		default:
+			return false
+		}
+	}
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-ready:
+		return a.isTrayReady()
+	case <-timer.C:
+		return a.isTrayReady()
+	}
+}
+
+func (a *App) isTrayReady() bool {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	return a.trayReady
+}
+
+func (a *App) trayReadySignal() <-chan struct{} {
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if a.tray == nil {
+		return nil
+	}
+	return a.tray.ready
 }
 
 func (a *App) showMainWindow() {
@@ -442,8 +488,8 @@ func backgroundCloseUsesApplicationHide(goos string) bool {
 	return goos == "darwin"
 }
 
-func backgroundCloseHasRestorePathFor(goos string, trayStarted bool) bool {
-	return backgroundCloseUsesApplicationHide(goos) || trayStarted
+func backgroundCloseHasRestorePathFor(goos string, trayStarted, trayReady bool) bool {
+	return backgroundCloseUsesApplicationHide(goos) || (trayStarted && trayReady)
 }
 
 type backgroundRestorePlan struct {

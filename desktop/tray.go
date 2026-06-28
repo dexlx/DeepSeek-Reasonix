@@ -7,10 +7,22 @@ import (
 )
 
 type desktopTray struct {
-	end      func()
-	openItem *systray.MenuItem
-	quitItem *systray.MenuItem
-	once     sync.Once
+	end       func()
+	openItem  *systray.MenuItem
+	quitItem  *systray.MenuItem
+	once      sync.Once
+	ready     chan struct{}
+	readyOnce sync.Once
+}
+
+func newDesktopTray() *desktopTray {
+	return &desktopTray{ready: make(chan struct{})}
+}
+
+func (t *desktopTray) markReady() {
+	t.readyOnce.Do(func() {
+		close(t.ready)
+	})
 }
 
 func (a *App) startTray() bool {
@@ -22,7 +34,7 @@ func (a *App) startTray() bool {
 		a.mu.Unlock()
 		return true
 	}
-	t := &desktopTray{}
+	t := newDesktopTray()
 	a.tray = t
 	a.mu.Unlock()
 
@@ -45,6 +57,7 @@ func (a *App) startTray() bool {
 		a.mu.Lock()
 		a.trayReady = true
 		a.mu.Unlock()
+		t.markReady()
 
 		a.goSafe("trayOpenLoop", func() {
 			for range t.openItem.ClickedCh {
@@ -58,7 +71,10 @@ func (a *App) startTray() bool {
 		})
 	}, func() {
 		a.mu.Lock()
-		a.trayReady = false
+		if a.tray == t {
+			a.trayReady = false
+			a.tray = nil
+		}
 		a.mu.Unlock()
 	})
 	return true
