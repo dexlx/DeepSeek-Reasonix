@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"reasonix/internal/provider"
+	"reasonix/internal/tool"
 )
 
 // Tool-result maintenance is the free half of context management: stale tool
@@ -97,7 +98,7 @@ func (a *Agent) maintainStaleToolResults(mode toolResultMaintenanceMode) (PruneS
 	next := append([]provider.Message(nil), msgs...)
 	for _, i := range idx {
 		m := next[i]
-		replacement := rewriteToolResult(m, mode, st.Archive)
+		replacement := rewriteToolResult(m, mode, st.Archive, a.snipStrategyFor(m.Name))
 		if replacement == m.Content {
 			continue
 		}
@@ -130,11 +131,11 @@ func shouldMaintainToolResult(m provider.Message, mode toolResultMaintenanceMode
 	return len(m.Content) >= minPruneBytes
 }
 
-func rewriteToolResult(m provider.Message, mode toolResultMaintenanceMode, archive string) string {
+func rewriteToolResult(m provider.Message, mode toolResultMaintenanceMode, archive string, strategy snipStrategy) string {
 	if mode == toolResultPrune {
 		return pruneToolResult(m, archive)
 	}
-	return snipToolResult(m, archive)
+	return snipToolResult(m, archive, strategy)
 }
 
 func pruneToolResult(m provider.Message, archive string) string {
@@ -147,11 +148,10 @@ func pruneToolResult(m provider.Message, archive string) string {
 	return fmt.Sprintf("%s%s, %d bytes archived to %s; re-run the tool if the data is needed again]", prunedMarker, m.Name, originalToolBytes(m.Content), archive)
 }
 
-func snipToolResult(m provider.Message, archive string) string {
+func snipToolResult(m provider.Message, archive string, strategy snipStrategy) string {
 	if archive == "" {
 		archive = "not archived"
 	}
-	strategy := snipStrategyFor(m.Name)
 	lines := strings.Split(m.Content, "\n")
 	if len(lines) <= strategy.head+strategy.tail {
 		headChars := minInt(strategy.headChars, len(m.Content)/2)
@@ -176,19 +176,40 @@ type snipStrategy struct {
 	tailChars int
 }
 
-func snipStrategyFor(name string) snipStrategy {
-	switch {
-	case name == "read_file" || name == "web_fetch":
-		return snipStrategy{head: 120, tail: 12, headChars: 12000, tailChars: 2000}
-	case name == "bash":
-		return snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
-	case name == "grep" || name == "glob" || name == "ls":
-		return snipStrategy{head: 80, tail: 8, headChars: 10000, tailChars: 1000}
-	case strings.HasPrefix(name, "lsp_"):
-		return snipStrategy{head: 60, tail: 10, headChars: 10000, tailChars: 1500}
-	default:
-		return snipStrategy{head: 60, tail: 12, headChars: 8000, tailChars: 2000}
+// Defaults for tools that do not implement tool.SnipHinter, tiered by side
+// effect. A read-only tool's output is front-loaded (the first lines are the
+// answer), so it keeps a long head and short tail. A side-effecting tool — bash
+// and any plugin — can carry a failure at either end (a build error at the tail,
+// the command at the head), so it keeps both ends evenly. These are deliberately
+// the only two defaults: a registered tool that fits neither must implement
+// SnipHinter, and the contract test fails until it does.
+var (
+	defaultReadOnlySnip      = snipStrategy{head: 80, tail: 12, headChars: 10000, tailChars: 2000}
+	defaultSideEffectingSnip = snipStrategy{head: 40, tail: 40, headChars: 8000, tailChars: 8000}
+)
+
+// snipStrategyFor resolves the snip geometry for a tool result by asking the
+// registered tool itself (tool.SnipHinter), so the policy travels with the tool
+// definition and a rename cannot silently desync it from a name-keyed table.
+// When the tool is absent (e.g. an MCP server detached after producing the
+// result) or declines to hint, it falls back to the ReadOnly-tiered default.
+func (a *Agent) snipStrategyFor(name string) snipStrategy {
+	if a.tools != nil {
+		if t, ok := a.tools.Get(name); ok {
+			if h, ok := t.(tool.SnipHinter); ok {
+				return snipStrategyFromHint(h.SnipHint())
+			}
+			if t.ReadOnly() {
+				return defaultReadOnlySnip
+			}
+			return defaultSideEffectingSnip
+		}
 	}
+	return defaultReadOnlySnip
+}
+
+func snipStrategyFromHint(h tool.SnipHint) snipStrategy {
+	return snipStrategy{head: h.Head, tail: h.Tail, headChars: h.HeadChars, tailChars: h.TailChars}
 }
 
 func originalToolBytes(content string) int {

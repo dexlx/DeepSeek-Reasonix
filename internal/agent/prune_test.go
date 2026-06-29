@@ -2,6 +2,8 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,5 +331,98 @@ func TestPruneElidesErrorsWithoutKeepPolicy(t *testing.T) {
 	}
 	if got := sess.Snapshot()[3].Content; !strings.HasPrefix(got, prunedMarker) {
 		t.Errorf("error tool result not elided without keep policy: %.60q", got)
+	}
+}
+
+// hintingTool is a read-only tool that advertises a distinctive snip geometry,
+// so a test can prove the maintainer honored the tool's own SnipHint rather
+// than a name-keyed table or a generic default.
+type hintingTool struct {
+	name string
+	hint tool.SnipHint
+}
+
+func (h hintingTool) Name() string                                           { return h.name }
+func (hintingTool) Description() string                                      { return "" }
+func (hintingTool) Schema() json.RawMessage                                  { return json.RawMessage(`{"type":"object"}`) }
+func (hintingTool) ReadOnly() bool                                           { return true }
+func (hintingTool) Execute(context.Context, json.RawMessage) (string, error) { return "", nil }
+func (h hintingTool) SnipHint() tool.SnipHint                                { return h.hint }
+
+func snipFixtureFor(toolName, content string) *Session {
+	return &Session{Messages: []provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "task"},
+		{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{ID: "1", Name: toolName, Arguments: "{}"}}},
+		{Role: provider.RoleTool, ToolCallID: "1", Name: toolName, Content: content},
+		{Role: provider.RoleAssistant, Content: "step done"},
+		{Role: provider.RoleUser, Content: "next"},
+		{Role: provider.RoleAssistant, Content: "ok"},
+	}}
+}
+
+func TestSnipUsesRegisteredToolHint(t *testing.T) {
+	// 600 numbered lines; a SnipHinter keeping head=3, tail=2 must yield exactly
+	// those boundary lines, which no default geometry would produce.
+	var lines []string
+	for i := 0; i < 600; i++ {
+		lines = append(lines, fmt.Sprintf("L%d", i))
+	}
+	content := strings.Join(lines, "\n")
+	sess := snipFixtureFor("custom_reader", content)
+
+	reg := tool.NewRegistry()
+	reg.Add(hintingTool{name: "custom_reader", hint: tool.SnipHint{Head: 3, Tail: 2, HeadChars: 100, TailChars: 100}})
+	a := New(nil, reg, sess, Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: t.TempDir()}, event.Discard)
+
+	if st, err := a.SnipStaleToolResults(); err != nil || st.Results != 1 {
+		t.Fatalf("snip st=%+v err=%v, want one result", st, err)
+	}
+	got := sess.Snapshot()[3].Content
+	if !strings.Contains(got, "showing first 3 lines and last 2 lines") {
+		t.Fatalf("snip did not honor the tool's SnipHint geometry: %.120q", got)
+	}
+	if !strings.Contains(got, "\nL0\nL1\nL2\n") {
+		t.Errorf("kept head is not the first 3 lines: %.160q", got)
+	}
+	if !strings.Contains(got, "\nL598\nL599") {
+		t.Errorf("kept tail is not the last 2 lines: %.160q", got)
+	}
+}
+
+func TestSnipFallsBackByReadOnlyTier(t *testing.T) {
+	var lines []string
+	for i := 0; i < 600; i++ {
+		lines = append(lines, fmt.Sprintf("L%d", i))
+	}
+	content := strings.Join(lines, "\n")
+
+	// A side-effecting tool with no SnipHint takes the even-split default
+	// (head==tail), while a read-only one keeps a longer head than tail.
+	cases := []struct {
+		name     string
+		readOnly bool
+		evenEnds bool
+	}{
+		{"side_effecting", false, true},
+		{"read_only", true, false},
+	}
+	for _, tc := range cases {
+		sess := snipFixtureFor(tc.name, content)
+		reg := tool.NewRegistry()
+		reg.Add(fakeTool{name: tc.name, readOnly: tc.readOnly})
+		a := New(nil, reg, sess, Options{ContextWindow: 1000, RecentKeep: 2, ArchiveDir: t.TempDir()}, event.Discard)
+
+		if st, err := a.SnipStaleToolResults(); err != nil || st.Results != 1 {
+			t.Fatalf("%s: snip st=%+v err=%v, want one result", tc.name, st, err)
+		}
+		got := sess.Snapshot()[3].Content
+		want := "showing first 40 lines and last 40 lines"
+		if !tc.evenEnds {
+			want = "showing first 80 lines and last 12 lines"
+		}
+		if !strings.Contains(got, want) {
+			t.Errorf("%s: fallback geometry wrong, want %q in: %.120q", tc.name, want, got)
+		}
 	}
 }
