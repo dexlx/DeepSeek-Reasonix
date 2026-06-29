@@ -69,6 +69,41 @@ func TestRunProbesUsesOverridePathAndFirstLine(t *testing.T) {
 	}
 }
 
+func TestRunProbesRejectsDeniedOverridePath(t *testing.T) {
+	resetProbeCacheForTest(t, time.Unix(50, 0))
+	dir := t.TempDir()
+	toolPath := filepath.Join(dir, "deniedtool")
+	toolPath = writeProbeTool(t, toolPath, "should not run")
+
+	results := RunProbesWithOptions(context.Background(), []string{"deniedtool --version"}, ProbeOptions{
+		Overrides: map[string]string{"deniedtool": toolPath},
+		DenyRoots: []string{dir},
+	})
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].Found || results[0].Error != "not trusted" {
+		t.Fatalf("denied override result = %+v, want not trusted", results[0])
+	}
+}
+
+func TestRunProbesRejectsDeniedPathHit(t *testing.T) {
+	resetProbeCacheForTest(t, time.Unix(75, 0))
+	dir := t.TempDir()
+	writeProbeTool(t, filepath.Join(dir, "pathtool"), "should not run")
+	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	results := RunProbesWithOptions(context.Background(), []string{"pathtool --version"}, ProbeOptions{
+		DenyRoots: []string{dir},
+	})
+	if len(results) != 1 {
+		t.Fatalf("results len = %d, want 1", len(results))
+	}
+	if results[0].Found || results[0].Error != "not trusted" {
+		t.Fatalf("denied PATH result = %+v, want not trusted", results[0])
+	}
+}
+
 func TestRunProbesReportsTimeout(t *testing.T) {
 	dir := t.TempDir()
 	toolPath := filepath.Join(dir, "slowtool")

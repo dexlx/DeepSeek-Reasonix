@@ -47,6 +47,11 @@ type ProbeResult struct {
 	Error   string
 }
 
+type ProbeOptions struct {
+	Overrides map[string]string
+	DenyRoots []string
+}
+
 func DefaultProbes() []string {
 	return []string{
 		"go version",
@@ -68,7 +73,11 @@ func RunProbes(ctx context.Context, commands []string) []ProbeResult {
 }
 
 func RunProbesWithOverrides(ctx context.Context, commands []string, overrides map[string]string) []ProbeResult {
-	key := probeFingerprint(commands, overrides)
+	return RunProbesWithOptions(ctx, commands, ProbeOptions{Overrides: overrides})
+}
+
+func RunProbesWithOptions(ctx context.Context, commands []string, opts ProbeOptions) []ProbeResult {
+	key := probeFingerprint(commands, opts)
 	now := probeNow()
 	if results, ok := cachedProbeResults(key, now); ok {
 		return results
@@ -77,19 +86,19 @@ func RunProbesWithOverrides(ctx context.Context, commands []string, overrides ma
 		<-call.done
 		return cloneProbeResults(call.results)
 	}
-	results := runProbesUncached(ctx, commands, overrides)
+	results := runProbesUncached(ctx, commands, opts)
 	finishProbe(key, results, probeNow())
 	return cloneProbeResults(results)
 }
 
-func runProbesUncached(ctx context.Context, commands []string, overrides map[string]string) []ProbeResult {
+func runProbesUncached(ctx context.Context, commands []string, opts ProbeOptions) []ProbeResult {
 	results := make([]ProbeResult, len(commands))
 	var wg sync.WaitGroup
 	for i, command := range commands {
 		wg.Add(1)
 		go func(i int, command string) {
 			defer wg.Done()
-			results[i] = runOne(ctx, command, overrides)
+			results[i] = runOne(ctx, command, opts)
 		}(i, command)
 	}
 	wg.Wait()
@@ -132,18 +141,23 @@ func finishProbe(key string, results []ProbeResult, now time.Time) {
 	}
 }
 
-func probeFingerprint(commands []string, overrides map[string]string) string {
+func probeFingerprint(commands []string, opts ProbeOptions) string {
 	var b strings.Builder
 	b.WriteString("v1")
 	for _, command := range commands {
 		b.WriteByte('\x00')
 		b.WriteString(strings.TrimSpace(command))
 	}
-	for _, name := range sortedMapKeys(overrides) {
+	for _, name := range sortedMapKeys(opts.Overrides) {
 		b.WriteByte('\x00')
 		b.WriteString(name)
 		b.WriteByte('=')
-		b.WriteString(expandHome(overrides[name]))
+		b.WriteString(expandHome(opts.Overrides[name]))
+	}
+	for _, root := range normalizedDenyRoots(opts.DenyRoots) {
+		b.WriteByte('\x00')
+		b.WriteString("deny=")
+		b.WriteString(root)
 	}
 	return b.String()
 }
@@ -155,15 +169,19 @@ func cloneProbeResults(results []ProbeResult) []ProbeResult {
 	return append([]ProbeResult(nil), results...)
 }
 
-func runOne(ctx context.Context, command string, overrides map[string]string) ProbeResult {
+func runOne(ctx context.Context, command string, opts ProbeOptions) ProbeResult {
 	parts := strings.Fields(command)
 	if len(parts) == 0 {
 		return ProbeResult{Command: command, Binary: command, Error: "empty command"}
 	}
 	res := ProbeResult{Command: command, Binary: parts[0]}
-	exe := parts[0]
-	if override := strings.TrimSpace(overrides[parts[0]]); override != "" {
+	var exe string
+	if override := strings.TrimSpace(opts.Overrides[parts[0]]); override != "" {
 		exe = expandHome(override)
+		if !filepath.IsAbs(exe) {
+			res.Error = "not trusted"
+			return res
+		}
 		if !fileExecutable(exe) {
 			res.Error = "not found"
 			return res
@@ -175,6 +193,10 @@ func runOne(ctx context.Context, command string, overrides map[string]string) Pr
 			return res
 		}
 		exe = found
+	}
+	if blockedExecutable(exe, opts.DenyRoots) {
+		res.Error = "not trusted"
+		return res
 	}
 	cmdCtx, cancel := context.WithTimeout(ctx, ProbeTimeout)
 	defer cancel()
@@ -240,10 +262,10 @@ func FormatSection(results []ProbeResult, osName, shellPath string, overrides ma
 		b.WriteString("\nConfigured tools:\n")
 		names := sortedMapKeys(overrides)
 		for _, name := range limitStrings(names, maxRenderedTools) {
-			b.WriteString(fmt.Sprintf("- %s: %s\n", name, redactHome(overrides[name])))
+			fmt.Fprintf(&b, "- %s: %s\n", name, redactHome(overrides[name]))
 		}
 		if omitted := len(names) - maxRenderedTools; omitted > 0 {
-			b.WriteString(fmt.Sprintf("- ... %d more configured tools omitted\n", omitted))
+			fmt.Fprintf(&b, "- ... %d more configured tools omitted\n", omitted)
 		}
 	}
 	if len(results) > 0 {
@@ -260,12 +282,12 @@ func FormatSection(results []ProbeResult, osName, shellPath string, overrides ma
 				if out == "" {
 					out = "available"
 				}
-				b.WriteString(fmt.Sprintf("- %s: %s\n", r.Binary, out))
+				fmt.Fprintf(&b, "- %s: %s\n", r.Binary, out)
 				foundShown++
 			}
 		}
 		if omitted := foundTotal - foundShown; omitted > 0 {
-			b.WriteString(fmt.Sprintf("- ... %d more detected tools omitted\n", omitted))
+			fmt.Fprintf(&b, "- ... %d more detected tools omitted\n", omitted)
 		}
 		b.WriteString("\nNot found or unavailable:\n")
 		missingShown := 0
@@ -280,12 +302,12 @@ func FormatSection(results []ProbeResult, osName, shellPath string, overrides ma
 				if reason == "" {
 					reason = "not found"
 				}
-				b.WriteString(fmt.Sprintf("- %s: %s\n", r.Binary, reason))
+				fmt.Fprintf(&b, "- %s: %s\n", r.Binary, reason)
 				missingShown++
 			}
 		}
 		if omitted := missingTotal - missingShown; omitted > 0 {
-			b.WriteString(fmt.Sprintf("- ... %d more unavailable tools omitted\n", omitted))
+			fmt.Fprintf(&b, "- ... %d more unavailable tools omitted\n", omitted)
 		}
 	}
 	b.WriteString("\nUse detected tools when appropriate. Do not try unavailable tools unless the user installs or configures them.\n")
@@ -317,7 +339,7 @@ func redactHome(path string) string {
 	}
 	home, err := os.UserHomeDir()
 	if err != nil || home == "" {
-		return filepath.Clean(path)
+		return filepath.ToSlash(filepath.Clean(path))
 	}
 	clean := filepath.Clean(path)
 	home = filepath.Clean(home)
@@ -325,9 +347,9 @@ func redactHome(path string) string {
 		return "~"
 	}
 	if strings.HasPrefix(clean, home+string(filepath.Separator)) {
-		return "~" + strings.TrimPrefix(clean, home)
+		return filepath.ToSlash("~" + strings.TrimPrefix(clean, home))
 	}
-	return clean
+	return filepath.ToSlash(clean)
 }
 
 func expandHome(path string) string {
@@ -345,4 +367,53 @@ func expandHome(path string) string {
 func fileExecutable(path string) bool {
 	fi, err := os.Stat(path)
 	return err == nil && !fi.IsDir()
+}
+
+func blockedExecutable(path string, denyRoots []string) bool {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = filepath.Clean(path)
+	}
+	for _, root := range normalizedDenyRoots(denyRoots) {
+		if pathWithin(abs, root) {
+			return true
+		}
+	}
+	return false
+}
+
+func normalizedDenyRoots(roots []string) []string {
+	out := make([]string, 0, len(roots))
+	seen := map[string]bool{}
+	for _, root := range roots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		root = expandHome(root)
+		abs, err := filepath.Abs(root)
+		if err != nil {
+			abs = filepath.Clean(root)
+		}
+		abs = filepath.Clean(abs)
+		if !seen[abs] {
+			seen[abs] = true
+			out = append(out, abs)
+		}
+	}
+	sort.Strings(out)
+	return out
+}
+
+func pathWithin(path, root string) bool {
+	path = filepath.Clean(path)
+	root = filepath.Clean(root)
+	if path == root {
+		return true
+	}
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != "." && rel != "" && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && rel != ".."
 }

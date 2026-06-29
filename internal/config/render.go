@@ -1021,7 +1021,7 @@ func renderEnvironmentConfig(b *strings.Builder, cfg EnvironmentConfig) {
 	fmt.Fprintf(b, "enabled = %v   # inject a stable startup environment summary into the model prompt\n", enabled)
 	if len(cfg.Tools) == 0 {
 		b.WriteString("# [environment.tools]\n")
-		b.WriteString("# go = \"/opt/homebrew/bin/go\"   # explicit executable path when PATH probing is not enough\n\n")
+		b.WriteString("# go = \"/opt/homebrew/bin/go\"   # trusted executable path; workspace-local paths are not auto-executed\n\n")
 		return
 	}
 	b.WriteString("\n[environment.tools]\n")

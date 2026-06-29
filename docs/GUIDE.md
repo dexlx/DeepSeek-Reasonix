@@ -81,7 +81,7 @@ mcp_call_timeout_seconds = 300   # default MCP call safety cap; per-plugin/tool 
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tools
 # [environment.tools]
-# go = "/opt/homebrew/bin/go"   # optional explicit path shown to the model
+# go = "/opt/homebrew/bin/go"   # optional explicit trusted path; workspace-local paths are not auto-executed
 
 [skills]
 # paths = ["~/my-skills", "../shared/skills"]   # extra custom skill roots

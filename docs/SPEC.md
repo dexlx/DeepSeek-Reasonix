@@ -533,7 +533,8 @@ context_window = 1000000   # tokens; harness compacts older history near this li
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tool versions
 
-# Optional explicit executable paths shown to the model when PATH probing is not enough.
+# Optional trusted executable paths shown to the model when PATH probing is not enough.
+# Workspace-local paths are listed but not auto-executed during startup probing.
 # [environment.tools]
 # go = "/opt/homebrew/bin/go"
 

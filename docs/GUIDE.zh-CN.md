@@ -73,7 +73,7 @@ mcp_call_timeout_seconds = 300   # MCP 调用默认安全上限；可用 plugin/
 [environment]
 enabled = true   # 启动时把 OS、shell 和常见工具摘要稳定注入 prompt
 # [environment.tools]
-# go = "/opt/homebrew/bin/go"   # 可选：PATH 探测不够时显式指定可执行路径
+# go = "/opt/homebrew/bin/go"   # 可选：显式可信路径；workspace 内路径不会在启动时自动执行
 
 [skills]
 # paths = ["~/my-skills", "../shared/skills"]   # 额外的自定义技能目录

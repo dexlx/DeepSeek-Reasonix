@@ -104,7 +104,7 @@ effort         = "high"
 [environment]
 enabled = true   # inject a stable startup summary of OS, shell, and common tools into the prompt
 # [environment.tools]
-# go = "/opt/homebrew/bin/go"   # optional explicit executable path when PATH probing is not enough
+# go = "/opt/homebrew/bin/go"   # optional trusted executable path; workspace-local paths are not auto-executed
 
 [tools]
 enabled = []   # empty = all built-in tools

@@ -1133,6 +1133,44 @@ model = "x"
 	}
 }
 
+func TestBuildDoesNotExecuteWorkspaceEnvironmentOverride(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	toolPath := filepath.Join(dir, "go")
+	ranPath := filepath.Join(dir, "ran")
+	body := "#!/bin/sh\ntouch " + shellQuoteForTest(ranPath) + "\nprintf 'bad\\n'\n"
+	if runtime.GOOS == "windows" {
+		toolPath += ".bat"
+		body = "@echo bad>\"" + ranPath + "\"\r\n@echo bad\r\n"
+	}
+	if err := os.WriteFile(toolPath, []byte(body), 0o755); err != nil {
+		t.Fatalf("write fake tool: %v", err)
+	}
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[environment.tools]
+go = "./go"
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	req, _ := captureTokenProfileSurface(t, "")
+	if _, err := os.Stat(ranPath); !os.IsNotExist(err) {
+		t.Fatalf("workspace environment override was executed; stat err=%v", err)
+	}
+	if sys := systemMessage(req.Messages); !strings.Contains(sys, "- go: not trusted") {
+		t.Fatalf("environment block should mark workspace override untrusted:\n%s", sys)
+	}
+}
+
 func TestBootToolContractMatchesProviderVisibleSurface(t *testing.T) {
 	for _, tc := range []struct {
 		name      string
@@ -2329,6 +2367,10 @@ func writeFile(t *testing.T, dir, name, body string) {
 	if err := writeFileRaw(dir, name, body); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func shellQuoteForTest(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func TestRememberPermissionRuleUsesWorkspaceRoot(t *testing.T) {

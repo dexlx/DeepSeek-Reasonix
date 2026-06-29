@@ -242,7 +242,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			shellLabel = shell.Path
 		}
 		envSection := environment.FormatSection(
-			environment.RunProbesWithOverrides(ctx, environment.DefaultProbes(), cfg.Environment.Tools),
+			environment.RunProbesWithOptions(ctx, environment.DefaultProbes(), environment.ProbeOptions{
+				Overrides: cfg.Environment.Tools,
+				DenyRoots: []string{root},
+			}),
 			runtime.GOOS+"/"+runtime.GOARCH,
 			shellLabel,
 			cfg.Environment.Tools,
