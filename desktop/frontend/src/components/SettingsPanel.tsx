@@ -17,6 +17,7 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
+import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -89,6 +90,7 @@ export function SettingsPanel({
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
+  const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
   const [fontFamily, setFontFamilyState] = useState<FontFamily>(getFontFamily());
   const [monoFontFamily, setMonoFontFamilyState] = useState<MonoFontFamily>(getMonoFontFamily());
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
@@ -220,6 +222,7 @@ export function SettingsPanel({
                       theme={theme}
                       themeStyle={themeStyle}
                       textSize={textSize}
+                      zoomPct={zoomPct}
                       fontFamily={fontFamily}
                       monoFontFamily={monoFontFamily}
                       customFontName={customFontName}
@@ -237,6 +240,12 @@ export function SettingsPanel({
                       onTextSize={(size) => {
                         applyTextSize(size);
                         setTextSizeState(size);
+                      }}
+                      onRestartZoom={(zoom) => {
+                        const snapped = snapZoom(zoom);
+                        saveRestartZoom(snapped);
+                        setZoomPct(zoomToPercent(snapped));
+                        void app.SetDesktopZoomFactor(snapped);
                       }}
                       onFontFamily={(font) => {
                         applyFontFamily(font);
@@ -5196,6 +5205,7 @@ function AppearanceSection({
   theme,
   themeStyle,
   textSize,
+  zoomPct,
   fontFamily,
   monoFontFamily,
   customFontName,
@@ -5203,6 +5213,7 @@ function AppearanceSection({
   onTheme,
   onThemeStyle,
   onTextSize,
+  onRestartZoom,
   onFontFamily,
   onMonoFontFamily,
   onCustomFontNameChange,
@@ -5211,6 +5222,7 @@ function AppearanceSection({
   theme: Theme;
   themeStyle: ThemeStyle;
   textSize: TextSize;
+  zoomPct: number;
   fontFamily: FontFamily;
   monoFontFamily: MonoFontFamily;
   customFontName: string;
@@ -5218,6 +5230,7 @@ function AppearanceSection({
   onTheme: (t: Theme) => void;
   onThemeStyle: (style: ThemeStyle) => void;
   onTextSize: (size: TextSize) => void;
+  onRestartZoom: (zoom: ZoomLevel) => void;
   onFontFamily: (font: FontFamily) => void;
   onMonoFontFamily: (font: MonoFontFamily) => void;
   onCustomFontNameChange: (name: string) => void;
@@ -5287,6 +5300,35 @@ function AppearanceSection({
               {textSizeName(size, t)}
             </button>
           ))}
+        </div>
+      </SettingsField>
+      <SettingsField label={t("settings.displayZoom")}>
+        <div className="zoom-slider-wrap">
+          <div className="zoom-slider__value">{zoomPct}%</div>
+          <div className="zoom-slider-row">
+            <span className="zoom-slider__label">50%</span>
+            <div className="slider-track">
+              <div className="slider-track__bg" />
+              <div
+                className="slider-track__fill"
+                style={{ width: `calc(${((zoomPct - 50) / 150) * 100}% + 15px)` }}
+              />
+              <div className="slider-thumb" style={{ left: `${((zoomPct - 50) / 150) * 100}%` }}>
+                <div className="slider-thumb__left" />
+                <div className="slider-thumb__mid" />
+                <div className="slider-thumb__right" />
+              </div>
+              <input
+                type="range"
+                min={50}
+                max={200}
+                step={5}
+                value={zoomPct}
+                onChange={(e) => onRestartZoom(Number(e.target.value) / 100)}
+              />
+            </div>
+            <span className="zoom-slider__label">200%</span>
+          </div>
         </div>
       </SettingsField>
       <SettingsField label={t("settings.fontFamily")}>
