@@ -74,6 +74,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		} else {
 			b.WriteString("# shortcut_layout = \"desktop\"   # classic|desktop; compatibility setting; Shift+Tab toggles Plan, Ctrl+Y toggles YOLO\n")
 		}
+		if strings.TrimSpace(c.UI.CursorShape) != "" {
+			fmt.Fprintf(&b, "cursor_shape = %q   # block|underline|bar; text input cursor shape\n", c.UICursorShape())
+		} else {
+			b.WriteString("# cursor_shape = \"underline\"   # block|underline|bar; text input cursor shape\n")
+		}
 		if strings.TrimSpace(c.UI.CloseBehavior) != "" && scope == RenderScopeProject {
 			fmt.Fprintf(&b, "close_behavior = %q   # legacy desktop close behavior; prefer [desktop].close_behavior in user config\n", c.DesktopCloseBehavior())
 		}
@@ -599,6 +604,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		}
 		if l := c.UIShortcutLayout(); l != "classic" {
 			fmt.Fprintf(&b, "shortcut_layout = %q\n", l)
+		}
+		if strings.TrimSpace(c.UI.CursorShape) != "" {
+			fmt.Fprintf(&b, "cursor_shape = %q\n", c.UICursorShape())
 		}
 		if c.UI.CloseBehavior != d.UI.CloseBehavior {
 			fmt.Fprintf(&b, "close_behavior = %q\n", c.DesktopCloseBehavior())

@@ -133,6 +133,7 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.UI.Theme = "light"
 	orig.UI.ThemeStyle = "glacier"
 	orig.UI.ShortcutLayout = "desktop"
+	orig.UI.CursorShape = "bar"
 	orig.Desktop.Language = "en"
 	orig.Desktop.LayoutStyle = "workbench"
 	orig.Desktop.Theme = "dark"
@@ -250,6 +251,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.UI.ShortcutLayout != "desktop" {
 		t.Errorf("ui.shortcut_layout = %q, want desktop", got.UI.ShortcutLayout)
+	}
+	if got.UICursorShape() != "bar" {
+		t.Errorf("ui.cursor_shape = %q, want bar", got.UICursorShape())
 	}
 	if got.Desktop.Language != "en" {
 		t.Errorf("desktop.language = %q, want en", got.Desktop.Language)
@@ -700,6 +704,26 @@ func TestProjectDeltaRendersToolsShellOverrides(t *testing.T) {
 	}
 	if got.Tools.Shell.Prefer != "bash" || got.Tools.Shell.Path != "/usr/local/bin/bash" {
 		t.Fatalf("tools.shell = %+v, want bash with path", got.Tools.Shell)
+	}
+}
+
+func TestProjectDeltaRendersUICursorShape(t *testing.T) {
+	c := Default()
+	c.UI.CursorShape = "block"
+
+	delta := RenderTOMLProjectDelta(c)
+	for _, want := range []string{"[ui]", `cursor_shape = "block"`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("project delta missing %q:\n%s", want, delta)
+		}
+	}
+
+	got := Default()
+	if _, err := toml.Decode(delta, got); err != nil {
+		t.Fatalf("decode project delta: %v\n%s", err, delta)
+	}
+	if got.UICursorShape() != "block" {
+		t.Fatalf("ui.cursor_shape = %q, want block", got.UICursorShape())
 	}
 }
 
