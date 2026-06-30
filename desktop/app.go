@@ -730,6 +730,13 @@ func (a *App) SubmitToTab(tabID, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	ctrl.SubmitDisplay(input, input)
 	return nil
 }
@@ -738,7 +745,11 @@ func (a *App) submitUserTurnToTab(tabID, input string) bool {
 	if a.tabReadOnly(tabID) {
 		return false
 	}
-	ctrl := a.ctrlByTabID(tabID)
+	tab, ctrl := a.tabAndCtrlByID(tabID)
+	if ctrl == nil || a.ensureTabControllerWorkspace(tab) != nil {
+		return false
+	}
+	ctrl = tab.Ctrl
 	if ctrl == nil {
 		return false
 	}
@@ -760,6 +771,13 @@ func (a *App) RunShellForTab(tabID, command string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	ctrl.RunShell(command)
 	return nil
 }
@@ -778,6 +796,13 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	ctrl.SubmitDisplay(display, input)
 	return nil
 }
@@ -787,6 +812,13 @@ func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) e
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -832,6 +864,13 @@ func (a *App) SteerForTab(tabID, text string) error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	ctrl.Steer(text)
 	return nil
 }
@@ -867,6 +906,120 @@ func (a *App) snapshotTab(tab *WorkspaceTab) error {
 		return nil
 	}
 	return ctrl.Snapshot()
+}
+
+func (a *App) reconciledSessionPathForTab(tab *WorkspaceTab) string {
+	if tab == nil {
+		return ""
+	}
+	path, _ := a.reconcileTabWithPinnedSessionMeta(tab)
+	if path == "" && tab.Ctrl != nil {
+		path = tab.Ctrl.SessionPath()
+	}
+	return path
+}
+
+func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
+	if tab == nil || tab.Ctrl == nil || tab.ReadOnly {
+		return nil
+	}
+	tab.reconcileMu.Lock()
+	defer tab.reconcileMu.Unlock()
+	if tab.Ctrl == nil || tab.ReadOnly {
+		return nil
+	}
+	if tab.hasActiveRuntimeWork() {
+		return nil
+	}
+	ctrl := tab.Ctrl
+	path, hasBinding := a.reconcileTabWithPinnedSessionMeta(tab)
+	desiredRoot := strings.TrimSpace(tab.WorkspaceRoot)
+	ctrlRoot, rootOK := safeControllerWorkspaceRoot(ctrl)
+	ctrlDir, dirOK := safeControllerSessionDir(ctrl)
+	if !rootOK || !dirOK {
+		return nil
+	}
+	if !hasBinding {
+		if desiredRoot == "" || strings.TrimSpace(ctrlRoot) == "" || sameDesktopPath(ctrlRoot, desiredRoot) {
+			return nil
+		}
+	}
+	desiredDir := tabSessionDir(tab)
+	rootMatches := desiredRoot == "" || sameDesktopPath(ctrlRoot, desiredRoot)
+	dirMatches := desiredDir == "" || sameDesktopPath(ctrlDir, desiredDir)
+	if !dirMatches && path != "" {
+		if validPath, _, err := validateSessionPath(ctrlDir, path); err == nil && sessionRuntimeKey(validPath) == sessionRuntimeKey(path) {
+			dirMatches = true
+		}
+	}
+	if strings.TrimSpace(ctrlRoot) == "" && dirMatches {
+		rootMatches = true
+	}
+	if tab.Scope == "global" {
+		if strings.TrimSpace(ctrlRoot) == "" {
+			rootMatches = true
+		}
+		if sameDesktopPath(ctrlDir, config.SessionDir()) || sameDesktopPath(ctrlDir, desktopSessionDir(globalWorkspaceRoot())) {
+			dirMatches = true
+		}
+	}
+	sessionMatches := path == "" || sessionRuntimeKey(ctrl.SessionPath()) == sessionRuntimeKey(path)
+	if rootMatches && dirMatches && sessionMatches {
+		return nil
+	}
+	if err := ctrl.Snapshot(); err != nil {
+		return err
+	}
+	ctrl.Close()
+
+	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current == tab {
+		tab.Ctrl = nil
+		tab.Ready = false
+		tab.StartupErr = ""
+		tab.ActivityStatus = ""
+		if tab.sink == nil {
+			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
+		}
+		a.releaseTabSharedHost(tab)
+		a.saveTabsLocked()
+	}
+	a.mu.Unlock()
+
+	a.buildTabController(tab)
+	if tab.Ctrl == nil {
+		if tab.StartupErr != "" {
+			return fmt.Errorf("workspace failed to restart with corrected root: %s", tab.StartupErr)
+		}
+		return fmt.Errorf("workspace failed to restart with corrected root")
+	}
+	return nil
+}
+
+func safeControllerWorkspaceRoot(ctrl control.SessionAPI) (root string, ok bool) {
+	if ctrl == nil {
+		return "", false
+	}
+	defer func() {
+		if recover() != nil {
+			root = ""
+			ok = false
+		}
+	}()
+	return ctrl.WorkspaceRoot(), true
+}
+
+func safeControllerSessionDir(ctrl control.SessionAPI) (dir string, ok bool) {
+	if ctrl == nil {
+		return "", false
+	}
+	defer func() {
+		if recover() != nil {
+			dir = ""
+			ok = false
+		}
+	}()
+	return ctrl.SessionDir(), true
 }
 
 // Approve answers a pending approval_request by ID: allow runs the call, session
@@ -1071,6 +1224,13 @@ func (a *App) Compact() error {
 	if ctrl == nil {
 		return nil
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return nil
+	}
 	return ctrl.Compact(a.ctx, "")
 }
 
@@ -1093,6 +1253,13 @@ func (a *App) NewSession() error {
 	if tab != nil && tab.ReadOnly {
 		return readOnlyChannelErr()
 	}
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -1163,6 +1330,13 @@ func (a *App) ClearSession() error {
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	ctrl = tab.Ctrl
+	if ctrl == nil {
+		return workspaceNotReadyErr(tab)
+	}
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return a.clearActiveSessionRuntime(tab, ctrl)
 	}
@@ -1179,6 +1353,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	if tab == nil || oldCtrl == nil {
 		return fmt.Errorf("workspace is still starting")
 	}
+	a.reconciledSessionPathForTab(tab)
 	oldPath := oldCtrl.SessionPath()
 	oldSink := tab.sink
 	if oldSink != nil {
@@ -1398,6 +1573,17 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 		a.mu.RUnlock()
 		return TabMeta{}, readOnlyChannelErr()
 	}
+	a.mu.RUnlock()
+
+	if err := a.ensureTabControllerWorkspace(sourceTab); err != nil {
+		return TabMeta{}, err
+	}
+	a.mu.RLock()
+	if a.tabs[sourceTab.ID] != sourceTab || sourceTab.Ctrl == nil {
+		a.mu.RUnlock()
+		return TabMeta{}, nil
+	}
+	ctrl = sourceTab.Ctrl
 	scope := sourceTab.Scope
 	workspaceRoot := sourceTab.WorkspaceRoot
 	sourceTitle := sourceTab.TopicTitle
@@ -1545,24 +1731,42 @@ func controllerSessionDir(ctrl control.SessionAPI) string {
 
 func tabSessionDir(tab *WorkspaceTab) string {
 	if tab != nil {
+		if tab.WorkspaceRoot != "" {
+			return desktopSessionDir(tab.WorkspaceRoot)
+		}
 		if tab.Ctrl != nil {
 			if dir := tab.Ctrl.SessionDir(); dir != "" {
 				return dir
 			}
 		}
-		if tab.WorkspaceRoot != "" {
-			return desktopSessionDir(tab.WorkspaceRoot)
-		}
 	}
 	return desktopSessionDir("")
 }
 
+func tabRuntimeSessionDir(tab *WorkspaceTab) string {
+	if tab != nil && tab.Ctrl != nil {
+		if dir, ok := safeControllerSessionDir(tab.Ctrl); ok && strings.TrimSpace(dir) != "" {
+			if path := strings.TrimSpace(tab.currentSessionPath()); path != "" {
+				if _, _, err := validateSessionPath(dir, path); err == nil {
+					return dir
+				}
+			} else {
+				return dir
+			}
+		}
+	}
+	return tabSessionDir(tab)
+}
+
 func (a *App) activeSessionDir() string {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	dir := tabSessionDir(tab)
-	a.mu.RUnlock()
-	return dir
+	tab := a.activeTab()
+	if path, ok := a.reconcileTabWithPinnedSessionMeta(tab); ok && strings.TrimSpace(path) != "" {
+		return filepath.Dir(path)
+	}
+	if tab != nil && tab.Ctrl != nil {
+		return tabRuntimeSessionDir(tab)
+	}
+	return tabSessionDir(tab)
 }
 
 // ListSessions returns the saved sessions newest-first for the history panel,
@@ -1758,7 +1962,11 @@ func (a *App) DeleteSession(path string) error {
 	dir := a.activeSessionDir()
 	sessionPath, key, err := validateSessionPath(dir, path)
 	if err != nil {
-		return err
+		var foundErr error
+		if dir, sessionPath, foundErr = a.sessionDirForPath(path); foundErr != nil {
+			return err
+		}
+		key = filepath.Base(sessionPath)
 	}
 	if err := validateSessionTrashTarget(dir, sessionPath, key); err != nil {
 		return err
@@ -1884,7 +2092,7 @@ func (a *App) removeTopicRuntimeBindings(topicID string) ([]removedSessionRuntim
 		if tab == nil || tab.TopicID != topicID {
 			continue
 		}
-		sessionDir := tabSessionDir(tab)
+		sessionDir := tabRuntimeSessionDir(tab)
 		sessionPath := canonicalTabSessionPath(tab.currentSessionPath())
 		if len(removed) == 0 {
 			fallback = fallbackRuntimeTarget{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot}
@@ -1901,7 +2109,7 @@ func (a *App) removeTopicRuntimeBindings(topicID string) ([]removedSessionRuntim
 		if tab == nil || tab.TopicID != topicID {
 			continue
 		}
-		sessionDir := tabSessionDir(tab)
+		sessionDir := tabRuntimeSessionDir(tab)
 		sessionPath := canonicalTabSessionPath(tab.currentSessionPath())
 		if len(removed) == 0 {
 			fallback = fallbackRuntimeTarget{scope: tab.Scope, workspaceRoot: tab.WorkspaceRoot}
@@ -1937,10 +2145,17 @@ func removedRuntimeFromTab(tab *WorkspaceTab, dir, sessionPath string) removedSe
 }
 
 func tabMatchesSession(tab *WorkspaceTab, dir, sessionPath string) bool {
-	if tab == nil || tabSessionDir(tab) != dir {
+	if tab == nil {
 		return false
 	}
 	currentPath, _, err := validateSessionPath(dir, tab.currentSessionPath())
+	if err == nil && currentPath == sessionPath {
+		return true
+	}
+	if tabRuntimeSessionDir(tab) != dir {
+		return false
+	}
+	currentPath, _, err = validateSessionPath(dir, tab.currentSessionPath())
 	return err == nil && currentPath == sessionPath
 }
 
@@ -2120,7 +2335,7 @@ func (a *App) beginDestroySessionJobs(dir, sessionPath string) []control.Session
 	defer a.mu.RUnlock()
 	var destroys []control.SessionDestroyHandle
 	for _, tab := range a.runtimeTabsLocked() {
-		if tab == nil || tab.Ctrl == nil || tabSessionDir(tab) != dir {
+		if tab == nil || tab.Ctrl == nil || tabRuntimeSessionDir(tab) != dir {
 			continue
 		}
 		destroys = append(destroys, tab.Ctrl.BeginDestroySession(sessionPath))
@@ -2194,7 +2409,7 @@ func (a *App) sessionDestroying(dir, sessionPath string) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	for _, tab := range a.runtimeTabsLocked() {
-		if tab == nil || tab.Ctrl == nil || tabSessionDir(tab) != dir {
+		if tab == nil || tab.Ctrl == nil || tabRuntimeSessionDir(tab) != dir {
 			continue
 		}
 		if tab.Ctrl.IsDestroyingSession(sessionPath) {
@@ -5934,6 +6149,10 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	if controllerHasActiveRuntimeWork(tab.Ctrl) {
 		return rebuildControllerActiveWorkError("model")
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	prevPath := a.reconciledSessionPathForTab(tab)
 	cfg, err := config.LoadForRoot(tab.WorkspaceRoot)
 	if err != nil {
 		return err
@@ -5957,9 +6176,10 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	}
 
 	var carried []provider.Message
-	prevPath := ""
 	if tab.Ctrl != nil {
-		prevPath = tab.Ctrl.SessionPath()
+		if prevPath == "" {
+			prevPath = tab.Ctrl.SessionPath()
+		}
 		_ = a.snapshotTab(tab)
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
@@ -6046,6 +6266,10 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return rebuildControllerActiveWorkError("effort")
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	prevPath := a.reconciledSessionPathForTab(tab)
 	entry, err := a.currentProviderEntryForTab(tabID)
 	if err != nil {
 		return err
@@ -6056,9 +6280,10 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		return err
 	}
 	var carried []provider.Message
-	prevPath := ""
 	if tab.Ctrl != nil {
-		prevPath = tab.Ctrl.SessionPath()
+		if prevPath == "" {
+			prevPath = tab.Ctrl.SessionPath()
+		}
 		_ = a.snapshotTab(tab)
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
@@ -6118,6 +6343,10 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return rebuildControllerActiveWorkError("token mode")
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	prevPath := a.reconciledSessionPathForTab(tab)
 	modelRef, fallback, err := a.resolvedModelForTab(tab)
 	if err != nil {
 		return err
@@ -6127,10 +6356,11 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	}
 
 	var carried []provider.Message
-	prevPath := ""
 	oldCtrl := tab.Ctrl
 	if oldCtrl != nil {
-		prevPath = oldCtrl.SessionPath()
+		if prevPath == "" {
+			prevPath = oldCtrl.SessionPath()
+		}
 		_ = a.snapshotTab(tab)
 		carried = oldCtrl.History()
 	}
@@ -6677,6 +6907,9 @@ func (a *App) runEffortCommandForTab(tabID, input string) {
 }
 
 func (a *App) currentProviderEntryForTab(tabID string) (*config.ProviderEntry, error) {
+	if tab := a.tabByID(tabID); tab != nil {
+		a.reconcileTabWithPinnedSessionMeta(tab)
+	}
 	a.mu.RLock()
 	ref := ""
 	workspaceRoot := ""
@@ -6891,7 +7124,13 @@ func (a *App) AttachDropped(path string) (DroppedItem, error) {
 			return nil
 		}
 		if info.IsDir() {
-			ctrl := a.activeCtrl()
+			tab, ctrl := a.tabAndCtrlByID("")
+			if err := a.ensureTabControllerWorkspace(tab); err != nil {
+				return err
+			}
+			if tab != nil {
+				ctrl = tab.Ctrl
+			}
 			if ctrl == nil {
 				return fmt.Errorf("workspace is not ready")
 			}

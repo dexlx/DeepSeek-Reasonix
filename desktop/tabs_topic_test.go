@@ -712,6 +712,56 @@ func TestBuildTabControllerUsesPinnedSessionMetaWorkspace(t *testing.T) {
 	}
 }
 
+func TestPersistTabSessionPathUsesSessionDirOwnerBeforeSavingMeta(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectA := t.TempDir()
+	projectB := t.TempDir()
+	if err := addProject(projectA, "Project A"); err != nil {
+		t.Fatalf("add project A: %v", err)
+	}
+	if err := addProject(projectB, "Project B"); err != nil {
+		t.Fatalf("add project B: %v", err)
+	}
+
+	topicID := "topic_owner_before_meta"
+	topicTitle := "Owner before meta"
+	sessionDirA := desktopSessionDir(projectA)
+	if err := os.MkdirAll(sessionDirA, 0o755); err != nil {
+		t.Fatalf("mkdir project A sessions: %v", err)
+	}
+	sessionPath := writeTopicSessionWithPrompt(t, sessionDirA, "project-a.jsonl", topicID, topicTitle, projectA, "project A prompt", time.Now())
+	meta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		t.Fatalf("load branch meta: ok=%v err=%v", ok, err)
+	}
+	meta.WorkspaceRoot = projectB
+	if err := agent.SaveBranchMetaPreserveUpdated(sessionPath, meta); err != nil {
+		t.Fatalf("pollute branch meta: %v", err)
+	}
+
+	app := NewApp()
+	tab := app.createTabEntryWithID("project", projectB, topicID, "tab_stale_workspace")
+	tab.TopicTitle = topicTitle
+	tab.SessionPath = sessionPath
+	app.tabs[tab.ID] = tab
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	app.persistTabSessionPath(tab, sessionPath)
+
+	if got := normalizeProjectRoot(tab.WorkspaceRoot); got != normalizeProjectRoot(projectA) {
+		t.Fatalf("tab workspace root = %q, want project A %q", got, normalizeProjectRoot(projectA))
+	}
+	gotMeta, ok, err := agent.LoadBranchMeta(sessionPath)
+	if err != nil || !ok {
+		t.Fatalf("reload branch meta: ok=%v err=%v", ok, err)
+	}
+	if gotMeta.Scope != "project" || normalizeProjectRoot(gotMeta.WorkspaceRoot) != normalizeProjectRoot(projectA) {
+		t.Fatalf("saved branch meta scope/root = %q/%q, want project/%q", gotMeta.Scope, gotMeta.WorkspaceRoot, normalizeProjectRoot(projectA))
+	}
+}
+
 func TestBuildTabControllerIgnoresStaleSessionModelWhenTabModelResolves(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	t.Setenv("REASONIX_TEST_KEY", "sk-test")
@@ -787,6 +837,19 @@ func TestLoadPinnedTabSessionFallsBackToMigratedBasename(t *testing.T) {
 	}
 	if filepath.Clean(pinnedPath) != filepath.Clean(path) {
 		t.Fatalf("pinned path = %q, want %q", pinnedPath, path)
+	}
+}
+
+func TestPinnedTabSessionPathRejectsExistingAbsolutePathOutsideDir(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dirA := t.TempDir()
+	dirB := t.TempDir()
+	pathA := writeLegacySession(t, dirA, "same-name.jsonl", "project A", time.Now())
+	_ = writeLegacySession(t, dirB, filepath.Base(pathA), "project B", time.Now())
+
+	if got, ok := pinnedTabSessionPath(dirB, pathA); ok {
+		t.Fatalf("pinnedTabSessionPath mapped existing absolute path outside dir to %q", got)
 	}
 }
 

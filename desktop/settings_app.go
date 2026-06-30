@@ -607,11 +607,11 @@ func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
 }
 
 func (a *App) ensureActiveTabRebuildAllowed(setting string) error {
-	if a.ctx == nil {
-		return nil
-	}
 	tab := a.activeTab()
 	if tab == nil {
+		if a.ctx == nil {
+			return nil
+		}
 		return fmt.Errorf("no active tab")
 	}
 	if controllerHasActiveRuntimeWork(tab.Ctrl) {
@@ -806,10 +806,12 @@ func configDeclaresProviderAccess(path string) bool {
 }
 
 func (a *App) activeWorkspaceRoot() string {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	if tab := a.activeTabLocked(); tab != nil {
-		return tab.WorkspaceRoot
+	tab := a.activeTab()
+	if tab != nil {
+		a.reconcileTabWithPinnedSessionMeta(tab)
+		if strings.TrimSpace(tab.WorkspaceRoot) != "" {
+			return tab.WorkspaceRoot
+		}
 	}
 	return "."
 }
@@ -862,10 +864,15 @@ func (a *App) rebuild() error {
 	if controllerHasActiveRuntimeWork(tab.Ctrl) {
 		return rebuildControllerActiveWorkError("settings")
 	}
+	if err := a.ensureTabControllerWorkspace(tab); err != nil {
+		return err
+	}
+	prevPath := a.reconciledSessionPathForTab(tab)
 	var carried []provider.Message
-	prevPath := ""
 	if tab.Ctrl != nil {
-		prevPath = tab.Ctrl.SessionPath()
+		if prevPath == "" {
+			prevPath = tab.Ctrl.SessionPath()
+		}
 		_ = a.snapshotTab(tab)
 		carried = tab.Ctrl.History()
 		tab.Ctrl.Close()
