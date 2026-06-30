@@ -200,9 +200,24 @@ func TestResearchGoalCreatesHostManagedAutoResearchTask(t *testing.T) {
 			t.Fatalf("expected autoresearch file %s: %v", rel, err)
 		}
 	}
+	var spec struct {
+		SuccessCriteria []struct {
+			ID       string `json:"id"`
+			Required bool   `json:"required"`
+		} `json:"success_criteria"`
+	}
+	readJSONFileForTest(t, filepath.Join(root, ".reasonix", "autoresearch", state.AutoResearchTaskID, "state", "task_spec.json"), &spec)
+	if len(spec.SuccessCriteria) != 2 || spec.SuccessCriteria[0].ID != "objective_evidence" || spec.SuccessCriteria[1].ID != "verification" {
+		t.Fatalf("default success criteria = %+v, want objective_evidence and verification", spec.SuccessCriteria)
+	}
+	for _, criterion := range spec.SuccessCriteria {
+		if !criterion.Required {
+			t.Fatalf("default criterion %+v was not required", criterion)
+		}
+	}
 
 	composed := c.Compose("continue")
-	if !strings.Contains(composed, "<autoresearch-runtime>") || !strings.Contains(composed, "task_id: "+state.AutoResearchTaskID) {
+	if !strings.Contains(composed, "<autoresearch-runtime>") || !strings.Contains(composed, "task_id: "+state.AutoResearchTaskID) || !strings.Contains(composed, "objective_evidence") {
 		t.Fatalf("Compose missing runtime summary for task %q:\n%s", state.AutoResearchTaskID, composed)
 	}
 }
@@ -445,40 +460,6 @@ func TestResearchGoalCompletionIsInterceptedWhenReadinessFails(t *testing.T) {
 	})
 
 	c.SetGoalWithResearchMode("identify the root cause", GoalResearchOn)
-	data, err := os.ReadFile(goalStatePath(sessionPath))
-	if err != nil {
-		t.Fatalf("read goal state: %v", err)
-	}
-	var state goalState
-	if err := json.Unmarshal(data, &state); err != nil {
-		t.Fatalf("unmarshal goal state: %v", err)
-	}
-	specPath := filepath.Join(root, ".reasonix", "autoresearch", state.AutoResearchTaskID, "state", "task_spec.json")
-	var spec struct {
-		TaskID            string   `json:"task_id"`
-		Goal              string   `json:"goal"`
-		Scope             []string `json:"scope"`
-		NonGoals          []string `json:"non_goals"`
-		AllowedOperations struct {
-			Write   bool `json:"write"`
-			Network bool `json:"network"`
-			Publish bool `json:"publish"`
-		} `json:"allowed_operations"`
-		SuccessCriteria []struct {
-			ID          string   `json:"id"`
-			Description string   `json:"description"`
-			Required    bool     `json:"required"`
-			EvidenceIDs []string `json:"evidence_ids"`
-		} `json:"success_criteria"`
-	}
-	readJSONFileForTest(t, specPath, &spec)
-	spec.SuccessCriteria = append(spec.SuccessCriteria, struct {
-		ID          string   `json:"id"`
-		Description string   `json:"description"`
-		Required    bool     `json:"required"`
-		EvidenceIDs []string `json:"evidence_ids"`
-	}{ID: "root_cause", Description: "Root cause has accepted evidence", Required: true})
-	writeJSONFileForTest(t, specPath, spec)
 
 	if err := newTurnOrchestrator(c).runGoalLoopWithRawDisplay(context.Background(), "start", "start", "start"); err != nil {
 		t.Fatalf("runGoalLoopWithRawDisplay: %v", err)
@@ -490,7 +471,7 @@ func TestResearchGoalCompletionIsInterceptedWhenReadinessFails(t *testing.T) {
 	if prov.call != 4 {
 		t.Fatalf("provider calls = %d, want initial + readiness intercept + blocked audit", prov.call)
 	}
-	if !sessionContainsUserText(ag.Session().Messages, "AutoResearch readiness check failed", "root_cause") {
+	if !sessionContainsUserText(ag.Session().Messages, "AutoResearch readiness check failed", "objective_evidence", "verification") {
 		t.Fatalf("transcript missing readiness intercept; last user:\n%s", lastUserMessage(ag.Session().Messages))
 	}
 	if !containsNotice(notices, "autoresearch readiness blocked completion") {
@@ -509,35 +490,20 @@ func TestControllerRecordsAutoResearchEvidence(t *testing.T) {
 	if taskID == "" {
 		t.Fatal("expected autoresearch task id")
 	}
-	specPath := filepath.Join(root, ".reasonix", "autoresearch", taskID, "state", "task_spec.json")
-	var spec struct {
-		TaskID            string   `json:"task_id"`
-		Goal              string   `json:"goal"`
-		Scope             []string `json:"scope"`
-		NonGoals          []string `json:"non_goals"`
-		AllowedOperations struct {
-			Write   bool `json:"write"`
-			Network bool `json:"network"`
-			Publish bool `json:"publish"`
-		} `json:"allowed_operations"`
-		SuccessCriteria []struct {
-			ID          string   `json:"id"`
-			Description string   `json:"description"`
-			Required    bool     `json:"required"`
-			EvidenceIDs []string `json:"evidence_ids"`
-		} `json:"success_criteria"`
-	}
-	readJSONFileForTest(t, specPath, &spec)
-	spec.SuccessCriteria = append(spec.SuccessCriteria, struct {
-		ID          string   `json:"id"`
-		Description string   `json:"description"`
-		Required    bool     `json:"required"`
-		EvidenceIDs []string `json:"evidence_ids"`
-	}{ID: "verified", Description: "The fix is verified", Required: true})
-	writeJSONFileForTest(t, specPath, spec)
 
-	err := c.RecordAutoResearchEvidence("verified", AutoResearchEvidenceInput{
-		ID:       "f1",
+	err := c.RecordAutoResearchEvidence("objective_evidence", AutoResearchEvidenceInput{
+		ID:       "f-objective",
+		Kind:     "file",
+		Summary:  "implementation inspected",
+		Source:   "file",
+		Paths:    []string{"internal/control/controller.go"},
+		Accepted: true,
+	})
+	if err != nil {
+		t.Fatalf("RecordAutoResearchEvidence objective_evidence: %v", err)
+	}
+	err = c.RecordAutoResearchEvidence("verification", AutoResearchEvidenceInput{
+		ID:       "f-verification",
 		Kind:     "test",
 		Summary:  "go test passed",
 		Source:   "command",
@@ -545,7 +511,7 @@ func TestControllerRecordsAutoResearchEvidence(t *testing.T) {
 		Accepted: true,
 	})
 	if err != nil {
-		t.Fatalf("RecordAutoResearchEvidence: %v", err)
+		t.Fatalf("RecordAutoResearchEvidence verification: %v", err)
 	}
 
 	report, err := c.autoResearch.Readiness(taskID)
@@ -581,7 +547,16 @@ func TestResearchGoalCompletionMarksAutoResearchTaskComplete(t *testing.T) {
 	}
 	sessionPath := filepath.Join(root, "sessions", "s.jsonl")
 	prov := &scriptedTurns{turns: [][]provider.Chunk{
-		textTurn("Done.\n\n[goal:complete]"),
+		textTurn(`Done.
+
+<autoresearch-evidence>
+{"criterion_id":"objective_evidence","id":"f-objective","kind":"file","summary":"The implementation state was inspected directly.","source":"file","paths":["internal/control/controller.go"],"accepted":true}
+</autoresearch-evidence>
+<autoresearch-evidence>
+{"criterion_id":"verification","id":"f-verification","kind":"test","summary":"The focused AutoResearch tests passed.","source":"command","command":"go test ./internal/control","accepted":true}
+</autoresearch-evidence>
+
+[goal:complete]`),
 	}}
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	var notices []string
@@ -612,6 +587,16 @@ func TestResearchGoalCompletionMarksAutoResearchTaskComplete(t *testing.T) {
 	}
 	if summary.Status != "complete" {
 		t.Fatalf("AutoResearch status = %q, want complete", summary.Status)
+	}
+	if summary.StaleCount != 0 {
+		t.Fatalf("AutoResearch stale_count = %d, want 0 after accepted evidence", summary.StaleCount)
+	}
+	findings, err := c.autoResearch.Findings(taskID, 0)
+	if err != nil {
+		t.Fatalf("Findings: %v", err)
+	}
+	if len(findings) != 2 {
+		t.Fatalf("findings = %+v, want two assistant evidence records", findings)
 	}
 	if !containsNotice(notices, "autoresearch task completed") {
 		t.Fatalf("notices = %+v, want autoresearch task completed", notices)

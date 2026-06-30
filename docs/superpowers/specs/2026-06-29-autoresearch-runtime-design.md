@@ -5,7 +5,7 @@
 Reasonix already has Goal mode and AutoResearch instructions. When a goal looks
 long-running, `activeGoalBlock` injects an AutoResearch protocol that asks the
 model to create `.reasonix/autoresearch/<task-id>/` and maintain files such as
-`task_spec.md`, `progress.json`, `findings.jsonl`, `directions_tried.json`, and
+`task_spec.json`, `progress.json`, `findings.jsonl`, `directions_tried.json`, and
 `heartbeat.jsonl`.
 
 The current behavior is useful, but the durable state is mostly prompt-driven.
@@ -246,7 +246,11 @@ The status payload should include:
 `AutoResearchOpenTask` opens `.reasonix/autoresearch/<task-id>/` in the
 workspace panel or OS file browser, matching existing workspace reveal behavior.
 
-## Desktop UI Design
+## Deferred Desktop UI Design
+
+The runtime PR exposes the desktop API and compact tab metadata first. The
+default frontend tool/status surface intentionally stays unchanged until the UI
+entry points below are implemented and reviewed as a separate product decision.
 
 ### Entry Points
 

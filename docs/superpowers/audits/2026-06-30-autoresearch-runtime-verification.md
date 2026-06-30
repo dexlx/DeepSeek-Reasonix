@@ -10,8 +10,9 @@ frontend visibility, and focused end-to-end verification.
 AutoResearch has moved from a prompt convention to a host-managed runtime for
 the implemented scope. The host now creates and resumes task state under
 `.reasonix/autoresearch/<task-id>/`, injects a runtime summary into active goal
-turns, records heartbeats and stale progress, gates completion through readiness,
-exposes desktop/frontend status APIs, and renders status/detail UI.
+turns, records heartbeats and stale progress, records accepted evidence from
+structured assistant evidence blocks, gates completion through default required
+criteria, and exposes desktop/frontend status APIs with compact tab metadata.
 
 The implementation is verified against the design requirements listed below.
 The only residual limitation is that an external browser smoke test cannot call
@@ -38,17 +39,16 @@ TypeScript tests, and the running Wails app was smoke-tested through `./dev`.
 | Heartbeats are written around turns | `appendAutoResearchHeartbeat`; `TestResearchGoalTurnAppendsAutoResearchHeartbeats`; `./dev` smoke heartbeat log | Verified |
 | Summary includes last heartbeat | `Summary`; `TestAppendHeartbeatRecordsDurableTurnStatus` | Verified |
 | Completion is intercepted when readiness fails | `autoResearchReadinessFailure`; `TestResearchGoalCompletionIsInterceptedWhenReadinessFails` | Verified |
+| Completion requires host-readable evidence for default criteria | `defaultAutoResearchSuccessCriteria`; `TestResearchGoalCreatesHostManagedAutoResearchTask`, `TestResearchGoalCompletionMarksAutoResearchTaskComplete` | Verified |
 | Completion/blocked goal updates AutoResearch status | `finalizeAutoResearchTask`; `TestResearchGoalCompletionMarksAutoResearchTaskComplete`, `TestResearchGoalBlockedMarksAutoResearchTaskBlocked` | Verified |
 | Host controller records structured evidence | `RecordAutoResearchEvidence`; `TestControllerRecordsAutoResearchEvidence` | Verified |
+| Assistant replies can record structured evidence without changing tool schemas | `<autoresearch-evidence>` parser; `TestResearchGoalCompletionMarksAutoResearchTaskComplete` | Verified |
 | AutoResearch evidence recording does not alter the default provider-visible tool surface | `TestAutoResearchEvidenceDoesNotChangeDefaultToolSurface`; boot tool contract tests | Verified |
 | Desktop API exposes current/status/list/findings/open/record evidence | `desktop/app.go`; `TestAutoResearchStatusSurfaceForActiveTab`, `TestAutoResearchFindingsAreLoadedOnDemand`, `TestAutoResearchListReturnsWorkspaceTasks`, `TestAutoResearchOpenTaskRevealsTaskDirectory`, `TestAutoResearchRecordEvidenceThroughDesktopAPI` | Verified |
 | Tab metadata includes compact summary only | `compactAutoResearch`; `TestAutoResearchStatusSurfaceForActiveTab` | Verified |
 | Findings load on demand and cap by limit | `AutoResearchFindings`; `TestAutoResearchFindingsAreLoadedOnDemand` | Verified |
-| Status bar chip renders running/pivot/blocked/complete | `StatusBar`; `statusbar-workspace.test.tsx` | Verified |
-| Status bar chip opens detail panel | `App` passes `onAutoResearchClick`; `statusbar-workspace.test.tsx` | Verified |
-| Detail panel renders status, direction, heartbeat, blocker, criteria, findings | `AutoResearchSection`; `context-panel-autoresearch.test.tsx` | Verified |
-| Invalid state shows invalid/error and open folder action | `AutoResearchSummary` invalid fallback and `AutoResearchSection`; `context-panel-autoresearch.test.tsx` | Verified |
-| Frontend refreshes after turn done and lifecycle notices, without polling | `App.tsx` `dockRefreshKey`; no `ContextPanel` interval; `context-panel-autoresearch.test.tsx` | Verified |
+| AutoResearch does not appear as a configurable default status bar item | `statusbar-workspace.test.tsx` | Verified |
+| Frontend bridge tolerates transient Wails IPC timing errors | `bridge-drag-rejection.test.ts` | Verified |
 | Transcript lifecycle cards exist | Controller emits `event.Notice`; frontend renders notices via `NoticeCard`; `./dev` smoke shows `autoresearch task created` notice | Verified |
 | `./dev` starts and AutoResearch creates durable state | Browser smoke against `http://127.0.0.1:34193`; task `20260630-065721-e2e-verify-autoresearch-ui-smoke-test` created | Verified |
 
@@ -60,7 +60,6 @@ GOCACHE=/private/tmp/reasonix-go-build-cache go test . -run 'TestAutoResearch|Te
 GOCACHE=/private/tmp/reasonix-go-build-cache go test . -count=1
 ./node_modules/.bin/tsc --noEmit -p tsconfig.test.json
 ./node_modules/.bin/tsx src/__tests__/statusbar-workspace.test.tsx
-./node_modules/.bin/tsx src/__tests__/context-panel-autoresearch.test.tsx
 pnpm test
 ./dev
 ```

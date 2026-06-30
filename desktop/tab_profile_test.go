@@ -587,18 +587,7 @@ func TestAutoResearchRecordEvidenceThroughDesktopAPI(t *testing.T) {
 	defer tab.Ctrl.Close()
 
 	tab.Ctrl.SetGoalWithResearchMode("record evidence through desktop", control.GoalResearchOn)
-	current := app.AutoResearchCurrent()
-	specPath := filepath.Join(root, ".reasonix", "autoresearch", current.TaskID, "state", "task_spec.json")
-	data, err := os.ReadFile(specPath)
-	if err != nil {
-		t.Fatalf("read spec: %v", err)
-	}
-	body := strings.Replace(string(data), `"success_criteria": []`, `"success_criteria": [{"id":"verified","description":"Verified","required":true,"evidence_ids":[]}]`, 1)
-	if err := os.WriteFile(specPath, []byte(body), 0o644); err != nil {
-		t.Fatalf("write spec: %v", err)
-	}
-
-	err = app.AutoResearchRecordEvidence(tab.ID, "verified", AutoResearchEvidenceView{
+	err := app.AutoResearchRecordEvidence(tab.ID, "objective_evidence", AutoResearchEvidenceView{
 		ID:       "f1",
 		Kind:     "test",
 		Summary:  "desktop evidence recorded",
