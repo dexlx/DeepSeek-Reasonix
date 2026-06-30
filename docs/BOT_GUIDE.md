@@ -98,10 +98,11 @@ questions are handled through text commands.
 4. Wait until the page shows the connection as connected.
 5. Send the QQ bot a message.
 
-QQ Bot uses the official QQ Bot platform API. It supports interactive card
-buttons for approvals and Ask questions, similar to Feishu and Lark. When a
-card button expires or the platform reports a card action failure, copy the
-ID shown in the card and send the equivalent text command.
+QQ Bot uses the official QQ Bot platform API. It supports inline keyboard
+buttons for approvals. Ask questions are sent as text; for single-choice
+questions you can reply with the option number, or use `/answer <id> <option>`.
+When a button expires or the platform reports an action failure, copy the ID
+shown in the card and send the equivalent text command.
 
 QQ does not support QR-code scanning for connection setup. You must
 configure the App ID and App Secret manually.
@@ -195,11 +196,11 @@ without exposing real account IDs, local paths, or private chat content.
 | Feishu | Scan to create a PersonalAgent | Interactive card buttons, or commands | Interactive card buttons, or commands | Feishu workspaces, DMs, and groups |
 | Lark | Scan to create a PersonalAgent | Interactive card buttons, or commands | Interactive card buttons, or commands | International Lark workspaces |
 | WeChat | Scan with WeChat | Reply `1` / `2`, or commands | Single-choice questions can use a number, or commands | Lightweight personal/mobile testing |
-| QQ | Manual setup (App ID + App Secret) | Interactive card buttons, or commands | Interactive card buttons, or commands | QQ groups, DMs, and official QQ Bot platform |
+| QQ | Manual setup (App ID + App Secret) | Inline keyboard buttons, numeric replies, or commands | Single-choice questions can use a number, or commands | QQ groups, DMs, and official QQ Bot platform |
 
 Feishu and Lark card buttons are converted into commands such as
-`/approve <id>`, `/deny <id>`, or `/answer <id> <option>`. QQ card buttons
-work the same way. If a button expires or the platform reports a card action
+`/approve <id>`, `/deny <id>`, or `/answer <id> <option>`. QQ approval buttons
+work the same way. If a button expires or the platform reports an action
 failure, copy the ID shown in the card and send the equivalent text command.
 
 ## Command quick reference
@@ -280,6 +281,9 @@ Bindings are stored in the user's Reasonix data, not inside the app bundle:
   `<Reasonix home>/.env`, shared by CLI and desktop.
 - The WeChat scanned account token is stored in the Reasonix user data
   directory.
+- The QQ App ID is stored in user config; the App Secret is stored under the
+  configured env var, `QQ_BOT_APP_SECRET` by default, in the global credentials
+  file.
 
 You may need to bind again if:
 
@@ -288,6 +292,7 @@ You may need to bind again if:
 - Authorization was revoked on the platform side.
 - The WeChat token expired.
 - Feishu or Lark app secrets were cleared.
+- The QQ App ID changed, or the configured QQ App Secret env var was cleared.
 
 ## Troubleshooting
 
