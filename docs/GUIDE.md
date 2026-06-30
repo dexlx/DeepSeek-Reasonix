@@ -16,6 +16,7 @@
 - [Serve web frontend](#serve-web-frontend)
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
+- [Custom OpenAI-compatible providers](#custom-openai-compatible-providers)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Permissions & sandbox](#permissions--sandbox)
 - [Plugins (MCP)](#plugins-mcp)
@@ -197,6 +198,33 @@ model and reasoning-effort controls, Goal, a live todo panel fed by the
 `todo_write` tool, and provider balance when configured. Use `--model`,
 `--max-steps`, or `--resume` for one-off launches; otherwise `serve` uses the
 user-global `default_model`.
+
+## Custom OpenAI-compatible providers
+
+In the desktop app, open **Settings -> Model -> Access -> Add model service ->
+Custom provider** for proxies, aggregators, or self-hosted services that speak
+the OpenAI-compatible chat API.
+
+Fill **API address** with the provider endpoint that should receive the standard
+chat path. In this mode Reasonix previews and sends chat requests to:
+
+```text
+<API address>/chat/completions
+```
+
+Enable **Full URL** when the service gives you a complete request URL, for
+example `https://gateway.example.com/v1/chat/completions`. Reasonix then sends
+chat requests directly to that URL and does not append `/chat/completions`. The
+preview under the field shows the exact request URL that will be used.
+
+Model discovery uses the API address to try likely model-list URLs such as
+`/models` and `/v1/models`. If the gateway requires a separate model-list
+endpoint, open **Advanced settings** and set `models_url`, for example
+`https://gateway.example.com/v1/models`. If discovery is not available, fill the
+model list manually.
+
+**Full URL** still uses the OpenAI-compatible chat request body. It does not
+switch the request schema to the OpenAI Responses API.
 
 ## Keyboard shortcuts
 
