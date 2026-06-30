@@ -17,6 +17,7 @@ import {
   type ThemeStyle,
 } from "../lib/theme";
 import { TEXT_SIZES, applyTextSize, getTextSize, type TextSize } from "../lib/textSize";
+import { snapZoom, zoomToPercent, saveRestartZoom, getRestartZoom, type ZoomLevel } from "../lib/dpiScale";
 import {
   applyFontFamily,
   applyMonoFontFamily,
@@ -57,6 +58,7 @@ import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 
 const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
+type DesktopPlatform = "darwin" | "windows" | "linux";
 
 const MCPServersSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.MCPServersSettingsPage })));
 const SkillsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.SkillsSettingsPage })));
@@ -72,12 +74,14 @@ export function SettingsPanel({
   initialTab,
   initialFocus,
   agentRunning = false,
+  desktopPlatform,
 }: {
   onClose: () => void;
   onChanged: (settings?: SettingsView | null) => void;
   initialTab?: SettingsTab;
   initialFocus?: SettingsInitialFocus;
   agentRunning?: boolean;
+  desktopPlatform: DesktopPlatform;
 }) {
   const t = useT();
   const [s, setS] = useState<SettingsView | null>(null);
@@ -89,6 +93,7 @@ export function SettingsPanel({
   const [theme, setThemeState] = useState<Theme>(getTheme());
   const [themeStyle, setThemeStyleState] = useState<ThemeStyle>(() => getThemeStyle(getTheme()));
   const [textSize, setTextSizeState] = useState<TextSize>(getTextSize());
+  const [zoomPct, setZoomPct] = useState<number>(zoomToPercent(getRestartZoom()));
   const [fontFamily, setFontFamilyState] = useState<FontFamily>(getFontFamily());
   const [monoFontFamily, setMonoFontFamilyState] = useState<MonoFontFamily>(getMonoFontFamily());
   const [customFontName, setCustomFontNameState] = useState<string>(getCustomFontName());
@@ -220,6 +225,8 @@ export function SettingsPanel({
                       theme={theme}
                       themeStyle={themeStyle}
                       textSize={textSize}
+                      showDisplayZoom={desktopPlatform === "windows"}
+                      zoomPct={zoomPct}
                       fontFamily={fontFamily}
                       monoFontFamily={monoFontFamily}
                       customFontName={customFontName}
@@ -237,6 +244,18 @@ export function SettingsPanel({
                       onTextSize={(size) => {
                         applyTextSize(size);
                         setTextSizeState(size);
+                      }}
+                      onRestartZoom={async (zoom) => {
+                        const snapped = snapZoom(zoom);
+                        setErr(null);
+                        setWarning(null);
+                        try {
+                          await app.SetDesktopZoomFactor(snapped);
+                          saveRestartZoom(snapped);
+                          setZoomPct(zoomToPercent(snapped));
+                        } catch (e) {
+                          setErr(String((e as Error)?.message ?? e));
+                        }
                       }}
                       onFontFamily={(font) => {
                         applyFontFamily(font);
@@ -5272,6 +5291,8 @@ function AppearanceSection({
   theme,
   themeStyle,
   textSize,
+  showDisplayZoom,
+  zoomPct,
   fontFamily,
   monoFontFamily,
   customFontName,
@@ -5279,6 +5300,7 @@ function AppearanceSection({
   onTheme,
   onThemeStyle,
   onTextSize,
+  onRestartZoom,
   onFontFamily,
   onMonoFontFamily,
   onCustomFontNameChange,
@@ -5287,6 +5309,8 @@ function AppearanceSection({
   theme: Theme;
   themeStyle: ThemeStyle;
   textSize: TextSize;
+  showDisplayZoom: boolean;
+  zoomPct: number;
   fontFamily: FontFamily;
   monoFontFamily: MonoFontFamily;
   customFontName: string;
@@ -5294,6 +5318,7 @@ function AppearanceSection({
   onTheme: (t: Theme) => void;
   onThemeStyle: (style: ThemeStyle) => void;
   onTextSize: (size: TextSize) => void;
+  onRestartZoom: (zoom: ZoomLevel) => Promise<void>;
   onFontFamily: (font: FontFamily) => void;
   onMonoFontFamily: (font: MonoFontFamily) => void;
   onCustomFontNameChange: (name: string) => void;
@@ -5365,6 +5390,37 @@ function AppearanceSection({
           ))}
         </div>
       </SettingsField>
+      {showDisplayZoom && (
+        <SettingsField label={t("settings.displayZoom")}>
+          <div className="zoom-slider-wrap">
+            <div className="zoom-slider__value">{zoomPct}%</div>
+            <div className="zoom-slider-row">
+              <span className="zoom-slider__label">50%</span>
+              <div className="slider-track">
+                <div className="slider-track__bg" />
+                <div
+                  className="slider-track__fill"
+                  style={{ width: `calc(${((zoomPct - 50) / 150) * 100}% + 15px)` }}
+                />
+                <div className="slider-thumb" style={{ left: `${((zoomPct - 50) / 150) * 100}%` }}>
+                  <div className="slider-thumb__left" />
+                  <div className="slider-thumb__mid" />
+                  <div className="slider-thumb__right" />
+                </div>
+                <input
+                  type="range"
+                  min={50}
+                  max={200}
+                  step={5}
+                  value={zoomPct}
+                  onChange={(e) => { void onRestartZoom(Number(e.target.value) / 100); }}
+                />
+              </div>
+              <span className="zoom-slider__label">200%</span>
+            </div>
+          </div>
+        </SettingsField>
+      )}
       <SettingsField label={t("settings.fontFamily")}>
         <div className="set-seg">
           {availableFontFamilies.map((font) => (

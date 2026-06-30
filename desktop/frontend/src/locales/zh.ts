@@ -1292,6 +1292,7 @@ export const zh: Record<DictKey, string> = {
   "settings.textSizeLarge": "大",
   "settings.textSizeXLarge": "特大",
   "settings.textSizeXXLarge": "超大",
+  "settings.displayZoom": "显示缩放（需重启生效）",
   "settings.fontFamily": "界面字体",
   "settings.fontFamilySystem": "系统默认",
   "settings.fontFamilyYaHei": "微软雅黑",

@@ -13547,6 +13547,130 @@ body > .mermaid-diagram--fullscreen {
   color: var(--accent);
   font-weight: 650;
 }
+
+/* ─── Zoom slider ──────────────────────────────────── */
+.zoom-slider-wrap {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  width: 100%;
+}
+
+.zoom-slider-row {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  width: 100%;
+}
+
+.zoom-slider__label {
+  font-size: var(--font-control-small);
+  color: var(--fg-faint);
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+/* 百分比值 — 居中在轨道上方 */
+.zoom-slider__value {
+  font-size: var(--font-control-small);
+  font-weight: 700;
+  color: var(--accent);
+  line-height: 1;
+  text-align: center;
+  width: 100%;
+}
+
+/* 让 label 在 settings-field 网格中靠下对齐 */
+.settings-field:has(.zoom-slider-wrap) {
+  align-items: end;
+}
+
+/* 轨道容器 */
+.slider-track {
+  position: relative;
+  flex: 1;
+  width: 100%;
+  height: 20px;
+  cursor: pointer;
+  user-select: none;
+  touch-action: none;
+}
+
+/* 轨道背景 */
+.slider-track__bg {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  border-radius: 10px;
+  background: var(--bg-elev-2);
+  overflow: hidden;
+}
+
+/* 填充 — 两端圆角，右侧半圆收口 */
+.slider-track__fill {
+  position: absolute;
+  top: 0;
+  left: 0;
+  bottom: 0;
+  border-radius: 10px;
+  background: var(--accent);
+  max-width: 100%;  /* 防止超出轨道 */
+}
+
+/* 胶囊滑块 — 外包 1px 主题色边框 */
+.slider-thumb {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 28px;
+  height: 18px;
+  pointer-events: none;
+  z-index: var(--z-local-raised);
+  box-shadow: 0 0 0 1px var(--accent);
+  border-radius: 10px;
+}
+
+.slider-thumb__left {
+  position: absolute;
+  left: 0;
+  top: 0;
+  width: 9px;
+  height: 18px;
+  background: #fff;
+  border-radius: 9px 0 0 9px;
+}
+.slider-thumb__mid {
+  position: absolute;
+  left: 9px;
+  top: 0;
+  width: 10px;
+  height: 18px;
+  background: #fff;
+}
+.slider-thumb__right {
+  position: absolute;
+  right: 0;
+  top: 0;
+  width: 9px;
+  height: 18px;
+  background: #fff;
+  border-radius: 0 9px 9px 0;
+}
+
+/* 透明 input range — 事件捕获 */
+.slider-track input[type="range"] {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+  height: 100%;
+  opacity: 0;
+  cursor: pointer;
+  z-index: var(--z-local-handle);
+  margin: 0;
+}
 .bot-channel-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(270px, 1fr));

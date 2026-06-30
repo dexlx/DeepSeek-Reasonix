@@ -294,6 +294,9 @@ export interface AppBindings {
   SetDesktopLanguage(lang: string): Promise<void>;
   SetDesktopAppearance(theme: string, style: string): Promise<void>;
   SetDesktopLayoutStyle(style: string): Promise<void>;
+  SetDesktopZoomFactor(factor: number): Promise<void>;
+  GetDesktopZoomFactor(): Promise<number>;
+  RestartApplication(): Promise<void>;
   SetDesktopCheckUpdates(enabled: boolean): Promise<void>;
   SetDesktopTelemetry(enabled: boolean): Promise<void>;
   SetDesktopMetrics(enabled: boolean): Promise<void>;
@@ -2763,6 +2766,15 @@ function makeMockApp(): AppBindings {
         },
         async SetDesktopLayoutStyle(style: string) {
           settings.desktopLayoutStyle = style === "workbench" || style === "creation" ? style : "classic";
+        },
+        async SetDesktopZoomFactor(_factor: number) {
+          // no-op in mock; in production this writes desktop-zoom.json via Go
+        },
+        async GetDesktopZoomFactor() {
+          return 1.0; // default in mock
+        },
+        async RestartApplication() {
+          // no-op in mock
         },
         async SetDesktopCheckUpdates(enabled: boolean) {
           settings.checkUpdates = enabled;

@@ -1290,6 +1290,7 @@ export const en = {
   "settings.textSizeLarge": "Large",
   "settings.textSizeXLarge": "Extra large",
   "settings.textSizeXXLarge": "Huge",
+  "settings.displayZoom": "Display zoom (restart required)",
   "settings.fontFamily": "Interface font",
   "settings.fontFamilySystem": "System",
   "settings.fontFamilyYaHei": "YaHei",
