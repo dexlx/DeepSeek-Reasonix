@@ -1,12 +1,19 @@
 package autoresearch
 
+import "path/filepath"
+
 func (s *Store) Summary(taskID string) (*Summary, error) {
 	task, err := s.LoadTask(taskID)
 	if err != nil {
 		return nil, err
 	}
+	storeRoot, taskRel, err := s.openTaskRoot(taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storeRoot.Close()
 	var progress Progress
-	if err := readJSONFile(s.path(taskID, "state", "progress.json"), &progress); err != nil {
+	if err := readJSONFile(storeRoot, filepath.Join(taskRel, "state", "progress.json"), &progress); err != nil {
 		return nil, err
 	}
 	findings, err := s.Findings(taskID, 0)

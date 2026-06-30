@@ -1053,18 +1053,6 @@ func readJSONFileForTest(t *testing.T, path string, out any) {
 	}
 }
 
-func writeJSONFileForTest(t *testing.T, path string, value any) {
-	t.Helper()
-	data, err := json.MarshalIndent(value, "", "  ")
-	if err != nil {
-		t.Fatalf("MarshalIndent: %v", err)
-	}
-	data = append(data, '\n')
-	if err := os.WriteFile(path, data, 0o644); err != nil {
-		t.Fatalf("WriteFile(%s): %v", path, err)
-	}
-}
-
 func sessionContainsUserText(messages []provider.Message, needles ...string) bool {
 	for _, msg := range messages {
 		if msg.Role != provider.RoleUser {

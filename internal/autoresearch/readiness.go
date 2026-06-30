@@ -1,5 +1,7 @@
 package autoresearch
 
+import "path/filepath"
+
 func (s *Store) Readiness(taskID string) (*ReadinessReport, error) {
 	report := &ReadinessReport{}
 	validation, err := s.ValidateTask(taskID)
@@ -16,8 +18,13 @@ func (s *Store) Readiness(taskID string) (*ReadinessReport, error) {
 	if err != nil {
 		return nil, err
 	}
+	storeRoot, taskRel, err := s.openTaskRoot(taskID)
+	if err != nil {
+		return nil, err
+	}
+	defer storeRoot.Close()
 	var progress Progress
-	if err := readJSONFile(s.path(taskID, "state", "progress.json"), &progress); err != nil {
+	if err := readJSONFile(storeRoot, filepath.Join(taskRel, "state", "progress.json"), &progress); err != nil {
 		return nil, err
 	}
 	if progress.Status == StatusBlocked {

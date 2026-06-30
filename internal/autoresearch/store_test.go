@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -119,6 +120,32 @@ func TestLoadTaskRejectsUnsafeOrMissingID(t *testing.T) {
 	}
 	if _, err := store.LoadTask("20260629-153000-missing"); err == nil || !strings.Contains(err.Error(), "not found") {
 		t.Fatalf("LoadTask missing error = %v, want not found", err)
+	}
+}
+
+func TestLoadTaskRejectsSymlinkTaskDirectory(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating directory symlinks requires elevated privileges on many Windows hosts")
+	}
+	root := t.TempDir()
+	store := NewStore(root)
+	taskID := "20260630-120000-symlink-task"
+	outside := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(outside, "state"), 0o755); err != nil {
+		t.Fatalf("create outside state: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(outside, "state", "task_spec.json"), []byte(`{"task_id":"20260630-120000-symlink-task","goal":"escape","success_criteria":[]}`), 0o644); err != nil {
+		t.Fatalf("write outside spec: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".reasonix", "autoresearch"), 0o755); err != nil {
+		t.Fatalf("create autoresearch root: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(root, ".reasonix", "autoresearch", taskID)); err != nil {
+		t.Fatalf("create symlink task: %v", err)
+	}
+
+	if _, err := store.LoadTask(taskID); err == nil || !strings.Contains(err.Error(), "symlink") {
+		t.Fatalf("LoadTask symlink error = %v, want symlink rejection", err)
 	}
 }
 
