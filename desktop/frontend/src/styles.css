@@ -16645,7 +16645,6 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app-chrome {
-  --windows-preview-controls-width: 138px;
   grid-row: 1;
   grid-column: 1 / -1;
   position: relative;
@@ -16818,37 +16817,53 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
-.app-chrome__window-controls {
-  position: absolute;
+.windows-window-controls {
+  position: fixed;
   top: 0;
   right: 0;
-  z-index: var(--z-local-raised);
-  height: 100%;
+  z-index: var(--z-dock);
+  width: var(--windows-window-controls-width, 138px);
+  height: var(--windows-window-controls-height, 48px);
   display: flex;
   align-items: stretch;
   justify-content: flex-end;
+  color: var(--fg-dim);
+  background: var(--bg-elev);
+  border-left: 1px solid var(--border-soft);
+  border-bottom: 1px solid var(--border-soft);
+  box-shadow: -12px 0 18px -18px color-mix(in srgb, var(--fg) 46%, transparent);
+  pointer-events: auto;
+  user-select: none;
   --wails-draggable: no-drag;
 }
 
-.app-chrome__window-control {
-  width: 46px;
+.windows-window-control {
+  flex: 0 0 var(--windows-window-control-width, 46px);
+  width: var(--windows-window-control-width, 46px);
+  min-width: var(--windows-window-control-width, 46px);
   height: 100%;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  color: var(--fg-dim);
+  border: 0;
+  border-radius: 0;
   background: transparent;
+  color: inherit;
   transition:
-    background 0.12s ease,
-    color 0.12s ease;
+    background var(--dur-fast),
+    color var(--dur-fast);
+  --wails-draggable: no-drag;
 }
 
-.app-chrome__window-control:hover {
+.windows-window-control:hover,
+.windows-window-control:focus-visible {
   color: var(--fg);
-  background: color-mix(in srgb, var(--fg-faint) 12%, transparent);
+  background: color-mix(in srgb, var(--fg-faint) 13%, transparent);
+  outline: none;
 }
 
-.app-chrome__window-control--close:hover {
+.windows-window-control--close:hover,
+.windows-window-control--close:focus-visible {
   color: #fff;
   background: #c42b1c;
 }
@@ -17163,10 +17178,6 @@ body > .mermaid-diagram--fullscreen {
     linear-gradient(180deg, color-mix(in srgb, var(--bg-soft) 88%, var(--bg-elev)), var(--bg-soft));
 }
 
-.app--browser-preview.app--windows .app-chrome--native-tabs {
-  padding-right: calc(var(--chrome-right-toggle-offset) + var(--windows-preview-controls-width) + 48px);
-}
-
 .app--linux .app-chrome--native-tabs {
   background: color-mix(in srgb, var(--bg-soft) 92%, var(--bg-elev));
 }
@@ -17217,10 +17228,6 @@ body > .mermaid-diagram--fullscreen {
   right: 8px;
   border-left: 1px solid transparent;
   border-right: 1px solid transparent;
-}
-
-.app--browser-preview.app--windows .app-chrome--native-tabs .app-chrome__panel-toggle--right {
-  right: calc(var(--windows-preview-controls-width) + 8px);
 }
 
 .app--windows .app-chrome--native-tabs .app-chrome__panel-toggle::before,
@@ -21207,10 +21214,6 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--windows .app-chrome--native-tabs {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--bg-elev) 94%, #fff), var(--bg-elev));
-}
-
-:root[data-theme-style] .app--browser-preview.app--windows .app-chrome--native-tabs {
-  padding-right: calc(var(--chrome-right-toggle-offset) + var(--windows-preview-controls-width) + 48px);
 }
 
 :root[data-theme-style] .app--linux .app-chrome--native-tabs {
@@ -27608,6 +27611,50 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .project-tree__topic-shortcut {
   background: color-mix(in srgb, var(--fg) 8%, var(--sidebar-bg, var(--bg)));
   color: var(--fg-faint);
+}
+
+.app--windows-frameless {
+  --windows-window-controls-width: 138px;
+  --windows-window-control-width: 46px;
+  --windows-window-controls-gap: 18px;
+  --windows-window-controls-safe: calc(var(--windows-window-controls-width) + var(--windows-window-controls-gap));
+  --windows-window-controls-height: 48px;
+}
+
+.app--windows-frameless.app--workbench {
+  --windows-window-controls-height: 40px;
+}
+
+.app--windows-frameless:not(.app--workbench):not(.app--creation) {
+  --windows-window-controls-height: 38px;
+}
+
+:root[data-theme-style] .app--windows-frameless:not(.app--workbench):not(.app--creation) {
+  --windows-window-controls-height: 46px;
+}
+
+.app--windows-frameless.app--creation {
+  --windows-window-controls-height: 56px;
+}
+
+.app--windows-frameless .app-chrome--native-tabs,
+:root[data-theme-style] .app--windows-frameless .app-chrome--native-tabs {
+  padding-right: calc(var(--chrome-right-toggle-offset) + var(--windows-window-controls-safe));
+}
+
+.app--windows-frameless .topicbar,
+:root[data-theme-style] .app--windows-frameless .topicbar {
+  padding-right: var(--windows-window-controls-safe);
+}
+
+.app--windows-frameless .workbench-dock__tools,
+:root[data-theme-style] .app--windows-frameless .workbench-dock__tools {
+  padding-right: var(--windows-window-controls-safe);
+}
+
+.app--windows-frameless .workbench-dock__tabs,
+:root[data-theme-style] .app--windows-frameless .workbench-dock__tabs {
+  max-width: calc(100% - 4px);
 }
 
 @media (max-width: 820px) {

@@ -1,5 +1,5 @@
 import { lazy, Suspense, useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { CSSProperties, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
 import { ShellExpandProvider, useShellExpand } from "./lib/shellExpand";
 import gsap from "gsap";
 import { useGSAP } from "@gsap/react";
@@ -10,8 +10,11 @@ import {
   Activity,
   CircleHelp,
   Command,
+  Copy as RestoreIcon,
   Download,
+  Minus,
   Search,
+  Square,
   SquarePen,
   PanelLeft,
   PanelRight,
@@ -29,6 +32,7 @@ import {
   Brain,
   Cpu,
   Palette,
+  X,
 } from "lucide-react";
 import { useToast } from "./lib/toast";
 import { asArray } from "./lib/array";
@@ -195,6 +199,65 @@ const MAX_DISMISSED_TODO_KEYS = 160;
 type HistoryScopeFilter = { scope: "global" | "project"; workspaceRoot: string };
 type WorkspaceInsertTarget = "composer" | "planRevision";
 type DesktopPlatform = "darwin" | "windows" | "linux";
+
+function WindowsWindowControls() {
+  const [maximised, setMaximised] = useState(false);
+
+  const syncMaximised = useCallback(() => {
+    void app.IsMainWindowMaximised()
+      .then(setMaximised)
+      .catch(() => setMaximised(false));
+  }, []);
+
+  useEffect(() => {
+    syncMaximised();
+    window.addEventListener("resize", syncMaximised);
+    window.addEventListener("focus", syncMaximised);
+    return () => {
+      window.removeEventListener("resize", syncMaximised);
+      window.removeEventListener("focus", syncMaximised);
+    };
+  }, [syncMaximised]);
+
+  const toggleMaximise = useCallback(() => {
+    void app.ToggleMaximiseMainWindow()
+      .then(() => window.setTimeout(syncMaximised, 80))
+      .catch(() => undefined);
+  }, [syncMaximised]);
+
+  return (
+    <div className="windows-window-controls" aria-label="Window controls">
+      <button
+        className="windows-window-control windows-window-control--minimize"
+        type="button"
+        aria-label="Minimize window"
+        title="Minimize"
+        onClick={() => void app.MinimiseMainWindow()}
+      >
+        <Minus size={13} strokeWidth={1.9} />
+      </button>
+      <button
+        className="windows-window-control windows-window-control--maximize"
+        type="button"
+        aria-label="Maximize or restore window"
+        aria-pressed={maximised}
+        title={maximised ? "Restore" : "Maximize"}
+        onClick={toggleMaximise}
+      >
+        {maximised ? <RestoreIcon size={12} strokeWidth={1.75} /> : <Square size={11} strokeWidth={1.8} />}
+      </button>
+      <button
+        className="windows-window-control windows-window-control--close"
+        type="button"
+        aria-label="Close window"
+        title="Close"
+        onClick={() => void app.CloseMainWindow()}
+      >
+        <X size={13} strokeWidth={1.9} />
+      </button>
+    </div>
+  );
+}
 type HistoryViewState =
   | { kind: "history"; source: "scope"; filter: HistoryScopeFilter; sessions: SessionMeta[] }
   | { kind: "history"; source: "all"; sessions: SessionMeta[] }
@@ -2786,6 +2849,15 @@ export default function App() {
   const topicbarCanRename = !sidebarImDetailConnection && Boolean(activeTab?.topicId);
   const topicbarTitleEditSize = Math.min(56, Math.max(4, topicTitleDraft.length || topicbarTitle.length || 1));
   const sidebarWorkbench = desktopLayoutStyle === "workbench";
+  const windowsFramelessChrome = desktopPlatform === "windows";
+  const handleWindowsTitlebarDoubleClick = useCallback((event: ReactMouseEvent<HTMLDivElement>) => {
+    if (!windowsFramelessChrome) return;
+    const target = event.target as HTMLElement | null;
+    if (!target?.closest(".app-chrome, .topicbar, .workbench-dock__tools")) return;
+    if (target.closest("button, input, textarea, select, a, [role='button'], [role='tab'], .windows-window-controls")) return;
+    event.preventDefault();
+    void app.ToggleMaximiseMainWindow();
+  }, [windowsFramelessChrome]);
   // Creation keeps the classic sidebar/chat structure while gating chrome tweaks
   // behind its own style flag so classic/workbench remain unchanged.
   const appChromeHidden = sidebarWorkbench || sidebarCreation;
@@ -2800,11 +2872,13 @@ export default function App() {
     <ShellExpandProvider>
     <ShellHotkeys />
     <TextSizeHotkeys />
-    <div
-      ref={appRef}
-      className={[
+      <div
+        ref={appRef}
+        onDoubleClickCapture={handleWindowsTitlebarDoubleClick}
+        className={[
         "app",
         `app--${desktopPlatform}`,
+        windowsFramelessChrome ? "app--windows-frameless" : "",
         browserPreviewChrome ? "app--browser-preview" : "",
         sidebarWorkbench ? "app--workbench" : "",
         sidebarCreation ? "app--creation" : "",
@@ -3661,6 +3735,7 @@ export default function App() {
       <HeartbeatPanel open={heartbeatOpen} onClose={() => setHeartbeatOpen(false)} onOpenTopic={(scope, workspaceRoot, topicId) => {
         void handleOpenTopic(scope, workspaceRoot, topicId);
       }} />
+      {windowsFramelessChrome && <WindowsWindowControls />}
     </div>
     </ShellExpandProvider>
   );

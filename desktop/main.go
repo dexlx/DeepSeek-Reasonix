@@ -10,6 +10,7 @@ import (
 	"embed"
 	"os"
 	"path/filepath"
+	goruntime "runtime"
 	"strings"
 
 	"github.com/wailsapp/wails/v2"
@@ -112,6 +113,7 @@ func main() {
 		Title:     "Reasonix",
 		Width:     width,
 		Height:    height,
+		Frameless: goruntime.GOOS == "windows",
 		MinWidth:  760,
 		MinHeight: 480,
 		// Match the dark UI shell so the initial webview background doesn't flash
