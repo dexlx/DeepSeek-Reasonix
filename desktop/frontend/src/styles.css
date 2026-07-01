@@ -26593,6 +26593,13 @@ body > .mermaid-diagram--fullscreen {
   padding-left: 0;
 }
 
+/* 收起的工具体仍挂载在 DOM 中；Creation 下给折叠态加硬隐藏，避免错误文本在 WebView2 中露出片段。 */
+.app--creation .tool:not(.tool--open) > .tool__body,
+:root[data-theme-style] .app--creation .tool:not(.tool--open) > .tool__body {
+  height: 0 !important;
+  visibility: hidden;
+}
+
 /* 限制工具头标题宽度，给右侧 meta（耗时/箭头/圆点）留出可见空间。
    Bash 等命令常超长，不限宽会把箭头和圆点挤出视野。仅 Creation 作用域。
    summary 在 Creation 下直接隐藏——它对 bash 只是"N 行"摘要，信息量低，
