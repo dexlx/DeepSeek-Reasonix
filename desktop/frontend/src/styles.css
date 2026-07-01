@@ -24156,6 +24156,28 @@ body > .mermaid-diagram--fullscreen {
   opacity: 0.78;
 }
 
+.sidebar--workbench .project-tree__topic-unread-dot,
+.app--creation .project-tree__topic-unread-dot {
+  position: absolute;
+  top: 50%;
+  right: 18px;
+  z-index: var(--z-local-raised);
+  width: 8px;
+  height: 8px;
+  flex: 0 0 8px;
+  border-radius: 999px;
+  background: var(--accent-blue, #2f8cff);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--accent-blue, #2f8cff) 16%, transparent);
+  opacity: 1;
+  pointer-events: none;
+  transform: translateY(-50%) scale(1);
+  transition: opacity var(--dur-fast), transform var(--dur-fast);
+}
+
+.app--creation .project-tree__topic-unread-dot {
+  right: 10px;
+}
+
 .sidebar--workbench .project-tree__topic-state--thinking,
 .sidebar--workbench .project-tree__topic-state--streaming {
   border: 2px solid color-mix(in srgb, currentColor 26%, transparent);
@@ -24202,11 +24224,24 @@ body > .mermaid-diagram--fullscreen {
   transform: translateY(-50%) translateX(0);
 }
 
+.sidebar--workbench .project-tree__topic--unread:hover .project-tree__topic-actions,
+.sidebar--workbench .project-tree__topic--unread:focus-within .project-tree__topic-actions {
+  opacity: 0;
+  pointer-events: none;
+}
+
 .sidebar--workbench .project-tree__topic:hover .project-tree__topic-side,
 .sidebar--workbench .project-tree__topic:focus-within .project-tree__topic-side,
-.sidebar--workbench .project-tree__topic--menu-open .project-tree__topic-side {
+.sidebar--workbench .project-tree__topic--menu-open .project-tree__topic-side,
+.sidebar--workbench .project-tree__topic--unread .project-tree__topic-side {
   opacity: 0;
   transform: translateX(-3px);
+}
+
+.app--creation .project-tree__topic--unread .project-tree__topic-side,
+.app--creation .project-tree__topic--unread:hover .project-tree__topic-side,
+.app--creation .project-tree__topic--unread:focus-within .project-tree__topic-side {
+  opacity: 0;
 }
 
 .sidebar--workbench .project-tree__topic-action-slot {
@@ -26021,6 +26056,7 @@ body > .mermaid-diagram--fullscreen {
   display: inline-flex;
   align-items: center;
   justify-content: flex-end;
+  gap: 6px;
   min-width: 38px;
   color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
   font-size: 11px;
