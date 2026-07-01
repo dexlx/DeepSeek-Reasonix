@@ -681,10 +681,11 @@ function browserPlatformOverride(): "darwin" | "windows" | "linux" | "" {
   return value === "darwin" || value === "windows" || value === "linux" ? value : "";
 }
 
-function mockScenario(): "demo" | "fresh" | "running" {
+function mockScenario(): "demo" | "fresh" | "running" | "guidance" {
   if (typeof window === "undefined") return "demo";
   const value = new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase();
   if (value === "fresh" || value === "empty" || value === "first-run") return "fresh";
+  if (value === "guidance" || value === "guide" || value === "steer") return "guidance";
   if (value === "running" || value === "busy" || value === "streaming") return "running";
   return "demo";
 }
@@ -692,7 +693,8 @@ function mockScenario(): "demo" | "fresh" | "running" {
 function makeMockApp(): AppBindings {
   const scenario = mockScenario();
   const freshMock = scenario === "fresh";
-  const runningMock = scenario === "running";
+  const guidanceMock = scenario === "guidance";
+  const runningMock = scenario === "running" || guidanceMock;
   let cancelled = false;
   let pendingAskPreview = false;
   let pendingApprovalPreview = false;
@@ -1381,7 +1383,7 @@ function makeMockApp(): AppBindings {
       collaborationMode: "normal",
       toolApprovalMode: "ask",
       tokenMode: "full",
-      active: true,
+      active: !guidanceMock,
       cwd: "~/projects/joyquant-db",
     },
     {
@@ -1401,7 +1403,7 @@ function makeMockApp(): AppBindings {
       collaborationMode: "normal",
       toolApprovalMode: "ask",
       tokenMode: "full",
-      active: false,
+      active: guidanceMock,
       cwd: "~/projects/joyquant-sys",
     },
     {

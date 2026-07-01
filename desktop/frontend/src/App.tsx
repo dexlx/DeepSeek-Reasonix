@@ -685,6 +685,21 @@ function browserPlatformOverride(): DesktopPlatform | null {
   return null;
 }
 
+const GUIDANCE_QUEUE_MOCK_ITEMS = [
+  "先确认发送后输入框为什么残留刚发的消息，再决定修哪里。",
+  "保持真实 steer 协议不变，只调整前端乐观队列和按钮状态。",
+  "最后补后端 submit 悬挂时的回归测试，确保输入框会立刻释放。",
+] as const;
+
+function browserMockScenarioParam(): string {
+  if (typeof window === "undefined" || window.runtime) return "";
+  return new URLSearchParams(window.location.search).get("mock")?.trim().toLowerCase() ?? "";
+}
+
+function isGuidanceMockScenario(value: string): boolean {
+  return value === "guidance" || value === "guide" || value === "steer";
+}
+
 function detectBrowserPlatform(): DesktopPlatform {
   const override = browserPlatformOverride();
   if (override) return override;
@@ -2184,6 +2199,16 @@ export default function App() {
     return transcriptItems.slice(0, rewindState.boundaryIdx).filter((it) => it.kind !== "compaction");
   }, [transcriptItems, rewindState]);
 
+  const latestGuidanceConsumed = useMemo(() => {
+    for (let i = state.items.length - 1; i >= 0; i--) {
+      const item = state.items[i];
+      if (item.kind === "notice" && item.text.startsWith("↪ ")) {
+        return { key: item.id, text: item.text.slice(2) };
+      }
+    }
+    return null;
+  }, [state.items]);
+
   // send wrapper: commits any pending optimistic rewind before sending.
   const commitThenSend = useCallback(async (displayText: string, submitText?: string) => {
     if (activeTab?.readOnly) throw new Error("channel session is read-only");
@@ -2738,6 +2763,8 @@ export default function App() {
       : t("sidebar.collapse");
   const sidebarNavTooltipDisabled = !sidebarCollapsed;
   const browserPreviewChrome = typeof window !== "undefined" && !window.runtime;
+  const browserMockScenario = browserPreviewChrome ? browserMockScenarioParam() : "";
+  const guidanceQueueMockItems = isGuidanceMockScenario(browserMockScenario) ? GUIDANCE_QUEUE_MOCK_ITEMS : undefined;
   const workspacePanelResetWidth = rightDockDetailActive
     ? RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH
     : defaultRightDockTreeWidth();
@@ -3437,6 +3464,9 @@ export default function App() {
               retry={state.retry}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
+              guidanceConsumedKey={latestGuidanceConsumed?.key}
+              guidanceConsumedText={latestGuidanceConsumed?.text}
+              guidanceQueuePreviewItems={guidanceQueueMockItems}
             />
             <StatusBar
               context={state.context}

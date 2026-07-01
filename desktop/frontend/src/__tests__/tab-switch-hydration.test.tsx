@@ -135,6 +135,7 @@ const historyB = deferred<HistoryMessage[]>();
 const historyD = deferred<HistoryMessage[]>();
 const contextDGate = deferred<ContextInfo>();
 const setActiveBGate = deferred<void>();
+const submitTabCGate = deferred<void>();
 const historyCalls: string[] = [];
 let contextDCalls = 0;
 let holdNextContextForD = false;
@@ -201,6 +202,7 @@ window.go = {
       },
       SubmitToTab: async (tabID: string) => {
         runningTabs.add(tabID);
+        if (tabID === "tab-c") await submitTabCGate.promise;
       },
       SubmitDisplayToTab: async (tabID: string) => {
         runningTabs.add(tabID);
@@ -293,10 +295,15 @@ eq(historyCalls.length, historyCallsBeforeReady, "agent ready with cached transc
 ok(controller?.state.items.some((item) => item.kind === "phase" && item.text === "Planner is thinking") ?? false, "agent ready keeps cached planner phase");
 ok(controller?.state.items.some((item) => item.kind === "assistant" && item.text === "Planner kept" && item.reasoning === "Planner notes") ?? false, "agent ready keeps cached planner answer");
 
+let tabCSendResolved = false;
 await act(async () => {
-  controller?.sendToTab("tab-c", "streaming C");
+  const sendPromise = controller?.sendToTab("tab-c", "streaming C");
+  sendPromise?.then(() => {
+    tabCSendResolved = true;
+  });
   await flushPromises();
 });
+eq(tabCSendResolved, true, "sendToTab resolves after optimistic dispatch before backend submit completes");
 await act(async () => {
   await controller?.switchTab("tab-c", tabC);
   await flushPromises();
@@ -304,6 +311,11 @@ await act(async () => {
 eq(controller?.activeTabId, "tab-c", "switching to a cached running tab still updates the active tab");
 ok(controller?.state.items.some((item) => item.kind === "user" && item.text === "streaming C") ?? false, "cached running tab keeps its optimistic transcript");
 ok(!historyCalls.includes("tab-c"), "cached running tab skips history hydration");
+await act(async () => {
+  submitTabCGate.resolve();
+  await submitTabCGate.promise;
+  await flushPromises();
+});
 
 holdNextContextForD = true;
 await act(async () => {

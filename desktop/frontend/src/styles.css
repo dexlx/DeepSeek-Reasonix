@@ -5502,6 +5502,15 @@ body > .mermaid-diagram--fullscreen {
   outline: none;
   box-shadow: var(--focus-ring);
 }
+.composer__btn--send.composer__btn--steer {
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border-soft));
+  background: color-mix(in srgb, var(--control-primary-bg) 16%, var(--bg-elev-2));
+  color: var(--accent);
+  box-shadow: none;
+}
+.composer__btn--send.composer__btn--steer:not(:disabled):hover {
+  background: color-mix(in srgb, var(--control-primary-bg) 24%, var(--bg-elev-2));
+}
 .composer__btn--send:disabled {
   background: var(--control-disabled-bg);
   color: var(--control-disabled-fg);
@@ -15619,6 +15628,162 @@ body > .mermaid-diagram--fullscreen {
   justify-content: flex-end;
 }
 
+.composer-guidance-shelf {
+  --wails-draggable: no-drag;
+  display: grid;
+  gap: 5px;
+  max-width: var(--maxw);
+  margin: 0 auto 8px;
+  padding: 0 4px;
+}
+
+.composer-guidance-head {
+  display: flex;
+  align-items: center;
+  min-height: 22px;
+  padding: 0 6px;
+}
+
+.composer-guidance-head__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-weight: 620;
+}
+
+.composer-guidance-head__label > svg {
+  color: var(--fg-faint);
+}
+
+.composer-guidance-list {
+  display: grid;
+  gap: 4px;
+  padding: 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-soft) 74%, transparent);
+}
+
+.composer-guidance-item {
+  min-height: 32px;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto auto;
+  align-items: center;
+  gap: 8px;
+  padding: 5px 6px 5px 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 18%, var(--border-soft));
+  border-radius: 7px;
+  background: color-mix(in srgb, var(--bg-elev) 78%, transparent);
+  color: var(--fg-dim);
+  box-shadow: inset 0 1px 0 color-mix(in srgb, #fff 5%, transparent);
+}
+
+.composer-guidance-item__icon {
+  flex: 0 0 auto;
+  color: var(--fg-faint);
+}
+
+.composer-guidance-item__text {
+  min-width: 0;
+  color: var(--fg-dim);
+  font-size: 13px;
+  font-weight: 520;
+  line-height: 1.35;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.composer-guidance-item__guide {
+  min-width: 0;
+  height: 24px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--border-soft));
+  border-radius: 6px;
+  background: color-mix(in srgb, var(--accent) 8%, var(--bg-elev));
+  color: var(--accent);
+  font-size: 12px;
+  font-weight: 650;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.composer-guidance-item__guide:not(:disabled):hover,
+.composer-guidance-item__guide:not(:disabled):focus-visible {
+  background: color-mix(in srgb, var(--accent) 13%, var(--bg-elev));
+  border-color: color-mix(in srgb, var(--accent) 34%, var(--border-soft));
+}
+
+.composer-guidance-item__guide:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.composer-guidance-item__action {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+}
+
+.composer-guidance-item__action:not(:disabled):hover,
+.composer-guidance-item__action:not(:disabled):focus-visible {
+  background: color-mix(in srgb, var(--bg-elev-2) 80%, transparent);
+  color: var(--fg);
+}
+
+.composer-guidance-item__action:disabled {
+  opacity: 0.6;
+  cursor: default;
+}
+
+.composer-guidance-more {
+  min-height: 24px;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  justify-self: start;
+  margin-left: 28px;
+  padding: 2px 7px 3px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+  font-size: 12px;
+  font-family: inherit;
+  line-height: 1.3;
+}
+
+.composer-guidance-more:not(:disabled):hover,
+.composer-guidance-more:not(:disabled):focus-visible {
+  border-color: var(--border-soft);
+  background: color-mix(in srgb, var(--bg-elev-2) 72%, transparent);
+  color: var(--fg-dim);
+}
+
+@media (max-width: 620px) {
+  .composer-guidance-shelf {
+    padding: 0;
+  }
+
+  .composer-guidance-item {
+    padding-left: 7px;
+  }
+}
+
 .composer-runstatus {
   --wails-draggable: no-drag;
   flex: 0 1 auto;
@@ -22325,6 +22490,18 @@ body > .mermaid-diagram--fullscreen {
   transform: translateY(-1px) scale(1.03);
 }
 
+:root[data-theme-style] .composer__btn--send.composer__btn--steer {
+  border: 1px solid color-mix(in srgb, var(--accent) 24%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  color: var(--accent);
+  box-shadow: none;
+}
+
+:root[data-theme-style] .composer__btn--send.composer__btn--steer:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
+  transform: translateY(-1px);
+}
+
 :root[data-theme-style] .composer-meta {
   min-height: 42px;
   padding: 5px 12px 10px;
@@ -25212,6 +25389,19 @@ body > .mermaid-diagram--fullscreen {
   transform: none;
 }
 
+.app--creation .composer__btn--send.composer__btn--steer,
+:root[data-theme-style] .app--creation .composer__btn--send.composer__btn--steer {
+  border-color: color-mix(in srgb, var(--accent) 30%, var(--border-soft));
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  color: var(--accent);
+  box-shadow: none;
+}
+
+.app--creation .composer__btn--send.composer__btn--steer:not(:disabled):hover,
+:root[data-theme-style] .app--creation .composer__btn--send.composer__btn--steer:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
+}
+
 :root[data-theme="dark"][data-theme-style] .app--creation .composer__btn--send {
   background: color-mix(in srgb, var(--accent) 56%, var(--bg-elev) 44%);
   color: color-mix(in srgb, #fff 88%, var(--accent) 12%);
@@ -25232,6 +25422,27 @@ body > .mermaid-diagram--fullscreen {
   :root[data-theme-style]:not([data-theme]) .app--creation .composer__btn--send:not(:disabled):hover {
     background: color-mix(in srgb, var(--accent) 64%, var(--bg-elev) 36%);
   }
+}
+
+:root[data-theme="dark"][data-theme-style] .app--creation .composer__btn--send.composer__btn--steer,
+:root[data-theme-style]:not([data-theme]) .app--creation .composer__btn--send.composer__btn--steer {
+  background: color-mix(in srgb, var(--accent) 12%, var(--bg-elev));
+  color: var(--accent);
+  box-shadow: none;
+}
+
+:root[data-theme="dark"][data-theme-style] .app--creation .composer__btn--send.composer__btn--steer:not(:disabled):hover,
+:root[data-theme-style]:not([data-theme]) .app--creation .composer__btn--send.composer__btn--steer:not(:disabled):hover {
+  background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
+}
+
+:root[data-theme-style] .composer__btn--send.composer__btn--steer:disabled,
+.app--creation .composer__btn--send.composer__btn--steer:disabled,
+:root[data-theme-style] .app--creation .composer__btn--send.composer__btn--steer:disabled {
+  border-color: transparent;
+  background: var(--control-disabled-bg);
+  color: var(--control-disabled-fg);
+  box-shadow: none;
 }
 
 .app--creation .composer__btn--send svg,

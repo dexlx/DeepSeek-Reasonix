@@ -568,5 +568,176 @@ console.log("\ncomposer goal toggle");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  const { root, rerender } = await renderComposer({
+    running: true,
+    guidanceQueuePreviewItems: ["confirm the send lifecycle", "keep steer protocol unchanged", "add a hanging submit regression"],
+  });
+
+  let guidanceItems = Array.from(document.querySelectorAll(".composer-guidance-item"));
+  eq(guidanceItems.length, 2, "running guidance preview shows a compact queue preview");
+  ok(guidanceItems[0]?.textContent?.includes("confirm the send lifecycle") === true, "guidance preview shows the first seeded item");
+  ok(guidanceItems[1]?.textContent?.includes("keep steer protocol unchanged") === true, "guidance preview shows the second seeded item");
+  eq(document.querySelectorAll(".composer-guidance-item__guide").length, 2, "guidance preview exposes a guide action for each visible item");
+  let guidanceMore = document.querySelector(".composer-guidance-more") as HTMLButtonElement | null;
+  ok(guidanceMore?.textContent?.includes("1 more queued") === true, "guidance preview summarizes overflow items");
+  eq(guidanceMore?.getAttribute("aria-expanded"), "false", "guidance overflow starts collapsed");
+
+  if (!guidanceMore) throw new Error("guidance overflow button did not render");
+  await act(async () => {
+    guidanceMore.click();
+    await flushTimers();
+  });
+  guidanceItems = Array.from(document.querySelectorAll(".composer-guidance-item"));
+  eq(guidanceItems.length, 3, "guidance overflow expands the remaining queued items");
+  ok(guidanceItems[2]?.textContent?.includes("add a hanging submit regression") === true, "expanded guidance preview shows the hidden item");
+  guidanceMore = document.querySelector(".composer-guidance-more") as HTMLButtonElement | null;
+  ok(guidanceMore?.textContent?.includes("Collapse") === true, "expanded guidance overflow can be collapsed");
+  eq(guidanceMore?.getAttribute("aria-expanded"), "true", "guidance overflow reports expanded state");
+
+  if (!guidanceMore) throw new Error("guidance collapse button did not render");
+  await act(async () => {
+    guidanceMore.click();
+    await flushTimers();
+  });
+  guidanceItems = Array.from(document.querySelectorAll(".composer-guidance-item"));
+  eq(guidanceItems.length, 2, "guidance overflow collapses back to the compact preview");
+
+  await rerender({ guidanceQueuePreviewItems: ["only the latest preview seed"] });
+  guidanceItems = Array.from(document.querySelectorAll(".composer-guidance-item"));
+  eq(guidanceItems.length, 1, "guidance preview refreshes when the seed changes");
+  ok(guidanceItems[0]?.textContent?.includes("only the latest preview seed") === true, "guidance preview renders the refreshed seed");
+
+  await rerender({ running: false });
+  ok(document.querySelector(".composer-guidance-item") === null, "guidance preview clears when the mock turn stops");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+    },
+  });
+
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+
+  eq(textarea.placeholder, "Add guidance to the queue...", "running composer explains queued guidance input");
+  ok(sendButton.classList.contains("composer__btn--steer"), "running composer marks send button as steer");
+  ok(sendButton.disabled === true, "running steer button stays disabled without input");
+
+  await rerender({ insertRequest: { id: 4, text: "keep the files small", mode: "replace" } });
+  ok(sendButton.disabled === false, "running steer button enables after text input");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "", "running composer queues guidance without sending it immediately");
+  eq(textarea.value, "", "queued running guidance clears the composer draft");
+  const guidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  if (!guidanceItem) throw new Error("running guidance chip did not render");
+  ok(guidanceItem.textContent?.includes("keep the files small") === true, "running guidance chip shows queued text");
+  ok(document.querySelector(".composer-guidance-head")?.textContent?.includes("Queued guidance 1") === true, "running guidance shelf shows queued count");
+
+  const guideButton = guidanceItem.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!guideButton) throw new Error("running guidance guide button did not render");
+  await act(async () => {
+    guideButton.click();
+    await flushTimers();
+  });
+  eq(calls.send.join(","), "keep the files small", "queued guidance sends through onSend when guided");
+  ok(document.querySelector(".composer-guidance-item") === null, "queued guidance clears after being guided");
+
+  await rerender({ insertRequest: { id: 5, text: "prefer the smaller diff", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  const dismissibleGuidanceItem = document.querySelector(".composer-guidance-item") as HTMLElement | null;
+  if (!dismissibleGuidanceItem) throw new Error("dismissible guidance chip did not render");
+  const dismissButton = dismissibleGuidanceItem.querySelector(".composer-guidance-item__action") as HTMLButtonElement | null;
+  if (!dismissButton) throw new Error("running guidance dismiss button did not render");
+  await act(async () => {
+    dismissButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip can be dismissed");
+
+  await rerender({ insertRequest: { id: 6, text: "prefer the smaller diff", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders again after another queued item");
+
+  await rerender({ guidanceConsumedKey: "s1", guidanceConsumedText: "prefer the smaller diff" });
+  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when steer is consumed");
+
+  await rerender({ insertRequest: { id: 7, text: "then stop showing the chip", mode: "replace" } });
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") !== null, "running guidance chip renders before turn stop");
+
+  await rerender({ running: false });
+  ok(document.querySelector(".composer-guidance-item") === null, "running guidance chip clears when the turn stops");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    submitDisabled: true,
+    onSend: (displayText) => {
+      calls.send.push(displayText);
+    },
+  });
+
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+
+  await rerender({ insertRequest: { id: 7, text: "steer while activating", mode: "replace" } });
+  ok(sendButton.disabled === false, "running guidance queue ignores controller submitDisabled");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "", "running guidance queues while controllerReady is false");
+  const guideButton = document.querySelector(".composer-guidance-item__guide") as HTMLButtonElement | null;
+  if (!guideButton) throw new Error("running guidance guide button did not render");
+  await act(async () => {
+    guideButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.join(","), "steer while activating", "queued guidance can be guided while controllerReady is false");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);

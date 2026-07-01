@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ChevronsUpDown, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -61,6 +61,12 @@ const IME_CONFIRM_GRACE_MS = 100;
 type PastedBlock = {
   label: string;
   text: string;
+};
+
+type PendingGuidance = {
+  id: number;
+  text: string;
+  submitText: string;
 };
 
 type ComposerDraft = {
@@ -161,6 +167,13 @@ function emptyComposerDraft(): ComposerDraft {
     historyIndex: -1,
     savedText: "",
   };
+}
+
+function guidanceTextMatches(queued: string, consumed: string): boolean {
+  const left = queued.trim();
+  const right = consumed.trim();
+  if (!left || !right) return false;
+  return left === right || left.includes(right) || right.includes(left);
 }
 
 function cloneComposerDraft(draft: ComposerDraft): ComposerDraft {
@@ -431,6 +444,9 @@ export function Composer({
   retry,
   transientDismissSignal,
   sessionKey,
+  guidanceConsumedKey,
+  guidanceConsumedText,
+  guidanceQueuePreviewItems,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -470,6 +486,9 @@ export function Composer({
   retry?: { attempt: number; max: number };
   transientDismissSignal?: number;
   sessionKey?: string;
+  guidanceConsumedKey?: string;
+  guidanceConsumedText?: string;
+  guidanceQueuePreviewItems?: readonly string[];
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
@@ -498,6 +517,10 @@ export function Composer({
   const [pastChats, setPastChats] = useState<SessionMeta[]>([]);
   const [pastChatQuery, setPastChatQuery] = useState("");
   const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
+  const [pendingGuidance, setPendingGuidance] = useState<PendingGuidance[]>([]);
+  const [guidanceExpanded, setGuidanceExpanded] = useState(false);
+  const [guidanceSendingId, setGuidanceSendingId] = useState<number | null>(null);
+  const nextGuidanceId = useRef(1);
   const [loadingPastChats, setLoadingPastChats] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [composerPrompt, setComposerPrompt] = useState<string | null>(null);
@@ -524,6 +547,8 @@ export function Composer({
   const lastSelectionRef = useRef({ start: 0, end: 0 });
   const consumedInsertIdRef = useRef(0);
   const lastTransientDismissSignal = useRef(transientDismissSignal);
+  const lastGuidanceConsumedKey = useRef(guidanceConsumedKey);
+  const selfDispatchedGuidanceRef = useRef<string[]>([]);
   const submittingRef = useRef(false);
   const nativeClipboardPasteTimerRef = useRef<number | null>(null);
   // Snapshot of the current cwd so async callbacks (openPastChats) can detect
@@ -533,6 +558,7 @@ export function Composer({
   const attachmentDedupRef = useRef(new DedupIndex());
   const attachmentDedupKeysRef = useRef<Record<string, AttachmentDedupKey>>({});
   const draftKey = sessionKey || tabId || DEFAULT_COMPOSER_DRAFT_KEY;
+  const guidanceQueuePreviewKey = (guidanceQueuePreviewItems ?? []).map((item) => item.trim()).filter(Boolean).join("\n");
   const draftsBySessionRef = useRef<Record<string, ComposerDraft>>({});
   const activeDraftKeyRef = useRef(draftKey);
   const textRef = useRef(text);
@@ -609,13 +635,36 @@ export function Composer({
   useEffect(() => () => clearNativeClipboardPasteTimer(), []);
 
   useEffect(() => {
-    if (wasRunning.current && !running && text.trim() === "") {
-      pastedBlocksRef.current = [];
-      setPastedBlocks([]);
-      setOpenPastedLabels([]);
+    if (wasRunning.current && !running) {
+      setPendingGuidance([]);
+      setGuidanceExpanded(false);
+      if (text.trim() === "") {
+        pastedBlocksRef.current = [];
+        setPastedBlocks([]);
+        setOpenPastedLabels([]);
+      }
     }
     wasRunning.current = running;
   }, [running, text]);
+
+  useEffect(() => {
+    setPendingGuidance([]);
+    setGuidanceExpanded(false);
+  }, [draftKey]);
+
+  useEffect(() => {
+    if (!running || !guidanceQueuePreviewKey) return;
+    setGuidanceExpanded(false);
+    setPendingGuidance(
+      guidanceQueuePreviewKey
+        .split("\n")
+        .map((text) => ({ id: nextGuidanceId.current++, text, submitText: text })),
+    );
+  }, [guidanceQueuePreviewKey, running]);
+
+  useEffect(() => {
+    if (guidanceExpanded && pendingGuidance.length <= 2) setGuidanceExpanded(false);
+  }, [guidanceExpanded, pendingGuidance.length]);
 
   // --- slash commands (whole-input "/token") ---
   const [commands, setCommands] = useState<CommandInfo[]>([]);
@@ -816,6 +865,28 @@ export function Composer({
     lastTransientDismissSignal.current = transientDismissSignal;
     setDismissed(true);
   }, [transientDismissSignal]);
+
+  const takeSelfDispatchedGuidance = useCallback((text: string): boolean => {
+    const idx = selfDispatchedGuidanceRef.current.findIndex((queued) => guidanceTextMatches(queued, text));
+    if (idx < 0) return false;
+    selfDispatchedGuidanceRef.current.splice(idx, 1);
+    return true;
+  }, []);
+
+  useEffect(() => {
+    if (!guidanceConsumedKey || guidanceConsumedKey === lastGuidanceConsumedKey.current) return;
+    lastGuidanceConsumedKey.current = guidanceConsumedKey;
+    const consumed = (guidanceConsumedText ?? "").trim();
+    if (consumed && takeSelfDispatchedGuidance(consumed)) return;
+    setPendingGuidance((items) => {
+      if (items.length === 0) return items;
+      const idx = consumed
+        ? items.findIndex((item) => guidanceTextMatches(item.submitText, consumed) || guidanceTextMatches(item.text, consumed))
+        : -1;
+      const removeAt = idx >= 0 ? idx : 0;
+      return items.filter((_, index) => index !== removeAt);
+    });
+  }, [guidanceConsumedKey, guidanceConsumedText, takeSelfDispatchedGuidance]);
 
   // When the @ trigger disappears (user deleted the @), close the past:chats
   // sub-menu and reset related state. Without this, showPastChats can outlive
@@ -1111,7 +1182,7 @@ export function Composer({
   }, [showToast, t]);
 
   const submit = async () => {
-    if (disabled || submitDisabled || readOnly || submittingRef.current) return;
+    if (disabled || (!running && submitDisabled) || readOnly || submittingRef.current) return;
     const submitDraftKey = activeDraftKeyRef.current;
     const currentText = textRef.current;
     const trimmedText = currentText.trim();
@@ -1150,6 +1221,16 @@ export function Composer({
       const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
       const baseSubmitText = [expandPastedBlocks(trimmedText), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
+      if (running) {
+        const guidanceText = displayText.trim();
+        const guidanceSubmitText = submitText.trim();
+        if (guidanceText) {
+          const id = nextGuidanceId.current++;
+          setPendingGuidance((items) => [...items, { id, text: guidanceText, submitText: guidanceSubmitText || guidanceText }]);
+        }
+        clearSubmittedDraft(submitDraftKey);
+        return;
+      }
       await onSend(displayText, submitText);
       clearSubmittedDraft(submitDraftKey);
     } catch (error) {
@@ -1157,6 +1238,27 @@ export function Composer({
     } finally {
       submittingRef.current = false;
       setSubmitting(false);
+    }
+  };
+
+  const sendQueuedGuidance = async (item: PendingGuidance) => {
+    if (disabled || readOnly || guidanceSendingId !== null) return;
+    const displayText = item.text.trim();
+    const submitText = item.submitText.trim() || displayText;
+    if (!displayText || !submitText) return;
+    selfDispatchedGuidanceRef.current.push(submitText);
+    setGuidanceSendingId(item.id);
+    try {
+      await onSend(displayText, submitText);
+      setPendingGuidance((items) => items.filter((queued) => queued.id !== item.id));
+      window.setTimeout(() => {
+        takeSelfDispatchedGuidance(submitText);
+      }, 5000);
+    } catch (error) {
+      takeSelfDispatchedGuidance(submitText);
+      showToast(error instanceof Error ? error.message : String(error), "warn");
+    } finally {
+      setGuidanceSendingId((current) => (current === item.id ? null : current));
     }
   };
 
@@ -1929,6 +2031,21 @@ export function Composer({
           return `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
         })()
       : null;
+  const submitEmpty = !text.trim() && attachments.length === 0 && workspaceRefs.length === 0;
+  const submitBlocked = submitting || pendingPaste > 0 || (submitEmpty && !(goalModeOn && !activeGoal)) || disabled || (!running && submitDisabled) || readOnly;
+  const submitTooltip = running ? t("composer.queueGuidance") : t("composer.send");
+  const composerPlaceholder = readOnly
+    ? t("composer.readOnlyChannel")
+    : disabled
+      ? t("common.loading")
+      : running
+        ? t("composer.steerPlaceholder")
+        : goalModeOn && !activeGoal
+          ? t("composer.goalInputPlaceholder")
+          : t("composer.placeholder");
+  const hiddenGuidanceCount = Math.max(0, pendingGuidance.length - 2);
+  const visibleGuidance = guidanceExpanded ? pendingGuidance : pendingGuidance.slice(0, 2);
+  const showGuidanceExpander = pendingGuidance.length > 2;
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
@@ -2185,6 +2302,58 @@ export function Composer({
           </div>
         </div>
       )}
+      {pendingGuidance.length > 0 && (
+        <div className="composer-guidance-shelf" aria-label={t("composer.guidanceQueue")}>
+          <div className="composer-guidance-head">
+            <span className="composer-guidance-head__label">
+              <CornerDownRight size={14} />
+              <span>{t("composer.guidanceCount", { n: pendingGuidance.length })}</span>
+            </span>
+          </div>
+          <div className="composer-guidance-list">
+            {visibleGuidance.map((item) => (
+              <div className="composer-guidance-item" key={item.id}>
+                <CornerDownRight size={14} className="composer-guidance-item__icon" />
+                <span className="composer-guidance-item__text">{item.text}</span>
+                <Tooltip label={t("composer.guidanceSend")}>
+                  <button
+                    className="composer-guidance-item__guide"
+                    type="button"
+                    aria-label={t("composer.guidanceSend")}
+                    disabled={!running || disabled || readOnly || guidanceSendingId !== null}
+                    onClick={() => void sendQueuedGuidance(item)}
+                  >
+                    <CornerDownRight size={13} />
+                    <span>{t("composer.guidanceMode")}</span>
+                  </button>
+                </Tooltip>
+                <Tooltip label={t("composer.guidanceDismiss")}>
+                  <button
+                    className="composer-guidance-item__action"
+                    type="button"
+                    aria-label={t("composer.guidanceDismiss")}
+                    disabled={guidanceSendingId === item.id}
+                    onClick={() => setPendingGuidance((items) => items.filter((queued) => queued.id !== item.id))}
+                  >
+                    <Trash2 size={14} />
+                  </button>
+                </Tooltip>
+              </div>
+            ))}
+            {showGuidanceExpander && (
+              <button
+                className="composer-guidance-more"
+                type="button"
+                aria-expanded={guidanceExpanded}
+                onClick={() => setGuidanceExpanded((value) => !value)}
+              >
+                {guidanceExpanded ? <ChevronUp size={13} /> : <ChevronDown size={13} />}
+                <span>{guidanceExpanded ? t("composer.guidanceCollapse") : t("composer.guidanceRemaining", { n: hiddenGuidanceCount })}</span>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
       {(attachments.length > 0 || workspaceRefs.length > 0 || sessionRefs.length > 0) && (
         <div className="composer-context" aria-label={t("composer.contextItems")}>
           {sortComposerAttachments(attachments).map((a) => {
@@ -2324,7 +2493,7 @@ export function Composer({
               lastCompositionEndAt.current = Date.now();
             }}
             style={textareaStyle}
-            placeholder={readOnly ? t("composer.readOnlyChannel") : disabled ? t("common.loading") : goalModeOn && !activeGoal ? t("composer.goalInputPlaceholder") : t("composer.placeholder")}
+            placeholder={composerPlaceholder}
             rows={1}
             disabled={disabled || readOnly}
           />
@@ -2333,17 +2502,16 @@ export function Composer({
               {composerPrompt}
             </span>
           )}
-          {!running && (
-            <Tooltip label={t("composer.send")}>
-              <button
-                className="composer__btn composer__btn--send"
-                onClick={submit}
-                disabled={submitting || pendingPaste > 0 || ((!text.trim() && attachments.length === 0 && workspaceRefs.length === 0) && !(goalModeOn && !activeGoal)) || disabled || submitDisabled || readOnly}
-              >
-                <ArrowUp size={16} />
-              </button>
-            </Tooltip>
-          )}
+          <Tooltip label={submitTooltip}>
+            <button
+              className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
+              onClick={submit}
+              disabled={submitBlocked}
+              aria-label={submitTooltip}
+            >
+              <ArrowUp size={16} />
+            </button>
+          </Tooltip>
         </div>
         <div className={composerMetaClass}>
           <div className="composer-meta__params">
