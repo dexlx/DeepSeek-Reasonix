@@ -24,6 +24,7 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
         <button type="button" data-lang="en" class="active">EN</button>
         <button type="button" data-lang="zh">中文</button>
       </div>
+      <span class="nav-acct" data-account-slot></span>
       <a class="btn btn-dark" id="publish-open" href="#publish"><span class="l-en">Publish</span><span class="l-zh">发布</span></a>
     </div>
   </header>
@@ -81,6 +82,17 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
           <div id="feed-empty" class="feed-empty" hidden><span class="l-en">Quiet for now — the first publish shows up here.</span><span class="l-zh">暂时安静——第一个发布会出现在这里。</span></div>
         </div>
       </aside>
+    </div>
+  </section>
+
+  <section class="reg-review" id="review" hidden>
+    <div class="wrap">
+      <div class="review-head">
+        <span class="kicker"><span class="l-en">Review queue</span><span class="l-zh">审核队列</span></span>
+        <span class="review-count" id="review-count"></span>
+      </div>
+      <div id="review-list" class="review-list"></div>
+      <div id="review-empty" class="review-empty" hidden><span class="l-en">Nothing pending — all caught up.</span><span class="l-zh">没有待审——都处理完了。</span></div>
     </div>
   </section>
 
@@ -233,6 +245,31 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
     .feed-item .ico { font-family: var(--font-mono); }
     .feed-empty { font-size: 13px; color: var(--ink-3); line-height: 1.5; }
 
+    .nav-acct { display: inline-flex; align-items: center; }
+    .acct { display: inline-flex; align-items: center; gap: 10px; }
+    .acct-name { font-size: 14px; font-weight: 600; color: var(--ink); text-decoration: none; }
+    .acct-name:hover { color: var(--accent); }
+    .acct-logout { font-family: var(--font-sans); font-size: 13px; font-weight: 500; color: var(--ink-2); background: var(--bg-soft); border: none; cursor: pointer; padding: 8px 14px; border-radius: 999px; transition: background .2s, color .2s; }
+    .acct-logout:hover { color: var(--ink); background: oklch(0.94 0.004 247); }
+    .acct-warn { font-size: 11px; font-weight: 600; color: oklch(0.52 0.15 60); background: color-mix(in oklch, oklch(0.7 0.16 60) 16%, white); padding: 3px 9px; border-radius: 999px; text-decoration: none; }
+    .reg-review { padding: 8px 0 40px; }
+    .review-head { display: flex; align-items: baseline; gap: 12px; margin-bottom: 16px; }
+    .review-count { font-size: 13px; color: var(--ink-3); font-variant-numeric: tabular-nums; }
+    .review-list { display: flex; flex-direction: column; gap: 12px; }
+    .review-row { display: flex; align-items: center; gap: 14px; flex-wrap: wrap; background: color-mix(in oklch, oklch(0.7 0.16 60) 6%, white); border: 1px solid color-mix(in oklch, oklch(0.7 0.16 60) 30%, white); border-radius: var(--radius-sm); padding: 14px 16px; }
+    .review-row .rv-main { flex: 1; min-width: 0; }
+    .review-row .rv-name { font-size: 15px; font-weight: 600; }
+    .review-row .rv-name .scope { color: var(--ink-3); font-weight: 500; }
+    .review-row .rv-sum { font-size: 13px; color: var(--ink-2); margin-top: 2px; overflow-wrap: anywhere; }
+    .review-row .rv-src { font-family: var(--font-mono); font-size: 11.5px; color: var(--ink-3); margin-top: 4px; overflow-wrap: anywhere; }
+    .review-row .rv-acts { display: inline-flex; gap: 8px; flex: none; }
+    .rv-btn { font-family: var(--font-sans); font-size: 13px; font-weight: 600; border: none; cursor: pointer; padding: 8px 14px; border-radius: 999px; transition: background .2s, color .2s, box-shadow .2s; }
+    .rv-btn.approve { background: oklch(0.55 0.13 155); color: #fff; }
+    .rv-btn.reject { background: var(--bg-soft); color: oklch(0.5 0.18 25); }
+    .rv-btn.verify { background: #fff; color: var(--accent); box-shadow: var(--shadow-1); }
+    .rv-btn:disabled { opacity: .5; cursor: default; }
+    .review-empty { font-size: 14px; color: var(--ink-3); padding: 28px 0; }
+
     .reg-publish { padding: 8px 0 64px; scroll-margin-top: 88px; }
     .pub-card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius); padding: 28px; box-shadow: var(--shadow-2); }
     .pub-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 20px; }
@@ -271,8 +308,10 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
   </style>
 
   <script>
+    import { currentAccount, accountLogout } from '../scripts/auth.js';
     const REGISTRY = import.meta.env.PUBLIC_REGISTRY_ORIGIN || 'https://registry.reasonix.io';
     const state = { kind: 'all', sort: 'new', q: '' };
+    let currentUser = null;
 
     const grid = document.getElementById('pkg-grid');
     const emptyEl = document.getElementById('reg-empty');
@@ -392,9 +431,17 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
       });
     });
 
-    // Publish panel
+    // Publish panel — sign-in gated: send anonymous visitors to /login, and warn
+    // a signed-in-but-unverified user that publishing needs a confirmed email.
     const publish = document.getElementById('publish');
-    const openPublish = (ev) => { if (ev) ev.preventDefault(); publish.hidden = false; publish.scrollIntoView({ behavior: 'smooth' }); };
+    const loginNext = () => { location.href = '/login?next=' + encodeURIComponent('/skills/'); };
+    const openPublish = (ev) => {
+      if (ev) ev.preventDefault();
+      if (!currentUser) return loginNext();
+      publish.hidden = false;
+      if (!currentUser.emailVerified) setMsg('Verify your email before publishing — check your inbox.', 'err');
+      publish.scrollIntoView({ behavior: 'smooth' });
+    };
     document.getElementById('publish-open').addEventListener('click', openPublish);
     document.querySelectorAll('[data-publish-jump]').forEach((el) => el.addEventListener('click', openPublish));
     document.getElementById('publish-close').addEventListener('click', () => { publish.hidden = true; });
@@ -419,7 +466,7 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
           headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
         });
         const data = await r.json().catch(() => ({}));
-        if (r.status === 401) { setMsg('Sign in at id.reasonix.io to publish.', 'err'); return; }
+        if (r.status === 401) return loginNext();
         if (!r.ok) { setMsg(data?.error?.message || 'Publish failed.', 'err'); return; }
         const pending = data.package?.status === 'pending';
         setMsg(pending
@@ -428,6 +475,71 @@ const desc = "Browse, publish, and install community skills and MCP servers for 
         ev.target.reset();
         loadPackages(); loadFeed();
       } catch { setMsg('Registry is unreachable right now.', 'err'); }
+    });
+
+    // Admin review queue — only initialised for admins.
+    const reviewSection = document.getElementById('review');
+    const reviewList = document.getElementById('review-list');
+    const reviewCount = document.getElementById('review-count');
+    const reviewEmpty = document.getElementById('review-empty');
+
+    function renderReview(pkgs) {
+      reviewCount.textContent = pkgs.length ? `${pkgs.length} pending` : '';
+      if (!pkgs.length) { reviewList.innerHTML = ''; show(reviewEmpty, true); return; }
+      show(reviewEmpty, false);
+      reviewList.innerHTML = pkgs.map((p) => `
+        <div class="review-row" data-slug="${esc(p.handle)}/${esc(p.name)}">
+          <div class="rv-main">
+            <div class="rv-name"><span class="scope">${esc(p.handle)}/</span>${esc(p.name)} <span class="pkg-kind${p.kind === 'mcp' ? ' mcp' : ''}">${esc(p.kind)}</span></div>
+            <div class="rv-sum">${esc(p.summary) || '(no summary)'}</div>
+            <div class="rv-src">${esc(p.source)}</div>
+          </div>
+          <div class="rv-acts">
+            <button class="rv-btn approve" data-act="approve">Approve</button>
+            <button class="rv-btn reject" data-act="reject">Reject</button>
+          </div>
+        </div>`).join('');
+    }
+
+    async function loadReview() {
+      try {
+        const r = await fetch(`${REGISTRY}/v1/admin/packages?status=pending`, { credentials: 'include' });
+        if (!r.ok) throw new Error(String(r.status));
+        renderReview((await r.json()).packages || []);
+      } catch { reviewSection.hidden = true; }
+    }
+
+    reviewList.addEventListener('click', async (ev) => {
+      const btn = ev.target.closest('.rv-btn');
+      if (!btn) return;
+      const row = btn.closest('.review-row');
+      row.querySelectorAll('.rv-btn').forEach((b) => (b.disabled = true));
+      try {
+        const r = await fetch(`${REGISTRY}/v1/admin/packages/${row.dataset.slug}/${btn.dataset.act}`, { method: 'POST', credentials: 'include' });
+        if (!r.ok) throw new Error();
+        row.remove();
+        loadReview(); loadPackages(); loadFeed();
+      } catch { row.querySelectorAll('.rv-btn').forEach((b) => (b.disabled = false)); }
+    });
+
+    // Nav account state, via the site's shared account client. Signed out → a
+    // sign-in link; signed in → the handle (linking to /account) + a log-out control.
+    async function mountAccount() {
+      const slot = document.querySelector('[data-account-slot]');
+      const user = await currentAccount();
+      if (!user) {
+        slot.innerHTML = `<a class="btn btn-ghost" href="/login/?next=${encodeURIComponent('/skills/')}"><span class="l-en">Sign in</span><span class="l-zh">登录</span></a>`;
+        return null;
+      }
+      const warn = user.emailVerified ? '' : `<a class="acct-warn" href="/account/"><span class="l-en">unverified</span><span class="l-zh">未验证</span></a>`;
+      slot.innerHTML = `<span class="acct">${warn}<a class="acct-name" href="/account/">@${esc(user.handle)}</a><button type="button" class="acct-logout"><span class="l-en">Log out</span><span class="l-zh">退出</span></button></span>`;
+      slot.querySelector('.acct-logout').addEventListener('click', async () => { await accountLogout(); location.reload(); });
+      return user;
+    }
+
+    mountAccount().then((user) => {
+      currentUser = user;
+      if (user && user.role === 'admin') { reviewSection.hidden = false; loadReview(); }
     });
 
     loadPackages();

@@ -20,6 +20,16 @@ async function api(path, { method = "GET", body } = {}) {
   return data;
 }
 
+// Reusable helpers for account-aware pages (nav state, gated actions). Importing
+// this module also runs the form auto-wiring below, but each block is guarded by
+// element presence, so pages without auth forms just get these two helpers.
+export async function currentAccount() {
+  try { return (await api("/me")).user; } catch { return null; }
+}
+export async function accountLogout() {
+  try { await api("/auth/logout", { method: "POST" }); } catch {}
+}
+
 const $ = (id) => document.getElementById(id);
 const qp = new URLSearchParams(location.search);
 const withBase = (p) => (import.meta.env.BASE_URL.replace(/\/$/, "") + p) || p;
