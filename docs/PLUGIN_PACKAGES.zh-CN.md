@@ -2,23 +2,59 @@
 
 Reasonix 插件包把 skills、hooks 和 MCP servers 组织成一个可安装单元。
 
-## 安装
+## CLI 模式
 
-```bash
-reasonix plugin install git:github.com/obra/superpowers --yes
-```
+在终端里使用 `reasonix plugin` 安装和管理插件包。插件包当前按全局范围安装，
+写入 Reasonix home 目录。
 
-只预览计划，不写文件：
+### 通过 CLI 安装
+
+`install` 接收一个来源：
+
+- GitHub 仓库，例如 `git:github.com/obra/superpowers` 或
+  `https://github.com/obra/superpowers`。
+- GitHub 分支或子目录 URL，例如
+  `https://github.com/owner/repo/tree/main/path/to/plugin`。
+- 本地目录，目录内需要包含 `reasonix-plugin.json` 或
+  `.codex-plugin/plugin.json`。
+
+只预览安装计划，不写文件：
 
 ```bash
 reasonix plugin install git:github.com/obra/superpowers --dry-run
 ```
 
-本地开发：
+确认计划后安装：
 
 ```bash
-reasonix plugin install /path/to/plugin --link --yes
+reasonix plugin install git:github.com/obra/superpowers --yes
 ```
+
+指定安装名称，或覆盖已安装的同名插件：
+
+```bash
+reasonix plugin install git:github.com/obra/superpowers --name superpowers --replace --yes
+```
+
+以开发模式使用本地目录：
+
+```bash
+reasonix plugin install /path/to/plugin --link --replace --yes
+```
+
+CLI 安装参数：
+
+- `--dry-run` 只规划和校验安装，不写文件。
+- `--yes` 用于确认执行会写文件的安装。
+- `--replace` 允许当前来源替换已安装的同名插件。
+- `--name <name>` 或 `--name=<name>` 覆盖插件 manifest 里的名称，
+  作为本次安装名称。
+- `--link` 链接本地插件目录，而不是复制到 Reasonix 的插件存储目录。
+  移动或删除该目录会导致这个链接插件失效。
+
+如果运行 `reasonix plugin install <source>` 时既没有 `--dry-run`，
+也没有 `--yes`，CLI 会拒绝写文件，并提示使用其中一个参数重新运行。
+安装和移除命令会输出结构化 JSON，来源于桌面端同一套 install-source 后端。
 
 插件状态和内容写入：
 
@@ -26,6 +62,43 @@ reasonix plugin install /path/to/plugin --link --yes
 ~/.reasonix/plugin-packages.json
 ~/.reasonix/plugins/<name>/
 ```
+
+### 通过 CLI 管理
+
+列出已安装插件：
+
+```bash
+reasonix plugin list
+```
+
+查看某个插件的元数据、根目录、来源以及导出的能力数量：
+
+```bash
+reasonix plugin show superpowers
+```
+
+检查 manifest 和 skill roots 是否可读：
+
+```bash
+reasonix plugin doctor superpowers
+```
+
+在不卸载的情况下启用或禁用插件：
+
+```bash
+reasonix plugin disable superpowers
+reasonix plugin enable superpowers
+```
+
+移除插件：
+
+```bash
+reasonix plugin remove superpowers --yes
+```
+
+`remove` 也可以写成 `uninstall`。它需要 `--yes`，
+因为会写入状态并删除复制安装的插件内容。如果是链接模式安装的本地插件，
+外部源目录会保留。
 
 ## 桌面端设置
 
@@ -111,18 +184,9 @@ Reasonix 会映射：
 - `REASONIX_HOME`
 - `REASONIX_WORKSPACE_ROOT`
 
-## 管理命令
+## 桌面端后端方法
 
-```bash
-reasonix plugin list
-reasonix plugin show superpowers
-reasonix plugin doctor superpowers
-reasonix plugin disable superpowers
-reasonix plugin enable superpowers
-reasonix plugin remove superpowers --yes
-```
-
-Desktop 后端暴露同等 Wails 方法：
+Desktop 通过 Wails 方法暴露插件包操作：
 
 - `Plugins`
 - `PlanPluginInstall`
