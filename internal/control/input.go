@@ -237,7 +237,7 @@ func (c *Controller) drainHookContextBlock() string {
 		text, truncated := clipHookContext(context, maxHookContextChars)
 		remaining := maxTotalHookContextChars - total
 		if remaining <= 0 {
-			b.WriteString(fmt.Sprintf("[truncated: omitted %d additional hook context item(s)]\n", len(contexts)-i))
+			fmt.Fprintf(&b, "[truncated: omitted %d additional hook context item(s)]\n", len(contexts)-i)
 			break
 		}
 		text, totalTruncated := clipHookContext(text, remaining)
