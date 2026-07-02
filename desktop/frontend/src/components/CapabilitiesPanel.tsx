@@ -1800,6 +1800,14 @@ export function PluginsSettingsPage() {
 							</div>
 						</div>
 					)}
+					<div className="cap-plugin-installer__actions">
+						<button className="btn btn--small" type="button" disabled={!canPlan} onClick={previewInstall}>
+							{t("caps.pluginPreview")}
+						</button>
+						<button className="btn btn--primary btn--small" type="button" disabled={!canPlan} onClick={install}>
+							{t("caps.pluginInstall")}
+						</button>
+					</div>
 					<div className="cap-plugin-installer__options">
 						{installMode === "local" && (
 							<div className="cap-plugin-option-block">
@@ -1817,14 +1825,6 @@ export function PluginsSettingsPage() {
 							</label>
 							<div className="cap-plugin-option-hint">{t("caps.pluginReplaceHint")}</div>
 						</div>
-					</div>
-					<div className="cap-plugin-installer__actions">
-						<button className="btn btn--small" type="button" disabled={!canPlan} onClick={previewInstall}>
-							{t("caps.pluginPreview")}
-						</button>
-						<button className="btn btn--primary btn--small" type="button" disabled={!canPlan} onClick={install}>
-							{t("caps.pluginInstall")}
-						</button>
 					</div>
 				</div>
 			</div>
