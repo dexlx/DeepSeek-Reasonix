@@ -150,6 +150,10 @@ var ChineseTraditional = Messages{
 	CtrlCQuitHint:                "再按一次 Ctrl+C 退出",
 	CompHintSlash:                "↑/↓ 移動 · Tab/Enter 選中 · Esc 關閉",
 	CompHintFile:                 "↑/↓ 移動 · Tab/Enter 進入資料夾或選中檔案 · Esc 關閉",
+	MouseCopiedHint:              "已複製到剪貼簿",
+	MouseCaptureOnHint:           "滑鼠接管已開啟 — 應用內拖拽選取/捲軸/滾輪生效",
+	MouseCaptureOffHint:          "滑鼠接管已關閉 — 由終端原生處理選取與右鍵選單",
+	MouseCaptureTag:              "終端原生滑鼠",
 
 	ShellExecEmpty:      "用法：!<命令>  （例如 !ls -la）",
 	ShellExecFailedFmt:  "Shell 命令執行失敗：%v",
@@ -180,6 +184,7 @@ var ChineseTraditional = Messages{
 	CmdReloadCmd:        "重載自定義命令",
 	CmdSandbox:          "檢視沙箱狀態",
 	CmdEffort:           "設定推理強度",
+	CmdMouse:            "切換滑鼠接管（關閉後由終端原生處理選取/右鍵）",
 	CmdAutoPlan:         "設定自動計畫模式",
 	CmdReasonLang:       "設定可見思考語言",
 	CmdMemoryV5:         "切換 Memory v5",

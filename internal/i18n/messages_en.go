@@ -159,6 +159,10 @@ var English = Messages{
 	CtrlCQuitHint:                "press Ctrl+C again to quit",
 	CompHintSlash:                "↑/↓ move · Tab/Enter select · Esc close",
 	CompHintFile:                 "↑/↓ move · Tab/Enter open folder or pick file · Esc close",
+	MouseCopiedHint:              "copied to clipboard",
+	MouseCaptureOnHint:           "mouse capture on — in-app drag-select/scrollbar/wheel active",
+	MouseCaptureOffHint:          "mouse capture off — your terminal now handles selection and right-click",
+	MouseCaptureTag:              "native mouse",
 
 	ShellExecEmpty:      "usage: !<command>  (e.g. !ls -la)",
 	ShellExecFailedFmt:  "shell command failed: %v",
@@ -193,6 +197,7 @@ var English = Messages{
 	CmdDiffFold:         "toggle diff fold/expand",
 	CmdSandbox:          "show sandbox status",
 	CmdEffort:           "set reasoning effort",
+	CmdMouse:            "toggle in-app mouse capture (off = native terminal selection/right-click)",
 	CmdAutoPlan:         "configure automatic plan mode",
 	CmdReasonLang:       "set visible reasoning language",
 	CmdMemoryV5:         "toggle Memory v5",

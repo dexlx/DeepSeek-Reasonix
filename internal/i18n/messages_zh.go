@@ -160,6 +160,10 @@ var Chinese = Messages{
 	CtrlCQuitHint:                "再按一次 Ctrl+C 退出",
 	CompHintSlash:                "↑/↓ 移动 · Tab/Enter 选中 · Esc 关闭",
 	CompHintFile:                 "↑/↓ 移动 · Tab/Enter 进入文件夹或选中文件 · Esc 关闭",
+	MouseCopiedHint:              "已复制到剪贴板",
+	MouseCaptureOnHint:           "鼠标接管已开启 — 应用内拖拽选中/滚动条/滚轮生效",
+	MouseCaptureOffHint:          "鼠标接管已关闭 — 由终端原生处理选中和右键菜单",
+	MouseCaptureTag:              "终端原生鼠标",
 
 	ShellExecEmpty:      "用法：!<命令>  （例如 !ls -la）",
 	ShellExecFailedFmt:  "Shell 命令执行失败：%v",
@@ -194,6 +198,7 @@ var Chinese = Messages{
 	CmdDiffFold:         "切换 diff 折叠/展开",
 	CmdSandbox:          "查看沙箱状态",
 	CmdEffort:           "设置推理强度",
+	CmdMouse:            "切换鼠标接管（关闭后由终端原生处理选中/右键）",
 	CmdAutoPlan:         "配置自动计划模式",
 	CmdReasonLang:       "设置可见思考语言",
 	CmdMemoryV5:         "切换 Memory v5",
