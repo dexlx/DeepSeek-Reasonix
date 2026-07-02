@@ -168,6 +168,7 @@ type RuntimeMetaSnapshot = {
   running: boolean;
   pendingPrompt?: boolean;
   backgroundJobs?: number;
+  cancelRequested?: boolean;
   cancellable?: boolean;
 };
 
@@ -353,6 +354,18 @@ type Action =
   | { type: "clearApproval" }
   | { type: "clearAsk" }
   | { type: "reset" };
+
+function backendStatusFromRuntimeMeta(meta: RuntimeMetaSnapshot): Extract<Action, { type: "backend_status" }> {
+  const foregroundRunning = foregroundRunningFromRuntimeMeta(meta);
+  return {
+    type: "backend_status",
+    running: foregroundRunning,
+    pendingPrompt: Boolean(meta.pendingPrompt),
+    backgroundJobs: meta.backgroundJobs ?? 0,
+    cancelRequested: Boolean(meta.cancelRequested),
+    cancellable: foregroundRunning,
+  };
+}
 
 // ---- reducer helpers (unchanged logic) ----
 
@@ -1215,6 +1228,7 @@ export function useController() {
     activeTabIdRef.current = active.id;
     confirmBackendActiveTab(active.id);
     dispatchTo(active.id, { type: "optimistic_meta", meta: metaFromTab(active, statesRef.current.get(active.id)?.meta) });
+    dispatchTo(active.id, backendStatusFromRuntimeMeta(active));
     const preserveCachedHistory = options.preserveCachedHistory ?? !reset;
     await loadSessionDataForTab(active.id, reset, "startup", {
       preserveCachedHistory,
@@ -1233,16 +1247,9 @@ export function useController() {
     if (!tab) return undefined;
     const local = statesRef.current.get(tabId);
     const needsInitialLoad = !local?.meta;
-    const foregroundRunning = foregroundRunningFromRuntimeMeta(tab);
-    const missedTurnDone = Boolean(local?.running && !foregroundRunning);
-    dispatchTo(tabId, {
-      type: "backend_status",
-      running: foregroundRunning,
-      pendingPrompt: Boolean(tab.pendingPrompt),
-      backgroundJobs: tab.backgroundJobs ?? 0,
-      cancelRequested: Boolean(tab.cancelRequested),
-      cancellable: foregroundRunning,
-    });
+    const status = backendStatusFromRuntimeMeta(tab);
+    const missedTurnDone = Boolean(local?.running && !status.running);
+    dispatchTo(tabId, status);
     // backend_status reconciliation can clear a live prompt from frontend state.
     // If the backend is still blocked, ask it to replay the approval/ask event.
     if (tab.pendingPrompt) replayPendingPromptsForActiveTab(tabId);
@@ -1772,6 +1779,8 @@ export function useController() {
     dispatchTo(tabId, { type: "backend_activation_start" });
     if (optimisticTab) {
       dispatchTo(tabId, { type: "optimistic_meta", meta: metaFromTab(optimisticTab, statesRef.current.get(tabId)?.meta) });
+      const optimisticStatus = backendStatusFromRuntimeMeta(optimisticTab);
+      if (optimisticStatus.running) dispatchTo(tabId, optimisticStatus);
     }
     dispatchTo(tabId, { type: "hydrate_start", reason: "switch-tab" });
     addBreadcrumb("tab.switch", `active-rendered ${tabId} ms=${Date.now() - startedAt}`);
