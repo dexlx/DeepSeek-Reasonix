@@ -288,6 +288,45 @@ type Report struct {
 	Blocked  bool // at least one outcome blocked (only meaningful on gating events)
 }
 
+// HookOutput is the parsed, model-facing part of a successful hook stdout.
+type HookOutput struct {
+	AdditionalContext string
+}
+
+type hookJSONOutput struct {
+	HookSpecificOutput struct {
+		HookEventName     Event  `json:"hookEventName"`
+		AdditionalContext string `json:"additionalContext"`
+	} `json:"hookSpecificOutput"`
+}
+
+// ParseOutput extracts hook-specific context from stdout. Plain text is accepted
+// for SessionStart compatibility; JSON output must identify the current event.
+func ParseOutput(event Event, stdout string) (HookOutput, []string) {
+	stdout = strings.TrimSpace(stdout)
+	if stdout == "" {
+		return HookOutput{}, nil
+	}
+	if !strings.HasPrefix(stdout, "{") {
+		if event == SessionStart {
+			return HookOutput{AdditionalContext: stdout}, nil
+		}
+		return HookOutput{}, nil
+	}
+	var parsed hookJSONOutput
+	if err := json.Unmarshal([]byte(stdout), &parsed); err != nil {
+		return HookOutput{}, []string{fmt.Sprintf("hook %s returned invalid JSON stdout: %v", event, err)}
+	}
+	spec := parsed.HookSpecificOutput
+	if spec.HookEventName == "" && strings.TrimSpace(spec.AdditionalContext) == "" {
+		return HookOutput{}, nil
+	}
+	if spec.HookEventName != event {
+		return HookOutput{}, []string{fmt.Sprintf("hook output event %q does not match current event %q", spec.HookEventName, event)}
+	}
+	return HookOutput{AdditionalContext: strings.TrimSpace(spec.AdditionalContext)}, nil
+}
+
 // decideOutcome maps a spawn result to a verdict.
 func decideOutcome(event Event, r SpawnResult) Decision {
 	switch {

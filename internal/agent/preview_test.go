@@ -63,6 +63,11 @@ func TestStripTransientUserBlocksUnwrapsMemoryCompilerExecution(t *testing.T) {
 			in:   "just a normal prompt",
 			want: "just a normal prompt",
 		},
+		{
+			name: "hook context prefix is stripped",
+			in:   "<hook-context event=\"SessionStart\">\nLoad conventions.\n</hook-context>\n\nship it",
+			want: "ship it",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

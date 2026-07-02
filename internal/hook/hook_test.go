@@ -204,6 +204,46 @@ func TestDecideOutcome(t *testing.T) {
 	}
 }
 
+func TestParseOutputSessionStartJSONAdditionalContext(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Load conventions."}}`)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if out.AdditionalContext != "Load conventions." {
+		t.Fatalf("AdditionalContext = %q, want context", out.AdditionalContext)
+	}
+}
+
+func TestParseOutputSessionStartPlainText(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, "  Load workspace notes.  ")
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want none", warnings)
+	}
+	if out.AdditionalContext != "Load workspace notes." {
+		t.Fatalf("AdditionalContext = %q, want plain text", out.AdditionalContext)
+	}
+}
+
+func TestParseOutputRejectsMismatchedEvent(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":{"hookEventName":"Stop","additionalContext":"wrong"}}`)
+	if out.AdditionalContext != "" {
+		t.Fatalf("AdditionalContext = %q, want empty", out.AdditionalContext)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
+	}
+}
+
+func TestParseOutputInvalidJSONWarns(t *testing.T) {
+	out, warnings := ParseOutput(SessionStart, `{"hookSpecificOutput":`)
+	if out.AdditionalContext != "" {
+		t.Fatalf("AdditionalContext = %q, want empty", out.AdditionalContext)
+	}
+	if len(warnings) != 1 {
+		t.Fatalf("warnings = %v, want one warning", warnings)
+	}
+}
+
 func TestRunStopsAtFirstBlock(t *testing.T) {
 	hooks := []ResolvedHook{
 		{HookConfig: HookConfig{Command: "first"}, Event: PreToolUse, Scope: ScopeProject},

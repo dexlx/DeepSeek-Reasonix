@@ -881,6 +881,7 @@ export interface AgentView {
   temperature: number;
   maxSteps: number;
   plannerMaxSteps: number;
+  maxSubagentDepth: number;
   systemPrompt: string;
   coldResumePrune: boolean;
   reasoningLanguage: string; // "auto" | "zh" | "en"
