@@ -668,6 +668,7 @@ func (a *App) shutdown(context.Context) {
 				slog.Warn("desktop: shutdown snapshot failed", "tab", t.ID, "err", err)
 			}
 			t.Ctrl.Close()
+			t.releaseSessionLease()
 		}
 	}
 }
@@ -1435,6 +1436,9 @@ func (a *App) ClearSession() error {
 	if err := ctrl.ClearSession(); err != nil {
 		return err
 	}
+	if err := tab.ensureSessionLease(ctrl.SessionPath()); err != nil {
+		return err
+	}
 	tab.resetTelemetry()
 	a.persistTabSessionPath(tab, ctrl.SessionPath())
 	a.invalidatePromptHistoryCache()
@@ -1512,6 +1516,10 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
 	newCtrl.SetGoal(tab.goal)
 	path := agent.NewSessionPath(newCtrl.SessionDir(), newCtrl.Label())
+	if err := tab.ensureSessionLease(path); err != nil {
+		newCtrl.Close()
+		return err
+	}
 	newCtrl.SetSessionPath(path)
 
 	a.mu.Lock()
@@ -2413,6 +2421,7 @@ func (a *App) closeRemovedSessionRuntime(item removedSessionRuntime, closed map[
 				releasedTabs[item.tab] = true
 			}
 			a.releaseTabSharedHost(item.tab)
+			item.tab.releaseSessionLease()
 		}
 	}
 	if item.ctrl == nil {
@@ -2817,6 +2826,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		}
 	} else {
 		ctrl.Close()
+		tab.releaseSessionLease()
 	}
 
 	a.mu.Lock()
@@ -6605,9 +6615,23 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
+		tab.releaseSessionLease()
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
+	newCtrl.EnableInteractiveApproval()
+	applyTabModeToController(newCtrl, tab.mode)
+	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
+	newCtrl.SetGoal(tab.goal)
+
+	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
+	if err := tab.ensureSessionLease(path); err != nil {
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		return err
+	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
+	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
 	tab.model = name
@@ -6615,14 +6639,6 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	tab.Label = newCtrl.Label()
 	a.saveTabsLocked()
 	a.mu.Unlock()
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, tab.mode)
-	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
-	newCtrl.SetGoal(tab.goal)
-
-	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	a.persistTabSessionPath(tab, path)
 	return nil
 }
 
@@ -6709,9 +6725,22 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
+		tab.releaseSessionLease()
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
+	newCtrl.EnableInteractiveApproval()
+	applyTabModeToController(newCtrl, tab.mode)
+	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
+	newCtrl.SetGoal(tab.goal)
+	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
+	if err := tab.ensureSessionLease(path); err != nil {
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		return err
+	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
+	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
 	tab.model = modelRef
@@ -6721,13 +6750,6 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.Ready = true
 	a.saveTabsLocked()
 	a.mu.Unlock()
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, tab.mode)
-	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
-	newCtrl.SetGoal(tab.goal)
-	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	a.persistTabSessionPath(tab, path)
 	return nil
 }
 
@@ -6792,9 +6814,20 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
+	newCtrl.EnableInteractiveApproval()
+	applyTabModeToController(newCtrl, tab.mode)
+	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
+	newCtrl.SetGoal(tab.goal)
+	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
+	if err := tab.ensureSessionLease(path); err != nil {
+		newCtrl.Close()
+		return err
+	}
+	resumeWithFreshSystemPrompt(newCtrl, carried, path)
 	if oldCtrl != nil {
 		oldCtrl.Close()
 	}
+	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
 	tab.model = modelRef
@@ -6804,13 +6837,6 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	tab.Ready = true
 	a.saveTabsLocked()
 	a.mu.Unlock()
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, tab.mode)
-	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
-	newCtrl.SetGoal(tab.goal)
-	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	a.persistTabSessionPath(tab, path)
 	return nil
 }
 

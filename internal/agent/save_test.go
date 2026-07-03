@@ -170,6 +170,52 @@ func TestSaveSnapshotAllowsAppendAfterSystemPromptRefresh(t *testing.T) {
 	}
 }
 
+func TestSaveSnapshotRecordsRevisionAndMetaUpdatesPreserveIt(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta base ok=%v err=%v", ok, err)
+	}
+	if meta.Revision != 1 || meta.ContentDigest == "" || meta.WriterID == "" {
+		t.Fatalf("base persistence meta = %+v, want revision/digest/writer", meta)
+	}
+
+	if err := UpdateSessionMeta(path, "model-a", "first", 1, true); err != nil {
+		t.Fatalf("UpdateSessionMeta: %v", err)
+	}
+	refreshed, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta refreshed ok=%v err=%v", ok, err)
+	}
+	if refreshed.Revision != meta.Revision || refreshed.ContentDigest != meta.ContentDigest || refreshed.WriterID != meta.WriterID {
+		t.Fatalf("listing meta update changed persistence fields: before=%+v after=%+v", meta, refreshed)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	loaded.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+	advanced, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta advanced ok=%v err=%v", ok, err)
+	}
+	if advanced.Revision != refreshed.Revision+1 {
+		t.Fatalf("revision after append = %d, want %d", advanced.Revision, refreshed.Revision+1)
+	}
+	if advanced.ContentDigest == refreshed.ContentDigest {
+		t.Fatalf("content digest did not change after append: %q", advanced.ContentDigest)
+	}
+}
+
 func TestSaveSnapshotRejectsStalePrefixAfterSystemPromptRefresh(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	current := NewSession("new sys")
@@ -196,6 +242,55 @@ func TestSaveSnapshotRejectsStalePrefixAfterSystemPromptRefresh(t *testing.T) {
 	}
 	if got := loaded.Messages[3].Content; got != "second" {
 		t.Fatalf("last message after stale system refresh snapshot = %q, want %q", got, "second")
+	}
+}
+
+func TestSaveRewriteRejectsRevisionCASConflict(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	base.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	stale, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession stale: %v", err)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	meta.Revision++
+	meta.WriterID = "other-writer"
+	if err := SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatalf("bump revision: %v", err)
+	}
+
+	stale.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "summarized first"},
+	})
+	err = stale.SaveRewrite(path)
+	if !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveRewrite revision conflict err = %v, want ErrSessionSnapshotConflict", err)
+	}
+	var conflict *SessionSnapshotConflictError
+	if !errors.As(err, &conflict) || conflict.Kind != SessionSnapshotConflictDiverged {
+		t.Fatalf("conflict = %+v, want diverged revision conflict", conflict)
+	}
+	if conflict.BaseRevision != meta.Revision-1 || conflict.DiskRevision != meta.Revision {
+		t.Fatalf("conflict revisions = base %d disk %d, want %d/%d",
+			conflict.BaseRevision, conflict.DiskRevision, meta.Revision-1, meta.Revision)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "one" {
+		t.Fatalf("tail after rejected rewrite = %q, want one", got)
 	}
 }
 
@@ -336,6 +431,9 @@ func TestSaveRecoveryBranchPersistsDivergedSnapshot(t *testing.T) {
 	}
 	if meta.RecoveryDigest == "" || meta.SchemaVersion != BranchMetaCountsVersion {
 		t.Fatalf("recovery digest/schema = %q/%d", meta.RecoveryDigest, meta.SchemaVersion)
+	}
+	if meta.Revision != 1 || meta.ContentDigest != meta.RecoveryDigest || meta.WriterID == "" {
+		t.Fatalf("recovery persistence meta = %+v, want revision/content digest/writer", meta)
 	}
 }
 

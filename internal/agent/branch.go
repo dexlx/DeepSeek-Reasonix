@@ -36,6 +36,9 @@ type BranchMeta struct {
 	Recovered        bool      `json:"recovered,omitempty"`
 	RecoveryReason   string    `json:"recovery_reason,omitempty"`
 	RecoveryDigest   string    `json:"recovery_digest,omitempty"`
+	Revision         int64     `json:"revision,omitempty"`
+	ContentDigest    string    `json:"content_digest,omitempty"`
+	WriterID         string    `json:"writer_id,omitempty"`
 	// SchemaVersion records the BranchMeta version that last wrote the listing
 	// fields (Turns/Preview) FROM the session's content. It is stamped only by the
 	// writers that actually derive those counts — Controller.snapshot's
@@ -150,6 +153,9 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 	if touchUpdated || m.UpdatedAt.IsZero() {
 		m.UpdatedAt = now
 	}
+	if existing, ok, err := LoadBranchMeta(sessionPath); err == nil && ok {
+		preserveBranchMetaPersistence(&m, existing)
+	}
 	if err := os.MkdirAll(filepath.Dir(metaPath), 0o755); err != nil {
 		return err
 	}
@@ -177,6 +183,26 @@ func saveBranchMeta(sessionPath string, m BranchMeta, touchUpdated bool) error {
 		return err
 	}
 	return nil
+}
+
+func preserveBranchMetaPersistence(next *BranchMeta, existing BranchMeta) {
+	if next == nil {
+		return
+	}
+	if existing.Revision > next.Revision {
+		next.Revision = existing.Revision
+		next.ContentDigest = existing.ContentDigest
+		next.WriterID = existing.WriterID
+		return
+	}
+	if existing.Revision == next.Revision {
+		if strings.TrimSpace(next.ContentDigest) == "" {
+			next.ContentDigest = existing.ContentDigest
+		}
+		if strings.TrimSpace(next.WriterID) == "" {
+			next.WriterID = existing.WriterID
+		}
+	}
 }
 
 func EnsureBranchMeta(sessionPath string) (BranchMeta, error) {

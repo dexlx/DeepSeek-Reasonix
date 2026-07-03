@@ -2,6 +2,7 @@ package agent
 
 import (
 	"bytes"
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
@@ -26,13 +27,15 @@ var (
 	sessionSaveLocks            sync.Map
 	ErrSessionSnapshotConflict  = errors.New("session snapshot conflicts with newer transcript")
 	ErrSessionRecoveryNotNeeded = errors.New("session recovery not needed")
+	sessionWriterID             = newSessionWriterID()
 )
 
 type sessionPersistState struct {
-	path    string
-	digest  [sha256.Size]byte
-	version uint64
-	ok      bool
+	path     string
+	digest   [sha256.Size]byte
+	version  uint64
+	revision int64
+	ok       bool
 }
 
 type sessionSaveMode int
@@ -55,6 +58,8 @@ type SessionSnapshotConflictError struct {
 	Kind             SessionSnapshotConflictKind
 	ExistingMessages int
 	SnapshotMessages int
+	BaseRevision     int64
+	DiskRevision     int64
 }
 
 func (e *SessionSnapshotConflictError) Error() string {
@@ -63,11 +68,11 @@ func (e *SessionSnapshotConflictError) Error() string {
 	}
 	switch e.Kind {
 	case SessionSnapshotConflictStalePrefix:
-		return fmt.Sprintf("%s: %s has %d messages; stale snapshot has %d",
-			ErrSessionSnapshotConflict, e.Path, e.ExistingMessages, e.SnapshotMessages)
+		return fmt.Sprintf("%s: %s has %d messages at revision %d; stale snapshot has %d messages from revision %d",
+			ErrSessionSnapshotConflict, e.Path, e.ExistingMessages, e.DiskRevision, e.SnapshotMessages, e.BaseRevision)
 	default:
-		return fmt.Sprintf("%s: %s diverged on disk (%d messages) from snapshot (%d messages)",
-			ErrSessionSnapshotConflict, e.Path, e.ExistingMessages, e.SnapshotMessages)
+		return fmt.Sprintf("%s: %s diverged on disk (%d messages, revision %d) from snapshot (%d messages, revision %d)",
+			ErrSessionSnapshotConflict, e.Path, e.ExistingMessages, e.DiskRevision, e.SnapshotMessages, e.BaseRevision)
 	}
 }
 
@@ -133,6 +138,7 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	if err != nil {
 		return err
 	}
+	baseRevision := int64(0)
 	unlock := lockSessionSavePath(path)
 	defer unlock()
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
@@ -144,14 +150,24 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 	}
 	defer unlockFile()
 	if mode != sessionSaveForce {
-		if err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite); err != nil {
+		revision, err := s.checkSnapshotWrite(path, msgs, digest, version, mode == sessionSaveRewrite)
+		if err != nil {
 			return err
 		}
+		baseRevision = revision
+	} else if revision, _, err := sessionContentRevision(path); err != nil {
+		return err
+	} else {
+		baseRevision = revision
 	}
 	if err := writeSessionMessages(path, msgs); err != nil {
 		return err
 	}
-	s.markPersisted(path, digest, version)
+	revision, err := recordSessionContentRevision(path, digest, baseRevision)
+	if err != nil {
+		return err
+	}
+	s.markPersisted(path, digest, version, revision)
 	return nil
 }
 
@@ -182,38 +198,65 @@ func writeSessionMessages(path string, msgs []provider.Message) error {
 	return nil
 }
 
-func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) error {
+func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextDigest [sha256.Size]byte, nextVersion uint64, allowOwnedRewrite bool) (int64, error) {
 	current, err := LoadSession(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return 0, nil
 		}
-		return err
+		return 0, err
 	}
+	currentRevision, _, err := sessionContentRevision(path)
+	if err != nil {
+		return 0, err
+	}
+	baseState := s.persistState(path)
 	existing := current.Snapshot()
 	existingDigest, err := digestSessionMessages(existing)
 	if err != nil {
-		return err
+		return 0, err
 	}
 	if bytes.Equal(existingDigest[:], nextDigest[:]) || messagesHavePrefix(next, existing) || messagesHavePrefixWithCompatibleSystem(next, existing) {
-		return nil
+		if baseState.ok && currentRevision != baseState.revision && !bytes.Equal(existingDigest[:], nextDigest[:]) {
+			return 0, snapshotConflict(path, existing, next, baseState.revision, currentRevision)
+		}
+		return currentRevision, nil
 	}
-	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, nextVersion) {
-		return nil
+	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, nextVersion) {
+		return currentRevision, nil
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
-		return &SessionSnapshotConflictError{
+		return 0, &SessionSnapshotConflictError{
 			Path:             path,
 			Kind:             SessionSnapshotConflictStalePrefix,
 			ExistingMessages: len(existing),
 			SnapshotMessages: len(next),
+			BaseRevision:     baseState.revision,
+			DiskRevision:     currentRevision,
 		}
 	}
-	return &SessionSnapshotConflictError{
+	return 0, &SessionSnapshotConflictError{
 		Path:             path,
 		Kind:             SessionSnapshotConflictDiverged,
 		ExistingMessages: len(existing),
 		SnapshotMessages: len(next),
+		BaseRevision:     baseState.revision,
+		DiskRevision:     currentRevision,
+	}
+}
+
+func snapshotConflict(path string, existing, next []provider.Message, baseRevision, diskRevision int64) error {
+	kind := SessionSnapshotConflictDiverged
+	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
+		kind = SessionSnapshotConflictStalePrefix
+	}
+	return &SessionSnapshotConflictError{
+		Path:             path,
+		Kind:             kind,
+		ExistingMessages: len(existing),
+		SnapshotMessages: len(next),
+		BaseRevision:     baseRevision,
+		DiskRevision:     diskRevision,
 	}
 }
 
@@ -231,7 +274,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if err != nil {
 		return RecoveryBranchInfo{}, err
 	}
-	digestText := fmt.Sprintf("%x", digest[:])
+	digestText := digestString(digest)
 
 	unlockOriginal := lockSessionSavePath(originalPath)
 	unlockOriginalFile, lockErr := lockSessionFile(originalPath)
@@ -276,7 +319,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 			if err != nil {
 				return RecoveryBranchInfo{}, err
 			}
-			s.markPersisted(recoveryPath, digest, version)
+			s.markPersisted(recoveryPath, digest, version, meta.Revision)
 			return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Existing: true, Meta: meta, Preview: preview, Turns: turns}, nil
 		}
 	} else if loadErr != nil && !os.IsNotExist(loadErr) {
@@ -293,7 +336,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if err != nil {
 		return RecoveryBranchInfo{}, err
 	}
-	s.markPersisted(recoveryPath, digest, version)
+	s.markPersisted(recoveryPath, digest, version, meta.Revision)
 	return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Meta: meta, Preview: preview, Turns: turns}, nil
 }
 
@@ -314,8 +357,22 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 	meta.Recovered = true
 	meta.RecoveryReason = firstNonEmpty(strings.TrimSpace(opts.Reason), "session snapshot conflict")
 	meta.RecoveryDigest = digest
+	if meta.Revision == 0 {
+		meta.Revision = 1
+	}
+	if strings.TrimSpace(meta.ContentDigest) == "" {
+		meta.ContentDigest = digest
+	}
+	if strings.TrimSpace(meta.WriterID) == "" {
+		meta.WriterID = SessionWriterID()
+	}
 	if err := SaveBranchMeta(path, meta); err != nil {
 		return BranchMeta{}, err
+	}
+	if stored, ok, err := LoadBranchMeta(path); err != nil {
+		return BranchMeta{}, err
+	} else if ok {
+		return stored, nil
 	}
 	return meta, nil
 }
@@ -337,9 +394,12 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, nextVersion uint64) bool {
+func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, existingRevision int64, nextVersion uint64) bool {
 	state := s.persistState(path)
-	return state.ok && state.version <= nextVersion && bytes.Equal(existingDigest[:], state.digest[:])
+	return state.ok &&
+		state.version <= nextVersion &&
+		state.revision == existingRevision &&
+		bytes.Equal(existingDigest[:], state.digest[:])
 }
 
 func (s *Session) persistState(path string) sessionPersistState {
@@ -352,15 +412,84 @@ func (s *Session) persistState(path string) sessionPersistState {
 	return sessionPersistState{}
 }
 
-func (s *Session) markPersisted(path string, digest [sha256.Size]byte, version uint64) {
+func (s *Session) markPersisted(path string, digest [sha256.Size]byte, version uint64, revision int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.persisted = sessionPersistState{
-		path:    canonicalSessionSavePath(path),
-		digest:  digest,
-		version: version,
-		ok:      true,
+		path:     canonicalSessionSavePath(path),
+		digest:   digest,
+		version:  version,
+		revision: revision,
+		ok:       true,
 	}
+}
+
+func sessionContentRevision(path string) (int64, string, error) {
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil {
+		return 0, "", nil
+	}
+	if !ok {
+		return 0, "", nil
+	}
+	return meta.Revision, strings.TrimSpace(meta.ContentDigest), nil
+}
+
+func recordSessionContentRevision(path string, digest [sha256.Size]byte, baseRevision int64) (int64, error) {
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil {
+		meta = BranchMeta{ID: BranchID(path)}
+		ok = false
+	}
+	if !ok {
+		meta = BranchMeta{ID: BranchID(path)}
+	}
+	if meta.Revision < baseRevision {
+		meta.Revision = baseRevision
+	}
+	meta.Revision++
+	meta.ContentDigest = digestString(digest)
+	meta.WriterID = SessionWriterID()
+	if err := SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		return 0, err
+	}
+	stored, ok, err := LoadBranchMeta(path)
+	if err != nil {
+		return 0, err
+	}
+	if ok && stored.Revision > 0 {
+		return stored.Revision, nil
+	}
+	return meta.Revision, nil
+}
+
+func digestString(digest [sha256.Size]byte) string {
+	return fmt.Sprintf("%x", digest[:])
+}
+
+func SessionWriterID() string {
+	return sessionWriterID
+}
+
+func newSessionWriterID() string {
+	host, _ := os.Hostname()
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = "unknown-host"
+	}
+	host = strings.Map(func(r rune) rune {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '-', r == '_', r == '.':
+			return r
+		default:
+			return '-'
+		}
+	}, host)
+	var nonce [8]byte
+	if _, err := rand.Read(nonce[:]); err != nil {
+		return fmt.Sprintf("%s-%d-%d", host, os.Getpid(), time.Now().UnixNano())
+	}
+	return fmt.Sprintf("%s-%d-%x", host, os.Getpid(), nonce[:])
 }
 
 func digestSessionMessages(msgs []provider.Message) ([sha256.Size]byte, error) {
@@ -479,7 +608,11 @@ func LoadSession(path string) (*Session, error) {
 	}
 	s.Messages = normalized
 	if digest, err := digestSessionMessages(s.Messages); err == nil {
-		s.markPersisted(path, digest, s.version)
+		revision := int64(0)
+		if meta, ok, metaErr := LoadBranchMeta(path); metaErr == nil && ok {
+			revision = meta.Revision
+		}
+		s.markPersisted(path, digest, s.version, revision)
 	}
 	return s, nil
 }
