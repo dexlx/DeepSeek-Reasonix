@@ -97,6 +97,47 @@ func TestBashWindowsReapsChildAfterForegroundShellExit(t *testing.T) {
 	t.Fatalf("child process %d survived foreground bash cleanup", childPID)
 }
 
+func TestBashCancelKillsGitBashHereDocPython(t *testing.T) {
+	sh := sandbox.ResolveShell("bash", "", nil)
+	if sh.Kind != sandbox.ShellBash || sh.Path == "" {
+		t.Skip("Git Bash not found")
+	}
+	python := gitBashPython(t, sh.Path)
+	tmp := t.TempDir()
+	pidFile := filepath.Join(tmp, "python.pid")
+	command := fmt.Sprintf("%s - <<'PYEOF' &\nimport os, time\nwith open(%q, 'w') as f:\n    f.write(str(os.getpid()))\n    f.flush()\ntime.sleep(120)\nPYEOF\nwait\n", shellQuote(python), pidFile)
+	args, _ := json.Marshal(map[string]any{"command": command})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, runErr := (bash{shell: sh}).Execute(ctx, args)
+		done <- runErr
+	}()
+
+	childPID := waitForWindowsPIDFile(t, pidFile)
+	time.Sleep(300 * time.Millisecond) // let the tracker observe the Git Bash child tree.
+	cancel()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("expected cancel to return an error")
+		}
+	case <-time.After(20 * time.Second):
+		killWindowsPID(childPID)
+		t.Fatal("cancel did not interrupt Git Bash here-doc python within 20s")
+	}
+	for i := 0; i < 50; i++ {
+		if !windowsProcessAlive(childPID) {
+			return
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
+	killWindowsPID(childPID)
+	t.Fatalf("Git Bash here-doc python process %d survived bash cancel", childPID)
+}
+
 func waitForWindowsPIDFile(t *testing.T, path string) int {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
@@ -112,6 +153,23 @@ func waitForWindowsPIDFile(t *testing.T, path string) int {
 	}
 	t.Fatalf("timed out waiting for child pid file %s", path)
 	return 0
+}
+
+func gitBashPython(t *testing.T, bashPath string) string {
+	t.Helper()
+	out, err := exec.Command(bashPath, "-lc", "command -v python3 || command -v python").Output()
+	if err != nil {
+		t.Skipf("python not found in Git Bash: %v", err)
+	}
+	python := strings.TrimSpace(string(out))
+	if python == "" {
+		t.Skip("python not found in Git Bash")
+	}
+	return strings.Split(python, "\n")[0]
+}
+
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'"
 }
 
 func windowsProcessAlive(pid int) bool {
