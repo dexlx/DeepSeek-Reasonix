@@ -10,9 +10,8 @@ import (
 
 // Command returns the argv to run `command` through sh, wrapped in sandbox-exec
 // when the spec enforces and the tool is available. The second return is whether
-// wrapping happened; false means the command runs unconfined (sandbox off, or
-// sandbox-exec missing — a graceful fallback rather than a hard failure, since
-// the permission layer still gates the call).
+// wrapping happened; false means the argv is unwrapped (sandbox off, or
+// sandbox-exec missing). Callers decide whether an unwrapped command is allowed.
 func Command(spec Spec, sh Shell, command string) ([]string, bool) {
 	if !spec.Enforce() || !Available() {
 		return sh.argv(command), false
