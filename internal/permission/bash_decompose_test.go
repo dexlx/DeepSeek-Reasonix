@@ -219,3 +219,36 @@ func TestPolicyDecideCompoundBash(t *testing.T) {
 		})
 	}
 }
+
+func TestPolicyDecideCompoundBashPreservesWholeCommandRules(t *testing.T) {
+	subject := `git add . && git commit -m "wip" && git push`
+
+	t.Run("exact allow still wins before segment decomposition", func(t *testing.T) {
+		p := New("ask", []string{`Bash(git add . && git commit -m "wip" && git push)`}, nil, nil)
+		if got := p.DecideSubject("bash", false, subject); got != Allow {
+			t.Fatalf("DecideSubject(%q) = %v, want %v", subject, got, Allow)
+		}
+	})
+
+	t.Run("exact deny still beats segment allows", func(t *testing.T) {
+		p := New("ask", []string{
+			"Bash(git add:*)",
+			"Bash(git commit:*)",
+			"Bash(git push:*)",
+		}, nil, []string{`Bash(git add . && git commit -m "wip" && git push)`})
+		if got := p.DecideSubject("bash", false, subject); got != Deny {
+			t.Fatalf("DecideSubject(%q) = %v, want %v", subject, got, Deny)
+		}
+	})
+
+	t.Run("exact ask still beats segment allows", func(t *testing.T) {
+		p := New("allow", []string{
+			"Bash(git add:*)",
+			"Bash(git commit:*)",
+			"Bash(git push:*)",
+		}, []string{`Bash(git add . && git commit -m "wip" && git push)`}, nil)
+		if got := p.DecideSubject("bash", false, subject); got != Ask {
+			t.Fatalf("DecideSubject(%q) = %v, want %v", subject, got, Ask)
+		}
+	})
+}

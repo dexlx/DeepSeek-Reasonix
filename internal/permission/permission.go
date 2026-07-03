@@ -141,6 +141,14 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 // stable approval subject from args.
 func (p Policy) DecideSubject(toolName string, readOnly bool, subject string) Decision {
 	if canonicalRuleTool(toolName) == "bash" {
+		switch {
+		case matchAny(p.Deny, toolName, subject):
+			return Deny
+		case matchAny(p.Ask, toolName, subject):
+			return Ask
+		case matchAny(p.Allow, toolName, subject):
+			return Allow
+		}
 		if parts := DecomposeBashCommand(subject); parts != nil {
 			return p.decideBashSegments(readOnly, parts)
 		}
