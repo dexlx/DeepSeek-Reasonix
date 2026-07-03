@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -278,6 +279,89 @@ func TestDesktopSnapshotConflictRecoveryUpdatesTabAndProjectTree(t *testing.T) {
 	walk(nodes)
 	if !found {
 		t.Fatalf("project tree did not include recovery topic %q: %#v", tab.TopicID, nodes)
+	}
+}
+
+func TestDesktopSnapshotConflictRecoveryRequiresRecoveryLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	root := globalTabWorkspaceRoot()
+	dir := desktopSessionDir(root)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	originalPath := filepath.Join(dir, "session.jsonl")
+	current := agent.NewSession("sys")
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	current.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	current.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	if err := current.Save(originalPath); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	staleSess := agent.NewSession("sys")
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	staleSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	staleSess.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	recovery, err := staleSess.SaveRecoveryBranch(agent.RecoveryBranchOptions{
+		OriginalPath: originalPath,
+		BranchMeta: agent.BranchMeta{
+			Name:       agent.RecoveryBranchDefaultName,
+			Scope:      "global",
+			TopicID:    "topic_recovery",
+			TopicTitle: "Recovery",
+		},
+	})
+	if err != nil {
+		t.Fatalf("SaveRecoveryBranch: %v", err)
+	}
+	lease, err := agent.TryAcquireSessionLease(recovery.Path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease recovery: %v", err)
+	}
+	defer lease.Release()
+
+	staleExec := agent.New(stubProvider{}, tool.NewRegistry(), staleSess, agent.Options{}, event.Discard)
+	app := &App{
+		tabs:             map[string]*WorkspaceTab{},
+		detachedSessions: map[string]*WorkspaceTab{},
+		activeTabID:      "recovery_tab",
+	}
+	tab := &WorkspaceTab{
+		ID:            "recovery_tab",
+		Scope:         "global",
+		WorkspaceRoot: root,
+		TopicID:       "topic_original",
+		TopicTitle:    "Original",
+		SessionPath:   originalPath,
+		Ready:         true,
+		model:         "test-model",
+		disabledMCP:   map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	tab.Ctrl = control.New(control.Options{
+		Executor:            staleExec,
+		SessionDir:          dir,
+		SessionPath:         originalPath,
+		Label:               "test",
+		Sink:                tab.sink,
+		SessionRecoveryMeta: app.tabSessionRecoveryMeta(tab),
+		OnSessionRecovered:  app.handleTabSessionRecovered(tab),
+	})
+	app.tabs[tab.ID] = tab
+
+	err = tab.Ctrl.Snapshot()
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("Snapshot err = %v, want ErrSessionLeaseHeld", err)
+	}
+	if got := tab.Ctrl.SessionPath(); got != originalPath {
+		t.Fatalf("controller session path = %q, want original %q", got, originalPath)
+	}
+	if tab.SessionPath != originalPath {
+		t.Fatalf("tab session path = %q, want original %q", tab.SessionPath, originalPath)
+	}
+	if tab.TopicID != "topic_original" {
+		t.Fatalf("tab topic ID = %q, want original topic", tab.TopicID)
 	}
 }
 

@@ -104,7 +104,7 @@ type Controller struct {
 	onRemember                 func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
 	onRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
 	sessionRecoveryMeta        func(SessionRecoveryRequest) agent.BranchMeta
-	onSessionRecovered         func(SessionRecoveryInfo)
+	onSessionRecovered         func(SessionRecoveryInfo) error
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -340,8 +340,8 @@ type Options struct {
 	// an automatic recovery branch before it is written.
 	SessionRecoveryMeta func(SessionRecoveryRequest) agent.BranchMeta
 	// OnSessionRecovered is called after a stale runtime's transcript has been
-	// saved as a recovery branch.
-	OnSessionRecovered func(SessionRecoveryInfo)
+	// saved as a recovery branch, before the controller commits to that branch.
+	OnSessionRecovered func(SessionRecoveryInfo) error
 	// PlanModeAllowedTools names extra custom tools the plan-mode policy may treat
 	// as read-only. Known blocked tools and unsafe bash still lose.
 	PlanModeAllowedTools []string
@@ -2711,21 +2711,24 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 		}
 		return "", false, fmt.Errorf("recover stale session snapshot: %w", err)
 	}
+	recoveryInfo := SessionRecoveryInfo{
+		OriginalPath: path,
+		RecoveryPath: info.Path,
+		Existing:     info.Existing,
+		Reason:       reason,
+		Meta:         info.Meta,
+	}
+	if c.onSessionRecovered != nil {
+		if err := c.onSessionRecovered(recoveryInfo); err != nil {
+			return "", false, fmt.Errorf("commit recovered session: %w", err)
+		}
+	}
 	c.mu.Lock()
 	c.sessionPath = info.Path
 	c.guardianPath = guardian.PathFor(info.Path)
 	c.mu.Unlock()
 	c.setActiveJobSession(info.Path)
 	c.rebindCheckpoints(info.Path)
-	if c.onSessionRecovered != nil {
-		c.onSessionRecovered(SessionRecoveryInfo{
-			OriginalPath: path,
-			RecoveryPath: info.Path,
-			Existing:     info.Existing,
-			Reason:       reason,
-			Meta:         info.Meta,
-		})
-	}
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
 		Text: fmt.Sprintf("session changed on disk; unsaved local transcript was saved as recovery branch %s", agent.BranchID(info.Path))})
 	return info.Path, true, nil

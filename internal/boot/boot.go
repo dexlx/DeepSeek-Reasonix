@@ -124,7 +124,7 @@ type Options struct {
 	// SessionRecoveryMeta and OnSessionRecovered let richer frontends attach
 	// local UI metadata to automatic transcript recovery branches.
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
-	OnSessionRecovered  func(control.SessionRecoveryInfo)
+	OnSessionRecovered  func(control.SessionRecoveryInfo) error
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a

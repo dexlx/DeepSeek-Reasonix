@@ -4049,14 +4049,15 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 	}
 }
 
-func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionRecoveryInfo) {
-	return func(info control.SessionRecoveryInfo) {
+func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionRecoveryInfo) error {
+	return func(info control.SessionRecoveryInfo) error {
 		if strings.TrimSpace(info.RecoveryPath) == "" {
-			return
+			return nil
 		}
 		if tab != nil && !tab.ReadOnly {
 			if err := tab.ensureSessionLease(info.RecoveryPath); err != nil {
 				slog.Warn("desktop: acquire recovery session lease", "path", info.RecoveryPath, "err", err)
+				return fmt.Errorf("acquire recovery session lease: %w", err)
 			}
 		}
 		meta := info.Meta
@@ -4112,6 +4113,7 @@ func (a *App) handleTabSessionRecovered(tab *WorkspaceTab) func(control.SessionR
 			Existing:         info.Existing,
 		})
 		a.invalidatePromptHistoryCache()
+		return nil
 	}
 }
 
