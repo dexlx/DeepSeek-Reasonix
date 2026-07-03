@@ -186,6 +186,15 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Skills.DisabledSkills = []string{"review", "explore"}
 	orig.Skills.MaxDepth = 2
 	orig.Bot.ToolApprovalMode = "auto"
+	orig.Bot.Control = BotControlConfig{Enabled: true, Addr: "127.0.0.1:39001", TokenEnv: "BOT_CONTROL_TOKEN"}
+	orig.Bot.Routes = []BotRouteConfig{{
+		ConnectionID:     "feishu-lark",
+		ChatType:         "group",
+		ChatID:           "oc_group",
+		Model:            "deepseek-pro",
+		ToolApprovalMode: "ask",
+		WorkspaceRoot:    "/tmp/reasonix-route",
+	}}
 	orig.Bot.Connections = []BotConnectionConfig{{
 		ID:               "feishu-lark",
 		Provider:         "feishu",
@@ -302,6 +311,12 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Bot.ToolApprovalMode != "auto" || got.Bot.Connections[0].ToolApprovalMode != "yolo" {
 		t.Errorf("bot tool approval mode not preserved: bot=%q connection=%q", got.Bot.ToolApprovalMode, got.Bot.Connections[0].ToolApprovalMode)
+	}
+	if !got.Bot.Control.Enabled || got.Bot.Control.Addr != "127.0.0.1:39001" || got.Bot.Control.TokenEnv != "BOT_CONTROL_TOKEN" {
+		t.Errorf("bot control not preserved: %+v", got.Bot.Control)
+	}
+	if len(got.Bot.Routes) != 1 || got.Bot.Routes[0].WorkspaceRoot != "/tmp/reasonix-route" || got.Bot.Routes[0].ChatID != "oc_group" {
+		t.Errorf("bot routes not preserved: %+v", got.Bot.Routes)
 	}
 	if len(got.Bot.Connections[0].SessionMappings) != 1 || got.Bot.Connections[0].SessionMappings[0].Scope != "project" || got.Bot.Connections[0].SessionMappings[0].WorkspaceRoot != "/tmp/reasonix-bot" {
 		t.Errorf("bot session mapping scope not preserved: %+v", got.Bot.Connections[0].SessionMappings)

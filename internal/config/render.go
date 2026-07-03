@@ -472,12 +472,68 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		}
 		fmt.Fprintf(&b, "max_steps = %d\n", c.Bot.MaxSteps)
 		fmt.Fprintf(&b, "debounce_ms = %d\n", c.Bot.DebounceMs)
+		if c.Bot.QueueMode != "" {
+			fmt.Fprintf(&b, "queue_mode = %q   # steer|followup|collect|interrupt\n", c.Bot.QueueMode)
+		} else {
+			b.WriteString("# queue_mode = \"steer\"   # steer|followup|collect|interrupt\n")
+		}
+		if c.Bot.QueueCap > 0 {
+			fmt.Fprintf(&b, "queue_cap = %d\n", c.Bot.QueueCap)
+		} else {
+			b.WriteString("# queue_cap = 20\n")
+		}
+		if c.Bot.QueueDrop != "" {
+			fmt.Fprintf(&b, "queue_drop = %q   # summarize|old|new\n", c.Bot.QueueDrop)
+		} else {
+			b.WriteString("# queue_drop = \"summarize\"   # summarize|old|new\n")
+		}
+		fmt.Fprintf(&b, "ignore_self_messages = %v   # ignore bot echo by returned message_id and configured self user ids\n", c.Bot.IgnoreSelfMessages)
+		b.WriteString("\n[bot.self_user_ids]\n")
+		fmt.Fprintf(&b, "qq = %s\n", renderStringArray(c.Bot.SelfUserIDs.QQ))
+		fmt.Fprintf(&b, "feishu = %s\n", renderStringArray(c.Bot.SelfUserIDs.Feishu))
+		fmt.Fprintf(&b, "weixin = %s\n", renderStringArray(c.Bot.SelfUserIDs.Weixin))
+		b.WriteString("\n[bot.control]\n")
+		fmt.Fprintf(&b, "enabled = %v   # local loopback HTTP API for status/send; requires Bearer token\n", c.Bot.Control.Enabled)
+		if strings.TrimSpace(c.Bot.Control.Addr) != "" {
+			fmt.Fprintf(&b, "addr = %q\n", c.Bot.Control.Addr)
+		} else {
+			b.WriteString("# addr = \"127.0.0.1:37913\"\n")
+		}
+		if strings.TrimSpace(c.Bot.Control.TokenEnv) != "" {
+			fmt.Fprintf(&b, "token_env = %q\n", c.Bot.Control.TokenEnv)
+		} else {
+			b.WriteString("# token_env = \"REASONIX_BOT_CONTROL_TOKEN\"\n")
+		}
+		if len(c.Bot.Routes) > 0 {
+			for _, route := range c.Bot.Routes {
+				b.WriteString("\n[[bot.routes]]\n")
+				renderBotRoute(&b, route)
+			}
+		}
+		b.WriteString("\n[bot.pairing]\n")
+		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Pairing.Enabled)
+		if c.Bot.Pairing.RequestTTLMinutes > 0 {
+			fmt.Fprintf(&b, "request_ttl_minutes = %d\n", c.Bot.Pairing.RequestTTLMinutes)
+		} else {
+			b.WriteString("# request_ttl_minutes = 60\n")
+		}
+		if c.Bot.Pairing.MaxPendingPerPlatform > 0 {
+			fmt.Fprintf(&b, "max_pending_per_platform = %d\n", c.Bot.Pairing.MaxPendingPerPlatform)
+		} else {
+			b.WriteString("# max_pending_per_platform = 3\n")
+		}
 		b.WriteString("\n[bot.allowlist]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Allowlist.Enabled)
 		fmt.Fprintf(&b, "allow_all = %v\n", c.Bot.Allowlist.AllowAll)
 		fmt.Fprintf(&b, "qq_users = %s\n", renderStringArray(c.Bot.Allowlist.QQUsers))
 		fmt.Fprintf(&b, "feishu_users = %s\n", renderStringArray(c.Bot.Allowlist.FeishuUsers))
 		fmt.Fprintf(&b, "weixin_users = %s\n", renderStringArray(c.Bot.Allowlist.WeixinUsers))
+		fmt.Fprintf(&b, "qq_approvers = %s\n", renderStringArray(c.Bot.Allowlist.QQApprovers))
+		fmt.Fprintf(&b, "feishu_approvers = %s\n", renderStringArray(c.Bot.Allowlist.FeishuApprovers))
+		fmt.Fprintf(&b, "weixin_approvers = %s\n", renderStringArray(c.Bot.Allowlist.WeixinApprovers))
+		fmt.Fprintf(&b, "qq_admins = %s\n", renderStringArray(c.Bot.Allowlist.QQAdmins))
+		fmt.Fprintf(&b, "feishu_admins = %s\n", renderStringArray(c.Bot.Allowlist.FeishuAdmins))
+		fmt.Fprintf(&b, "weixin_admins = %s\n", renderStringArray(c.Bot.Allowlist.WeixinAdmins))
 		fmt.Fprintf(&b, "qq_groups = %s\n", renderStringArray(c.Bot.Allowlist.QQGroups))
 		fmt.Fprintf(&b, "feishu_groups = %s\n", renderStringArray(c.Bot.Allowlist.FeishuGroups))
 		fmt.Fprintf(&b, "weixin_groups = %s\n", renderStringArray(c.Bot.Allowlist.WeixinGroups))
@@ -1436,6 +1492,36 @@ func renderBotSessionMappings(mappings []BotConnectionSessionMapping) string {
 	}
 	b.WriteByte(']')
 	return b.String()
+}
+
+func renderBotRoute(b *strings.Builder, route BotRouteConfig) {
+	if strings.TrimSpace(route.ConnectionID) != "" {
+		fmt.Fprintf(b, "connection_id = %q\n", strings.TrimSpace(route.ConnectionID))
+	}
+	if strings.TrimSpace(route.Platform) != "" {
+		fmt.Fprintf(b, "platform = %q\n", strings.TrimSpace(route.Platform))
+	}
+	if strings.TrimSpace(route.ChatType) != "" {
+		fmt.Fprintf(b, "chat_type = %q\n", strings.TrimSpace(route.ChatType))
+	}
+	if strings.TrimSpace(route.ChatID) != "" {
+		fmt.Fprintf(b, "chat_id = %q\n", strings.TrimSpace(route.ChatID))
+	}
+	if strings.TrimSpace(route.UserID) != "" {
+		fmt.Fprintf(b, "user_id = %q\n", strings.TrimSpace(route.UserID))
+	}
+	if strings.TrimSpace(route.ThreadID) != "" {
+		fmt.Fprintf(b, "thread_id = %q\n", strings.TrimSpace(route.ThreadID))
+	}
+	if strings.TrimSpace(route.Model) != "" {
+		fmt.Fprintf(b, "model = %q\n", strings.TrimSpace(route.Model))
+	}
+	if strings.TrimSpace(route.ToolApprovalMode) != "" {
+		fmt.Fprintf(b, "tool_approval_mode = %q\n", strings.TrimSpace(route.ToolApprovalMode))
+	}
+	if strings.TrimSpace(route.WorkspaceRoot) != "" {
+		fmt.Fprintf(b, "workspace_root = %q\n", strings.TrimSpace(route.WorkspaceRoot))
+	}
 }
 
 // renderRuleList emits a permission rule list. A populated list renders as an

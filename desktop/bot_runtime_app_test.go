@@ -39,6 +39,7 @@ func TestDesktopBotRuntimePlanBlocksWithoutAllowlist(t *testing.T) {
 	cfg := config.Default()
 	cfg.Bot.Enabled = true
 	cfg.Bot.Allowlist.Enabled = true
+	cfg.Bot.Pairing.Enabled = false
 	cfg.Bot.Connections = []config.BotConnectionConfig{
 		{ID: "feishu-lark", Provider: "feishu", Domain: "lark", Enabled: true},
 	}
@@ -46,6 +47,21 @@ func TestDesktopBotRuntimePlanBlocksWithoutAllowlist(t *testing.T) {
 	plan := desktopBotRuntimePlan(cfg)
 	if plan.Start || plan.Status != "blocked" {
 		t.Fatalf("plan = %+v, want blocked without allowlist", plan)
+	}
+}
+
+func TestDesktopBotRuntimePlanStartsWithPairing(t *testing.T) {
+	cfg := config.Default()
+	cfg.Bot.Enabled = true
+	cfg.Bot.Allowlist.Enabled = true
+	cfg.Bot.Pairing.Enabled = true
+	cfg.Bot.Connections = []config.BotConnectionConfig{
+		{ID: "feishu-lark", Provider: "feishu", Domain: "lark", Enabled: true},
+	}
+
+	plan := desktopBotRuntimePlan(cfg)
+	if !plan.Start {
+		t.Fatalf("plan = %+v, want start with pairing enabled", plan)
 	}
 }
 
