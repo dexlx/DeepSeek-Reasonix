@@ -391,6 +391,23 @@ func TestConnectionChannelConfigsCarrySessionMappingsOnlyPerConnection(t *testin
 	}
 }
 
+func TestRouteConfigsPreserveRemoteOverrides(t *testing.T) {
+	routes := RouteConfigs([]config.BotRouteConfig{
+		{ConnectionID: "feishu-lark", Platform: "feishu", ChatType: "group", ChatID: "group-1", Model: "route-model", WorkspaceRoot: "/route", ToolApprovalMode: "full-access"},
+		{ConnectionID: "empty-route"},
+	}, true, true)
+	if len(routes) != 1 {
+		t.Fatalf("routes = %+v, want one non-empty route", routes)
+	}
+	got := routes[0]
+	if got.ConnectionID != "feishu-lark" || got.Platform != bot.PlatformFeishu || got.ChatType != bot.ChatGroup || got.ChatID != "group-1" {
+		t.Fatalf("route match fields = %+v, want trimmed remote match", got)
+	}
+	if got.Channel.Model != "route-model" || got.Channel.WorkspaceRoot != "/route" || got.Channel.ToolApprovalMode != "yolo" {
+		t.Fatalf("route channel = %+v, want normalized overrides", got.Channel)
+	}
+}
+
 func isolateUserConfig(t *testing.T) {
 	t.Helper()
 	home := t.TempDir()

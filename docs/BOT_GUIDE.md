@@ -114,6 +114,7 @@ runtime itself can also run as a long-lived headless gateway:
 
 ```sh
 reasonix bot doctor
+reasonix bot doctor --deep
 reasonix bot start --channels feishu,lark,weixin --dir /path/to/project
 ```
 
@@ -135,17 +136,43 @@ The headless gateway uses the same config records as the desktop app:
 - `workspace_root`, `model`, and `tool_approval_mode` can be set per
   connection. This lets different IM channels route to different local projects
   or approval postures.
+- `[[bot.routes]]` adds finer routing by connection, platform, chat type, chat
+  ID, user ID, or thread ID. Empty match fields are wildcards; the first matching
+  route wins and can override `workspace_root`, `model`, and
+  `tool_approval_mode`.
 - `session_mappings` are filled from inbound messages with the remote chat ID
   and scope. The desktop UI can open the matching conversation once the mapping
   also has a local `session_id` target, such as a saved `path:` session target
   from a desktop-managed bot runtime or a manually configured mapping.
 
-Access control is still mandatory. Either enable an allowlist under
-`[bot.allowlist]` with at least one relevant platform user ID, or set
-`allow_all = true` deliberately. Group IDs are optional additional scoping for
-group chats; they do not replace the required user allowlist. Remote users go
-through the same controller, permission policy, tool approval mode, and sandbox
-rules as local desktop or CLI turns.
+Access control is still mandatory. You can configure platform user IDs under
+`[bot.allowlist]`, deliberately set `allow_all = true`, or enable
+`[bot.pairing]` so an unknown DM sender receives a one-time pairing code. That
+code must be approved locally with `reasonix bot pairing approve <code>` before
+the sender can drive the bot. Group chats are not opened by DM pairing; group IDs
+remain an additional narrowing layer and do not replace the user allowlist.
+
+If `qq_admins`, `feishu_admins`, `weixin_admins`, or the matching
+`*_approvers` lists are configured, `/yolo` and `/mode` are admin-only while
+`/approve` and `/deny` require an approver or admin. When no role lists are set,
+existing allowlisted users keep the previous command behavior for compatibility.
+Remote users go through the same controller, permission policy, tool approval
+mode, and sandbox rules as local desktop or CLI turns.
+
+`ignore_self_messages = true` is enabled by default. The gateway remembers the
+platform `message_id` values it just sent and ignores matching echo events. If a
+platform does not echo the same message ID reliably, configure the bot's own user
+IDs under `[bot.self_user_ids]` as a second layer of loop protection. `/status`
+also includes the current queue mode and adapter health, such as
+`feishu-lark=running` or `weixin-weixin=degraded`.
+
+The optional `[bot.control]` section exposes a local loopback HTTP API and is
+disabled by default. When enabled, `token_env` must point to an environment
+variable and every request must include `Authorization: Bearer <token>`. The
+server only binds to `localhost`, `127.0.0.1`, or `::1`. Current endpoints are
+`GET /status` for session and adapter health snapshots, `GET /metrics` for
+Prometheus text metrics, and `POST /send` for sending text or media through a
+configured connection.
 
 ## Usage flow
 
@@ -210,7 +237,7 @@ These commands work in Feishu, Lark, WeChat, and QQ.
 | Command | Purpose | Example |
 | --- | --- | --- |
 | `/help` | Show available commands | `/help` |
-| `/status` | Show active tasks, retained sessions, and tool approval mode | `/status` |
+| `/status` | Show active tasks, queue state, tool approval mode, and adapter health | `/status` |
 | `/stop` | Stop the current task | `/stop` |
 | `/new` | Start a fresh session | `/new` |
 | `/reset` | Reset the current session | `/reset` |
@@ -225,6 +252,11 @@ These commands work in Feishu, Lark, WeChat, and QQ.
 | `/mode yolo` | Switch to YOLO | `/mode yolo` |
 | `/mode ask` | Switch to Ask mode | `/mode ask` |
 | `/mode auto` | Switch to Auto mode | `/mode auto` |
+| `/queue status` | Show the current queue mode | `/queue status` |
+| `/queue steer` | Treat mid-run messages as guidance for the current task | `/queue steer` |
+| `/queue followup` | Queue mid-run messages as later turns | `/queue followup` |
+| `/queue collect` | Merge queued messages into one later turn | `/queue collect` |
+| `/queue interrupt` | Cancel the current task and keep the newest message | `/queue interrupt` |
 
 Shortcut replies:
 
@@ -232,6 +264,16 @@ Shortcut replies:
 - When a single-choice Ask question is pending, reply with the option number.
 - If there is no pending operation, `1` / `2` are treated as normal text or
   produce guidance.
+
+The default queue mode is `steer`: when the same session is already running, a
+new message is injected as mid-turn guidance instead of waiting for the whole
+turn to finish. `queue_cap` and `queue_drop` bound backlog growth in config.
+`reasonix bot doctor --deep` reports queue, pairing, and role diagnostics.
+
+IM image and file attachments are downloaded into the current workspace's
+`.reasonix/attachments` directory and passed to Reasonix as
+`@.reasonix/attachments/...` references. If an attachment cannot be saved, the
+bot sends a short warning and continues with the available text.
 
 ## Approvals and YOLO
 

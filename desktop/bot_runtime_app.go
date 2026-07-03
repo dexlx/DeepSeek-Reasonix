@@ -96,9 +96,25 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 		Model:              modelName,
 		ToolApprovalMode:   cfg.Bot.ToolApprovalMode,
 		MaxSteps:           cfg.Bot.MaxSteps,
+		QueueMode:          cfg.Bot.QueueMode,
+		QueueCap:           cfg.Bot.QueueCap,
+		QueueDrop:          cfg.Bot.QueueDrop,
+		PairingEnabled:     cfg.Bot.Pairing.Enabled,
+		PairingTTL:         time.Duration(cfg.Bot.Pairing.RequestTTLMinutes) * time.Minute,
+		PairingMaxPending:  cfg.Bot.Pairing.MaxPendingPerPlatform,
+		IgnoreSelfMessages: cfg.Bot.IgnoreSelfMessages,
+		SelfUserIDs: map[bot.Platform][]string{
+			bot.PlatformQQ:     cfg.Bot.SelfUserIDs.QQ,
+			bot.PlatformFeishu: cfg.Bot.SelfUserIDs.Feishu,
+			bot.PlatformWeixin: cfg.Bot.SelfUserIDs.Weixin,
+		},
+		ControlEnabled:     cfg.Bot.Control.Enabled,
+		ControlAddr:        cfg.Bot.Control.Addr,
+		ControlToken:       os.Getenv(strings.TrimSpace(cfg.Bot.Control.TokenEnv)),
 		WorkspaceRoot:      workspaceRoot,
 		Channels:           botruntime.ChannelConfigs(cfg.Bot.Connections, true, true),
 		ConnectionChannels: botruntime.ConnectionChannelConfigs(cfg.Bot.Connections, true, true),
+		Routes:             botruntime.RouteConfigs(cfg.Bot.Routes, true, true),
 		Enabled:            plan.Enabled,
 		Allowlist: bot.AllowlistConfig{
 			Enabled:  cfg.Bot.Allowlist.Enabled,
@@ -107,6 +123,16 @@ func (r *desktopBotRuntime) apply(parent context.Context, cfg *config.Config, wo
 				bot.PlatformQQ:     cfg.Bot.Allowlist.QQUsers,
 				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuUsers,
 				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinUsers,
+			},
+			Approvers: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQApprovers,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuApprovers,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinApprovers,
+			},
+			Admins: map[bot.Platform][]string{
+				bot.PlatformQQ:     cfg.Bot.Allowlist.QQAdmins,
+				bot.PlatformFeishu: cfg.Bot.Allowlist.FeishuAdmins,
+				bot.PlatformWeixin: cfg.Bot.Allowlist.WeixinAdmins,
 			},
 			Groups: map[bot.Platform][]string{
 				bot.PlatformQQ:     cfg.Bot.Allowlist.QQGroups,
@@ -206,8 +232,8 @@ func desktopBotRuntimePlan(cfg *config.Config) botRuntimePlan {
 	if !cfg.Bot.Enabled {
 		return botRuntimePlan{Status: "stopped", Message: "bot is disabled"}
 	}
-	if !cfg.Bot.Allowlist.AllowAll && (!cfg.Bot.Allowlist.Enabled || botruntime.AllowlistUserCount(cfg.Bot.Allowlist) == 0) {
-		return botRuntimePlan{Status: "blocked", Message: "bot requires an allowlist or allow_all=true"}
+	if !cfg.Bot.Allowlist.AllowAll && !cfg.Bot.Pairing.Enabled && (!cfg.Bot.Allowlist.Enabled || botruntime.AllowlistUserCount(cfg.Bot.Allowlist) == 0) {
+		return botRuntimePlan{Status: "blocked", Message: "bot requires an allowlist, pairing, or allow_all=true"}
 	}
 	enabled, unknown := botruntime.EnabledPlatforms(cfg, nil)
 	if len(unknown) > 0 {

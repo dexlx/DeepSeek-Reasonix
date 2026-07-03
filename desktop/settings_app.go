@@ -109,14 +109,50 @@ type AgentView struct {
 }
 
 type BotAllowlistView struct {
-	Enabled      bool     `json:"enabled"`
-	AllowAll     bool     `json:"allowAll"`
-	QQUsers      []string `json:"qqUsers"`
-	FeishuUsers  []string `json:"feishuUsers"`
-	WeixinUsers  []string `json:"weixinUsers"`
-	QQGroups     []string `json:"qqGroups"`
-	FeishuGroups []string `json:"feishuGroups"`
-	WeixinGroups []string `json:"weixinGroups"`
+	Enabled         bool     `json:"enabled"`
+	AllowAll        bool     `json:"allowAll"`
+	QQUsers         []string `json:"qqUsers"`
+	FeishuUsers     []string `json:"feishuUsers"`
+	WeixinUsers     []string `json:"weixinUsers"`
+	QQApprovers     []string `json:"qqApprovers"`
+	FeishuApprovers []string `json:"feishuApprovers"`
+	WeixinApprovers []string `json:"weixinApprovers"`
+	QQAdmins        []string `json:"qqAdmins"`
+	FeishuAdmins    []string `json:"feishuAdmins"`
+	WeixinAdmins    []string `json:"weixinAdmins"`
+	QQGroups        []string `json:"qqGroups"`
+	FeishuGroups    []string `json:"feishuGroups"`
+	WeixinGroups    []string `json:"weixinGroups"`
+}
+
+type BotSelfUserIDsView struct {
+	QQ     []string `json:"qq"`
+	Feishu []string `json:"feishu"`
+	Weixin []string `json:"weixin"`
+}
+
+type BotPairingView struct {
+	Enabled               bool `json:"enabled"`
+	RequestTTLMinutes     int  `json:"requestTtlMinutes"`
+	MaxPendingPerPlatform int  `json:"maxPendingPerPlatform"`
+}
+
+type BotControlView struct {
+	Enabled  bool   `json:"enabled"`
+	Addr     string `json:"addr"`
+	TokenEnv string `json:"tokenEnv"`
+}
+
+type BotRouteView struct {
+	ConnectionID     string `json:"connectionId"`
+	Platform         string `json:"platform"`
+	ChatType         string `json:"chatType"`
+	ChatID           string `json:"chatId"`
+	UserID           string `json:"userId"`
+	ThreadID         string `json:"threadId"`
+	Model            string `json:"model"`
+	ToolApprovalMode string `json:"toolApprovalMode"`
+	WorkspaceRoot    string `json:"workspaceRoot"`
 }
 
 type QQBotView struct {
@@ -148,16 +184,24 @@ type WeixinBotView struct {
 }
 
 type BotSettingsView struct {
-	Enabled          bool                `json:"enabled"`
-	Model            string              `json:"model"`
-	ToolApprovalMode string              `json:"toolApprovalMode"`
-	MaxSteps         int                 `json:"maxSteps"`
-	DebounceMs       int                 `json:"debounceMs"`
-	Allowlist        BotAllowlistView    `json:"allowlist"`
-	QQ               QQBotView           `json:"qq"`
-	Feishu           FeishuBotView       `json:"feishu"`
-	Weixin           WeixinBotView       `json:"weixin"`
-	Connections      []BotConnectionView `json:"connections"`
+	Enabled            bool                `json:"enabled"`
+	Model              string              `json:"model"`
+	ToolApprovalMode   string              `json:"toolApprovalMode"`
+	MaxSteps           int                 `json:"maxSteps"`
+	DebounceMs         int                 `json:"debounceMs"`
+	QueueMode          string              `json:"queueMode"`
+	QueueCap           int                 `json:"queueCap"`
+	QueueDrop          string              `json:"queueDrop"`
+	IgnoreSelfMessages bool                `json:"ignoreSelfMessages"`
+	SelfUserIDs        BotSelfUserIDsView  `json:"selfUserIds"`
+	Control            BotControlView      `json:"control"`
+	Pairing            BotPairingView      `json:"pairing"`
+	Routes             []BotRouteView      `json:"routes"`
+	Allowlist          BotAllowlistView    `json:"allowlist"`
+	QQ                 QQBotView           `json:"qq"`
+	Feishu             FeishuBotView       `json:"feishu"`
+	Weixin             WeixinBotView       `json:"weixin"`
+	Connections        []BotConnectionView `json:"connections"`
 }
 
 // SettingsView is the whole Settings panel payload.
@@ -631,20 +675,46 @@ func botSettingsView(b config.BotConfig) BotSettingsView {
 		mode = "webhook"
 	}
 	return BotSettingsView{
-		Enabled:          b.Enabled,
-		Model:            b.Model,
-		ToolApprovalMode: normalizeBotConnectionToolApprovalMode(b.ToolApprovalMode),
-		MaxSteps:         b.MaxSteps,
-		DebounceMs:       b.DebounceMs,
+		Enabled:            b.Enabled,
+		Model:              b.Model,
+		ToolApprovalMode:   normalizeBotConnectionToolApprovalMode(b.ToolApprovalMode),
+		MaxSteps:           b.MaxSteps,
+		DebounceMs:         b.DebounceMs,
+		QueueMode:          b.QueueMode,
+		QueueCap:           b.QueueCap,
+		QueueDrop:          b.QueueDrop,
+		IgnoreSelfMessages: b.IgnoreSelfMessages,
+		SelfUserIDs: BotSelfUserIDsView{
+			QQ:     nonNil(b.SelfUserIDs.QQ),
+			Feishu: nonNil(b.SelfUserIDs.Feishu),
+			Weixin: nonNil(b.SelfUserIDs.Weixin),
+		},
+		Control: BotControlView{
+			Enabled:  b.Control.Enabled,
+			Addr:     b.Control.Addr,
+			TokenEnv: b.Control.TokenEnv,
+		},
+		Pairing: BotPairingView{
+			Enabled:               b.Pairing.Enabled,
+			RequestTTLMinutes:     b.Pairing.RequestTTLMinutes,
+			MaxPendingPerPlatform: b.Pairing.MaxPendingPerPlatform,
+		},
+		Routes: botRouteViews(b.Routes),
 		Allowlist: BotAllowlistView{
-			Enabled:      b.Allowlist.Enabled,
-			AllowAll:     b.Allowlist.AllowAll,
-			QQUsers:      nonNil(b.Allowlist.QQUsers),
-			FeishuUsers:  nonNil(b.Allowlist.FeishuUsers),
-			WeixinUsers:  nonNil(b.Allowlist.WeixinUsers),
-			QQGroups:     nonNil(b.Allowlist.QQGroups),
-			FeishuGroups: nonNil(b.Allowlist.FeishuGroups),
-			WeixinGroups: nonNil(b.Allowlist.WeixinGroups),
+			Enabled:         b.Allowlist.Enabled,
+			AllowAll:        b.Allowlist.AllowAll,
+			QQUsers:         nonNil(b.Allowlist.QQUsers),
+			FeishuUsers:     nonNil(b.Allowlist.FeishuUsers),
+			WeixinUsers:     nonNil(b.Allowlist.WeixinUsers),
+			QQApprovers:     nonNil(b.Allowlist.QQApprovers),
+			FeishuApprovers: nonNil(b.Allowlist.FeishuApprovers),
+			WeixinApprovers: nonNil(b.Allowlist.WeixinApprovers),
+			QQAdmins:        nonNil(b.Allowlist.QQAdmins),
+			FeishuAdmins:    nonNil(b.Allowlist.FeishuAdmins),
+			WeixinAdmins:    nonNil(b.Allowlist.WeixinAdmins),
+			QQGroups:        nonNil(b.Allowlist.QQGroups),
+			FeishuGroups:    nonNil(b.Allowlist.FeishuGroups),
+			WeixinGroups:    nonNil(b.Allowlist.WeixinGroups),
 		},
 		QQ: QQBotView{
 			Enabled:      b.QQ.Enabled,
@@ -680,6 +750,56 @@ func orDefault(s, def string) string {
 		return def
 	}
 	return s
+}
+
+func botRouteViews(routes []config.BotRouteConfig) []BotRouteView {
+	if len(routes) == 0 {
+		return []BotRouteView{}
+	}
+	out := make([]BotRouteView, 0, len(routes))
+	for _, route := range routes {
+		out = append(out, BotRouteView{
+			ConnectionID:     route.ConnectionID,
+			Platform:         route.Platform,
+			ChatType:         route.ChatType,
+			ChatID:           route.ChatID,
+			UserID:           route.UserID,
+			ThreadID:         route.ThreadID,
+			Model:            route.Model,
+			ToolApprovalMode: normalizeBotConnectionToolApprovalMode(route.ToolApprovalMode),
+			WorkspaceRoot:    route.WorkspaceRoot,
+		})
+	}
+	return out
+}
+
+func botRouteConfigs(routes []BotRouteView) []config.BotRouteConfig {
+	if len(routes) == 0 {
+		return nil
+	}
+	out := make([]config.BotRouteConfig, 0, len(routes))
+	for _, route := range routes {
+		cfg := config.BotRouteConfig{
+			ConnectionID:     strings.TrimSpace(route.ConnectionID),
+			Platform:         strings.TrimSpace(route.Platform),
+			ChatType:         strings.TrimSpace(route.ChatType),
+			ChatID:           strings.TrimSpace(route.ChatID),
+			UserID:           strings.TrimSpace(route.UserID),
+			ThreadID:         strings.TrimSpace(route.ThreadID),
+			Model:            strings.TrimSpace(route.Model),
+			ToolApprovalMode: normalizeBotConnectionToolApprovalMode(route.ToolApprovalMode),
+			WorkspaceRoot:    strings.TrimSpace(route.WorkspaceRoot),
+		}
+		if cfg.ConnectionID == "" && cfg.Platform == "" && cfg.ChatType == "" && cfg.ChatID == "" && cfg.UserID == "" && cfg.ThreadID == "" &&
+			cfg.Model == "" && cfg.ToolApprovalMode == "" && cfg.WorkspaceRoot == "" {
+			continue
+		}
+		out = append(out, cfg)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func botDomainOrDefault(domain string) string {
@@ -854,11 +974,26 @@ func desktopBotConfigConfigured(bot config.BotConfig) bool {
 	if bot.Enabled || strings.TrimSpace(bot.Model) != "" || len(bot.Connections) > 0 {
 		return true
 	}
-	if (bot.MaxSteps != 0 && bot.MaxSteps != defaults.MaxSteps) || (bot.DebounceMs != 0 && bot.DebounceMs != defaults.DebounceMs) {
+	if (bot.MaxSteps != 0 && bot.MaxSteps != defaults.MaxSteps) ||
+		(bot.DebounceMs != 0 && bot.DebounceMs != defaults.DebounceMs) ||
+		(strings.TrimSpace(bot.QueueMode) != "" && bot.QueueMode != defaults.QueueMode) ||
+		(bot.QueueCap != 0 && bot.QueueCap != defaults.QueueCap) ||
+		(strings.TrimSpace(bot.QueueDrop) != "" && bot.QueueDrop != defaults.QueueDrop) ||
+		bot.IgnoreSelfMessages != defaults.IgnoreSelfMessages ||
+		bot.Pairing.Enabled != defaults.Pairing.Enabled ||
+		(bot.Pairing.RequestTTLMinutes != 0 && bot.Pairing.RequestTTLMinutes != defaults.Pairing.RequestTTLMinutes) ||
+		(bot.Pairing.MaxPendingPerPlatform != 0 && bot.Pairing.MaxPendingPerPlatform != defaults.Pairing.MaxPendingPerPlatform) ||
+		bot.Control.Enabled != defaults.Control.Enabled ||
+		(strings.TrimSpace(bot.Control.Addr) != "" && bot.Control.Addr != defaults.Control.Addr) ||
+		(strings.TrimSpace(bot.Control.TokenEnv) != "" && bot.Control.TokenEnv != defaults.Control.TokenEnv) ||
+		len(bot.Routes) > 0 ||
+		len(bot.SelfUserIDs.QQ)+len(bot.SelfUserIDs.Feishu)+len(bot.SelfUserIDs.Weixin) > 0 {
 		return true
 	}
 	if bot.Allowlist.AllowAll ||
 		len(bot.Allowlist.QQUsers)+len(bot.Allowlist.FeishuUsers)+len(bot.Allowlist.WeixinUsers) > 0 ||
+		len(bot.Allowlist.QQApprovers)+len(bot.Allowlist.FeishuApprovers)+len(bot.Allowlist.WeixinApprovers) > 0 ||
+		len(bot.Allowlist.QQAdmins)+len(bot.Allowlist.FeishuAdmins)+len(bot.Allowlist.WeixinAdmins) > 0 ||
 		len(bot.Allowlist.QQGroups)+len(bot.Allowlist.FeishuGroups)+len(bot.Allowlist.WeixinGroups) > 0 {
 		return true
 	}
@@ -1850,15 +1985,41 @@ func (a *App) SetBotSettings(b BotSettingsView) error {
 		c.Bot.ToolApprovalMode = normalizeBotConnectionToolApprovalMode(b.ToolApprovalMode)
 		c.Bot.MaxSteps = b.MaxSteps
 		c.Bot.DebounceMs = b.DebounceMs
+		c.Bot.QueueMode = strings.TrimSpace(b.QueueMode)
+		c.Bot.QueueCap = b.QueueCap
+		c.Bot.QueueDrop = strings.TrimSpace(b.QueueDrop)
+		c.Bot.IgnoreSelfMessages = b.IgnoreSelfMessages
+		c.Bot.SelfUserIDs = config.BotSelfUserIDs{
+			QQ:     trimList(b.SelfUserIDs.QQ),
+			Feishu: trimList(b.SelfUserIDs.Feishu),
+			Weixin: trimList(b.SelfUserIDs.Weixin),
+		}
+		c.Bot.Control = config.BotControlConfig{
+			Enabled:  b.Control.Enabled,
+			Addr:     strings.TrimSpace(b.Control.Addr),
+			TokenEnv: strings.TrimSpace(b.Control.TokenEnv),
+		}
+		c.Bot.Pairing = config.BotPairingConfig{
+			Enabled:               b.Pairing.Enabled,
+			RequestTTLMinutes:     b.Pairing.RequestTTLMinutes,
+			MaxPendingPerPlatform: b.Pairing.MaxPendingPerPlatform,
+		}
+		c.Bot.Routes = botRouteConfigs(b.Routes)
 		c.Bot.Allowlist = config.BotAllowlist{
-			Enabled:      b.Allowlist.Enabled,
-			AllowAll:     b.Allowlist.AllowAll,
-			QQUsers:      trimList(b.Allowlist.QQUsers),
-			FeishuUsers:  trimList(b.Allowlist.FeishuUsers),
-			WeixinUsers:  trimList(b.Allowlist.WeixinUsers),
-			QQGroups:     trimList(b.Allowlist.QQGroups),
-			FeishuGroups: trimList(b.Allowlist.FeishuGroups),
-			WeixinGroups: trimList(b.Allowlist.WeixinGroups),
+			Enabled:         b.Allowlist.Enabled,
+			AllowAll:        b.Allowlist.AllowAll,
+			QQUsers:         trimList(b.Allowlist.QQUsers),
+			FeishuUsers:     trimList(b.Allowlist.FeishuUsers),
+			WeixinUsers:     trimList(b.Allowlist.WeixinUsers),
+			QQApprovers:     trimList(b.Allowlist.QQApprovers),
+			FeishuApprovers: trimList(b.Allowlist.FeishuApprovers),
+			WeixinApprovers: trimList(b.Allowlist.WeixinApprovers),
+			QQAdmins:        trimList(b.Allowlist.QQAdmins),
+			FeishuAdmins:    trimList(b.Allowlist.FeishuAdmins),
+			WeixinAdmins:    trimList(b.Allowlist.WeixinAdmins),
+			QQGroups:        trimList(b.Allowlist.QQGroups),
+			FeishuGroups:    trimList(b.Allowlist.FeishuGroups),
+			WeixinGroups:    trimList(b.Allowlist.WeixinGroups),
 		}
 		c.Bot.QQ = config.QQBotConfig{
 			Enabled:      b.QQ.Enabled,
