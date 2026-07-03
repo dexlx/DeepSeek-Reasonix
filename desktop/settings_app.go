@@ -97,6 +97,7 @@ type AgentView struct {
 	Temperature       float64 `json:"temperature"`
 	MaxSteps          int     `json:"maxSteps"`
 	PlannerMaxSteps   int     `json:"plannerMaxSteps"`
+	MaxSubagentDepth  int     `json:"maxSubagentDepth"`
 	SystemPrompt      string  `json:"systemPrompt"`
 	ColdResumePrune   bool    `json:"coldResumePrune"`
 	ReasoningLanguage string  `json:"reasoningLanguage"`
@@ -504,7 +505,7 @@ func (a *App) Settings() SettingsView {
 				Deny:  []string{},
 			},
 			Sandbox:                 SandboxView{Bash: "enforce", AllowWrite: []string{}, Shell: "auto"},
-			Agent:                   AgentView{PlannerMaxSteps: 0, ColdResumePrune: true, ReasoningLanguage: "auto"},
+			Agent:                   AgentView{PlannerMaxSteps: 0, MaxSubagentDepth: agent.DefaultMaxSubagentDepth, ColdResumePrune: true, ReasoningLanguage: "auto"},
 			Bot:                     botSettingsView(config.BotConfig{}),
 			AutoPlan:                "off",
 			DesktopLayoutStyle:      "workbench",
@@ -562,7 +563,7 @@ func (a *App) Settings() SettingsView {
 				Password: cfg.Network.Proxy.Password,
 			},
 		},
-		Agent:                   AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, PlannerMaxSteps: cfg.Agent.PlannerMaxSteps, SystemPrompt: cfg.Agent.SystemPrompt, ColdResumePrune: cfg.ColdResumePruneEnabled(), ReasoningLanguage: cfg.ReasoningLanguage()},
+		Agent:                   AgentView{Temperature: cfg.Agent.Temperature, MaxSteps: cfg.Agent.MaxSteps, PlannerMaxSteps: cfg.Agent.PlannerMaxSteps, MaxSubagentDepth: desktopMaxSubagentDepth(cfg.Agent.MaxSubagentDepth), SystemPrompt: cfg.Agent.SystemPrompt, ColdResumePrune: cfg.ColdResumePruneEnabled(), ReasoningLanguage: cfg.ReasoningLanguage()},
 		Bot:                     botSettingsView(cfg.Bot),
 		DesktopLanguage:         cfg.DesktopLanguage(),
 		DesktopLayoutStyle:      cfg.DesktopLayoutStyle(),
@@ -1112,6 +1113,24 @@ func (a *App) SetSubagentEffort(level string) error {
 			return err
 		}
 		c.Agent.SubagentEffort = effort
+		return nil
+	})
+}
+
+func desktopMaxSubagentDepth(depth int) int {
+	if depth <= 0 {
+		return agent.DefaultMaxSubagentDepth
+	}
+	if depth == 1 {
+		return 1
+	}
+	return agent.DefaultMaxSubagentDepth
+}
+
+// SetMaxSubagentDepth controls whether first-layer subagents may delegate once more.
+func (a *App) SetMaxSubagentDepth(depth int) error {
+	return a.applyConfigChange(func(c *config.Config) error {
+		c.Agent.MaxSubagentDepth = desktopMaxSubagentDepth(depth)
 		return nil
 	})
 }

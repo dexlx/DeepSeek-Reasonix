@@ -17,6 +17,7 @@
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
 - [Custom OpenAI-compatible providers](#custom-openai-compatible-providers)
+- [Desktop hooks](#desktop-hooks)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Permissions & sandbox](#permissions--sandbox)
 - [Plugins (MCP)](#plugins-mcp)
@@ -63,6 +64,7 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # planner_model = "deepseek-pro"      # optional low-frequency planner
 # subagent_model = "deepseek-pro"     # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
+# max_subagent_depth = 2              # nested delegation depth; set 1 for the old single-layer boundary
 auto_plan = "off"                  # user-level only; off|on; off keeps plan mode manual
 # auto_plan_classifier = "deepseek-flash"   # optional; only borderline tasks call it
 tool_result_snip_ratio = 0.6       # shorten stale tool output before summary compaction
@@ -241,6 +243,22 @@ extra_body  = { enable_thinking = true }
 
 `extra_body` is merged into the chat JSON request body. Reasonix keeps core
 fields such as `model`, `messages`, `tools`, and `stream` under its own control.
+
+## Desktop hooks
+
+Desktop hooks run local commands at lifecycle events such as `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, and `PreCompact`. A successful `SessionStart`
+hook may write plain text to stdout, or return JSON with
+`hookSpecificOutput.additionalContext`; Reasonix injects that text once into the
+next real user turn as `<hook-context event="SessionStart">...</hook-context>`.
+This is intended for plugin or workflow bootstrap context, including
+Superpowers-style startup instructions, without baking that workflow into
+Reasonix's system prompt.
+
+The injected hook context is dynamic current-turn context. It does not change
+the stable system prompt, memory prefix, or tool schema, though dynamic content
+can still reduce cache reuse for that turn. The detailed desktop hook schema and
+trust model are documented in [the Chinese desktop hooks guide](./DESKTOP_HOOKS.zh-CN.md).
 
 ## Keyboard shortcuts
 
@@ -628,11 +646,22 @@ Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only
 specific skills such as `review` or `security_review`.
 
+Subagents may delegate one more layer by default: the root session is depth 0,
+first-layer subagents are depth 1, and the maximum `max_subagent_depth = 2`
+means a depth-1 workflow can dispatch a depth-2 reviewer or implementer. Depth-2
+subagents do not receive recursive agent/skill tools. Set
+`agent.max_subagent_depth = 1` to restore the old single-layer boundary. This is
+intended for workflows such as Superpowers where a workflow skill may dispatch a
+reviewer subagent, while still avoiding unbounded recursion and background
+fanout.
+
 Use `read_only_task` when planning needs isolated, deeper research without
 granting write-capable delegation. Use `read_only_skill` when the same need is
 best expressed through an existing skill. Both run ephemeral read-only
 subagents with only read-only research tools plus safe foreground bash, return
-only the final answer, and do not create resumable subagent transcripts. In
+only the final answer, and do not create resumable subagent transcripts.
+Read-only nested delegation may be available until `max_subagent_depth` is
+reached, but writer-capable `task` / `run_skill` remain unavailable. In
 token economy mode, connect only this narrow surface with
 `connect_tool_source(source="read_only_skill")`; the full `skills` source still
 enables writer-capable skill tools and remains blocked in plan mode.

@@ -449,7 +449,7 @@ model = "x"
 		t.Fatalf("LoadSession: %v", err)
 	}
 	msgs := sess.Snapshot()
-	if len(msgs) != 4 || msgs[1].Content != "first skill task" || msgs[2].Content != "first skill answer" || msgs[3].Content != "second skill task" {
+	if len(msgs) != 4 || !strings.HasSuffix(msgs[1].Content, "first skill task") || msgs[2].Content != "first skill answer" || msgs[3].Content != "second skill task" {
 		t.Fatalf("failed skill transcript = %+v, want first task/answer plus second task", msgs)
 	}
 }
@@ -539,8 +539,8 @@ model = "x"
 	if got := bootLastUser(reqs[1]); strings.Contains(got, "<reasoning-language>") {
 		t.Fatalf("skill subagent kept stale boot-time reasoning language after live auto update: %q", got)
 	}
-	if got := bootLastUser(reqs[1]); got != "first skill task" {
-		t.Fatalf("skill subagent user prompt = %q, want first skill task", got)
+	if got := bootLastUser(reqs[1]); !strings.Contains(got, `<subagent-context event="SubagentStart">`) || !strings.HasSuffix(got, "first skill task") {
+		t.Fatalf("skill subagent user prompt = %q, want SubagentStart context plus first skill task", got)
 	}
 }
 
@@ -1620,8 +1620,8 @@ model = "x"
 		t.Fatalf("read_only_task child bash schema should not advertise run_in_background")
 	}
 	for _, forbidden := range []string{
-		"connect_tool_source", "task", "read_only_task", "parallel_tasks",
-		"install_source", "run_skill", "read_only_skill", "read_skill", "install_skill", "remember", "forget",
+		"connect_tool_source", "task", "parallel_tasks",
+		"install_source", "run_skill", "install_skill", "remember", "forget",
 		"write_file", "edit_file", "multi_edit", "move_file", "complete_step",
 	} {
 		if requestHasTool(subReq, forbidden) {
@@ -1702,8 +1702,8 @@ READ ONLY SKILL BODY`)
 		t.Fatalf("read_only_skill child bash schema should not advertise run_in_background")
 	}
 	for _, forbidden := range []string{
-		"connect_tool_source", "task", "read_only_task", "read_only_skill", "parallel_tasks",
-		"install_source", "run_skill", "read_skill", "install_skill", "remember", "forget",
+		"connect_tool_source", "task", "read_only_task", "parallel_tasks",
+		"install_source", "run_skill", "install_skill", "remember", "forget",
 		"write_file", "edit_file", "multi_edit", "move_file", "complete_step",
 	} {
 		if requestHasTool(subReq, forbidden) {

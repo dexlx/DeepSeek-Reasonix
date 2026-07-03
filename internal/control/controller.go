@@ -84,6 +84,9 @@ type Controller struct {
 	// skill.go.
 	skills skillSet
 	hooks  *hook.Runner // session hook runner; nil-safe (no hooks configured)
+	// hookContexts carries one-shot lifecycle hook context into the next real
+	// user turn without changing the cache-stable system prompt.
+	hookContexts []string
 	// memory owns the loaded memory snapshot, the pending turn-tail notes queue,
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
@@ -1941,7 +1944,7 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 	}
 	c.startedOnce = true
 	c.mu.Unlock()
-	c.hooks.SessionStart(ctx)
+	c.enqueueHookContexts(c.hooks.SessionStart(ctx))
 }
 
 // NewSession snapshots the current conversation, rotates to a fresh file, and
@@ -1971,7 +1974,7 @@ func (c *Controller) NewSession() error {
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
-	c.hooks.SessionStart(context.Background())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
 	return nil
 }
 
@@ -2019,7 +2022,7 @@ func (c *Controller) ClearSession() error {
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
-	c.hooks.SessionStart(context.Background())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
 	if destroy.Async {
 		go func() {
 			result := destroy.Wait()

@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-var reTransientUserBlock = regexp.MustCompile(`(?s)^\s*<(?:response-language|reasoning-language|memory-update|background-jobs)>.*?</(?:response-language|reasoning-language|memory-update|background-jobs)>\s*\n?`)
+var reTransientUserBlock = regexp.MustCompile(`(?s)^\s*<(?:response-language|reasoning-language|memory-update|background-jobs|hook-context)(?:\s+[^>]*)?>.*?</(?:response-language|reasoning-language|memory-update|background-jobs|hook-context)>\s*\n?`)
 
 const memoryCompilerExecutionOpen = "<memory-compiler-execution>"
 
