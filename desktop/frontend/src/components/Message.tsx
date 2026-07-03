@@ -1,6 +1,6 @@
 import { memo, useEffect, useMemo, useRef, useState } from "react";
 import type { FormEvent, KeyboardEvent as ReactKeyboardEvent } from "react";
-import { BrainCircuit, ChevronDown, ChevronRight, Eye, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
+import { BrainCircuit, ChevronDown, ChevronRight, FileText, Folder, GitBranch, Image, MessageSquare, Pencil, RotateCcw, ScrollText } from "lucide-react";
 import { Markdown } from "./Markdown";
 import { CopyButton } from "./CopyButton";
 import { ProcessBrainIcon } from "./ProcessCard";
@@ -207,7 +207,7 @@ export function UserMessage({
   const editRef = useRef<HTMLTextAreaElement>(null);
   const [imagePreviews, setImagePreviews] = useState<Record<string, string>>({});
   const pasteBlocks = useMemo(() => parsePastedBlocks(actionText, submitText), [actionText, submitText]);
-  const [pasteStates, setPasteStates] = useState<Record<string, { previewOpen: boolean; expanded: boolean }>>({});
+  const [expandedPasteLabels, setExpandedPasteLabels] = useState<Record<string, boolean>>({});
 
   type DisplaySegment =
     | { type: "text"; content: string }
@@ -241,17 +241,10 @@ export function UserMessage({
     return segments.length > 0 ? segments : [{ type: "text", content: displayText }];
   }, [displayText, pasteBlocks]);
 
-  const togglePastePreview = (label: string) => {
-    setPasteStates((prev) => ({
-      ...prev,
-      [label]: { previewOpen: !prev[label]?.previewOpen, expanded: prev[label]?.expanded ?? false },
-    }));
-  };
-
   const togglePasteExpand = (label: string) => {
-    setPasteStates((prev) => ({
+    setExpandedPasteLabels((prev) => ({
       ...prev,
-      [label]: { previewOpen: false, expanded: !prev[label]?.expanded },
+      [label]: !prev[label],
     }));
   };
   const orderedDraftAttachments = sortDisplayAttachments(draftAttachments);
@@ -433,7 +426,7 @@ export function UserMessage({
               if (seg.type === "text") {
                 return seg.content ? <div className="msg__text" key={`s${i}`}>{seg.content}</div> : null;
               }
-              const state = pasteStates[seg.block.label] ?? { previewOpen: false, expanded: false };
+              const expanded = Boolean(expandedPasteLabels[seg.block.label]);
               return (
                 <div className="msg-pasted" key={seg.block.label}>
                   <div className="msg-pasted-block">
@@ -441,24 +434,15 @@ export function UserMessage({
                       <FileText size={15} />
                       <span className="msg-pasted-label">{seg.block.label}</span>
                       <div className="msg-pasted-actions">
-                        {!state.expanded && (
-                          <Tooltip label={t(state.previewOpen ? "composer.pastedHidePreview" : "composer.pastedShowPreview")}>
-                            <button type="button" onClick={() => togglePastePreview(seg.block.label)}>
-                              <Eye size={14} />
-                            </button>
-                          </Tooltip>
-                        )}
-                        <Tooltip label={t(state.expanded ? "msg.pastedCollapseTooltip" : "msg.pastedExpandTooltip")}>
+                        <Tooltip label={t(expanded ? "msg.pastedCollapseTooltip" : "msg.pastedExpandTooltip")}>
                           <button type="button" onClick={() => togglePasteExpand(seg.block.label)}>
-                            {state.expanded ? t("common.collapse") : t("composer.pastedExpand")}
+                            {expanded ? t("common.collapse") : t("composer.pastedExpand")}
                           </button>
                         </Tooltip>
                       </div>
                     </div>
-                    {state.expanded ? (
+                    {expanded && (
                       <div className="msg-pasted-expanded">{seg.block.content}</div>
-                    ) : (
-                      state.previewOpen && <pre className="msg-pasted-preview">{seg.block.content}</pre>
                     )}
                   </div>
                 </div>
