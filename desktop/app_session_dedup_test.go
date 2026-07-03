@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -234,10 +235,10 @@ func TestEnsureBlankTabStartsProjectRuntimeWithCurrentWorkspacePrompt(t *testing
 		t.Fatalf("project B controller session path = %q, want under %q", tabB.Ctrl.SessionPath(), desktopSessionDir(projectB))
 	}
 	sys := systemPromptFrom(tabB.Ctrl.History())
-	if !strings.Contains(sys, "Current workspace: "+projectB) {
+	if !strings.Contains(sys, "Current workspace: "+strconv.Quote(projectB)) {
 		t.Fatalf("project B system prompt missing current workspace %q:\n%s", projectB, sys)
 	}
-	if strings.Contains(sys, "Current workspace: "+projectA) {
+	if strings.Contains(sys, "Current workspace: "+strconv.Quote(projectA)) {
 		t.Fatalf("project B system prompt retained project A workspace %q:\n%s", projectA, sys)
 	}
 }

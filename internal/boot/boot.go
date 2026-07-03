@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strconv"
 	"strings"
 	"time"
 
@@ -234,7 +235,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	sysPrompt += "\n\n" + config.UserDecisionPolicy
 	sysPrompt += "\n\n" + config.LanguagePolicy
 	if root != "" {
-		sysPrompt += "\n\nCurrent workspace: " + root
+		sysPrompt += "\n\nCurrent workspace: " + strconv.Quote(root)
 	}
 	if tokenEconomy {
 		sysPrompt += "\n\n" + tokenEconomyPrompt
