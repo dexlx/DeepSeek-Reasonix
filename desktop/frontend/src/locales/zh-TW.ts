@@ -1077,6 +1077,8 @@ export const zhTW: Record<DictKey, string> = {
   "msg.imageAttachment": "圖片",
   "msg.workspaceReference": "工作區引用",
   "msg.folderReference": "資料夾 · 工作區引用",
+  "msg.pastedExpandTooltip": "展開貼上文字",
+  "msg.pastedCollapseTooltip": "收起貼上文字",
   "turnActions.summary": "總結",
   "turnActions.rewind": "回溯",
   "transcript.jumpToBottom": "跳到底部",

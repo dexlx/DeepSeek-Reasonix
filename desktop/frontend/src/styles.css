@@ -4034,6 +4034,75 @@ a[href] {
   font-size: 11px;
   line-height: 1.25;
 }
+
+/* pasted text blocks in user messages (mirroring .composer__pasted-*) */
+.msg-pasted {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 4px 0;
+}
+.msg-pasted-block {
+  border: 1px solid var(--border);
+  border-radius: 7px;
+  background: var(--panel);
+  overflow: hidden;
+}
+.msg-pasted-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 32px;
+  padding: 5px 6px 5px 9px;
+  color: var(--fg-dim);
+  font-size: 13px;
+}
+.msg-pasted-head > svg {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+}
+.msg-pasted-label {
+  min-width: 0;
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.msg-pasted-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+}
+.msg-pasted-head button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 24px;
+  height: 24px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--fg-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.msg-pasted-head button:hover {
+  color: var(--fg);
+  background: var(--hover);
+}
+.msg-pasted-expanded {
+  padding: 8px 10px 10px;
+  border-top: 1px solid var(--border-soft);
+  white-space: pre-wrap;
+  word-break: break-word;
+  color: var(--fg);
+  font-size: 13px;
+  line-height: 1.5;
+}
+
 .msg--assistant {
   color: var(--fg);
   display: flex;
