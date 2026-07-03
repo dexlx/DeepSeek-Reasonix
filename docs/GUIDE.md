@@ -221,12 +221,48 @@ preview under the field shows the exact request URL that will be used.
 
 Model discovery uses the API address to try likely model-list URLs such as
 `/models` and `/v1/models`. If the gateway requires a separate model-list
-endpoint, open **Advanced settings** and set `models_url`, for example
+endpoint, open **Compatibility settings** and set `models_url`, for example
 `https://gateway.example.com/v1/models`. If discovery is not available, fill the
 model list manually.
 
 **Full URL** still uses the OpenAI-compatible chat request body. It does not
 switch the request schema to the OpenAI Responses API.
+
+### Compatibility settings
+
+The **Compatibility settings (usually leave unchanged)** section is for gateways
+whose authentication, model-list endpoint, or reasoning/thinking request shape
+differs from the normal OpenAI-compatible defaults. Leave these fields at their
+defaults unless the provider documentation or a proxy error tells you otherwise.
+
+| Field | What it controls | When to change it |
+| --- | --- | --- |
+| `api_key_env` | The environment-variable name used for this provider's API key. Desktop-saved key values are stored in Reasonix home `.env` under this name; the TOML config stores only the name. | Change it when several providers need distinct keys, or leave it blank for a service that does not require an API key. |
+| `models_url` | The URL used only for model discovery. Chat requests still use the API address or Full URL above. | Set it when `/models` or `/v1/models` is not where the gateway exposes its model list. |
+| Extra request headers | Static HTTP headers, one `Header: value` per line. | Use for gateways such as OpenRouter that require `HTTP-Referer`, `X-Title`, or similar site headers. Keep bearer/API keys in the key field instead of duplicating them here. |
+| Extra request body | A JSON object merged into the top-level chat request body. | Use only for provider-specific flags such as `{"enable_thinking": true}`. Reasonix still owns core fields such as `model`, `messages`, `tools`, `stream`, and `thinking`, and null values are rejected. |
+| Model capability mode | Which reasoning request protocol Reasonix should use for this provider. | Keep **Auto-detect** unless the gateway is misdetected or the model docs require a specific reasoning format. |
+| Thinking override | Provider-specific override for `thinking.type`. | Keep **Auto** unless the backend documents `enabled`, `disabled`, or `adaptive`. Unsupported values can make some OpenAI-compatible gateways reject the request. |
+| Balance URL | Optional endpoint for wallet/balance lookup. | Set it when the provider exposes a balance endpoint and you want the desktop status bar to show it. |
+| Context window | The maximum number of tokens this provider keeps in context. `0` means provider default. | Set it when the model's real context size differs from Reasonix's default or built-in metadata. |
+
+Model capability mode options:
+
+| Option | Effect |
+| --- | --- |
+| Auto-detect (recommended) | Reasonix chooses the request shape from model capability metadata and endpoint detection. |
+| DeepSeek thinking | Uses DeepSeek-style thinking control, including `thinking.type` and DeepSeek-supported reasoning depth. |
+| OpenAI reasoning | Uses the standard OpenAI-compatible `reasoning_effort` levels. |
+| Plain chat | Sends no reasoning or thinking control fields. Use this for text-only proxies that reject reasoning parameters. |
+
+Thinking override options:
+
+| Option | Effect |
+| --- | --- |
+| Auto (provider default) | Does not write an explicit provider-level `thinking` override. Reasonix uses the provider/model default behavior. |
+| Enabled | Sends `thinking.type = "enabled"` for compatible providers. |
+| Disabled | Sends `thinking.type = "disabled"` for compatible providers. On DeepSeek-style providers this also avoids sending a reasoning depth hint. |
+| Adaptive (self-adjusting) | Sends or preserves `thinking.type = "adaptive"` only for providers that document adaptive thinking, such as MiniMax-M3-style endpoints. |
 
 Some OpenAI-compatible gateways require non-standard top-level request body
 fields. Add them with `extra_body` on the provider entry:
@@ -242,7 +278,8 @@ extra_body  = { enable_thinking = true }
 ```
 
 `extra_body` is merged into the chat JSON request body. Reasonix keeps core
-fields such as `model`, `messages`, `tools`, and `stream` under its own control.
+fields such as `model`, `messages`, `tools`, `stream`, and `thinking` under its
+own control.
 
 ## Desktop hooks
 
