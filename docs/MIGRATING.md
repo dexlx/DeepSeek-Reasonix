@@ -107,8 +107,11 @@ and DeepSeek prefix-cache–oriented design.
   `plan_mode_allowed_tools = ["bash", ...]` configs, move concrete read-only
   shell prefixes such as `gh issue view` or internal query CLIs to
   `[agent].plan_mode_read_only_commands`; do not declare shell interpreters or
-  writer-capable commands there. Use `read_only_task` / `read_only_skill` instead
-  of trying to unlock `task` / `run_skill` while planning. An MCP/plugin tool
+  writer-capable commands there. Interactive plan-mode runs can also ask you to
+  trust a concrete unknown query prefix once, and the persistent choice writes
+  the same `plan_mode_read_only_commands` entry. Auto/YOLO tool approval does
+  not answer this bash trust prompt. Use `read_only_task` / `read_only_skill`
+  instead of trying to unlock `task` / `run_skill` while planning. An MCP/plugin tool
   whose read-only status comes from the server's untrusted `readOnlyHint` is
   confirmed the first time an interactive plan-mode run needs it; choose the
   persistent option to write the plugin-level `trusted_read_only_tools` raw-name

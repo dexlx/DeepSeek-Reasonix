@@ -52,6 +52,8 @@ export function ApprovalModal({
 }) {
   const t = useT();
   const isPlanApproval = approval.tool === "exit_plan_mode";
+  const isPlanModeReadOnlyCommand = approval.tool === "plan_mode_read_only_command";
+  const toolLabel = isPlanModeReadOnlyCommand ? "bash" : approval.tool;
   const isFreshHumanApproval = requiresFreshHumanApproval(approval.tool);
   const subject = approval.subject.trim();
   const subjectSummary = subject.split(/\r?\n/).find((line) => line.trim())?.trim() ?? "";
@@ -298,7 +300,7 @@ export function ApprovalModal({
         barRef={cardRef}
         titleId="tool-approval-title"
         title={t("approval.toolPending")}
-        badges={<PromptBadge>{approval.tool}</PromptBadge>}
+        badges={<PromptBadge>{toolLabel}</PromptBadge>}
         meta={toolMeta}
         headerActions={
           <>

@@ -317,10 +317,15 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   it, but an explicit session grant still prevents repeat prompts for the same
   tool. Non-interactive sessions and declined approvals remain fail-closed.
   Bash is gated separately: built-in read-only commands and concrete prefixes
-  declared in `[agent].plan_mode_read_only_commands` may run, but shell
-  operators, background execution, shell interpreters, and unsafe arguments stay
-  blocked while planning. Writers, installers, memory mutation, process
-  control, and `complete_step` (read-only yet post-approval only, so it
+  declared in `[agent].plan_mode_read_only_commands` may run. Interactive
+  controllers may also ask once before running an unknown query-shaped prefix
+  and may remember a persistent approval as the same
+  `plan_mode_read_only_commands` entry. This bash trust prompt is also a fresh
+  user decision: `auto`, `yolo`, and the approved-plan execution window do not
+  answer it, while explicit session/persistent trust prevents repeat prompts for
+  that prefix. Shell operators, background execution, shell interpreters, and
+  unsafe arguments stay blocked while planning. Writers, installers, memory
+  mutation, process control, and `complete_step` (read-only yet post-approval only, so it
   self-reports plan-unsafe) are refused; the enforced invariant is
   PlanSafe ⇒ ReadOnly. An untrusted read-only MCP/plugin tool is therefore
   blocked until the user approves or pre-trusts it, and it is excluded from

@@ -97,12 +97,13 @@ type Controller struct {
 	reasoningLanguage string
 	// disableColdResumePrune skips stale-tool-result elision on cold resume.
 	// Zero value keeps the prune on (the cheaper default).
-	disableColdResumePrune     bool
-	shell                      sandbox.Shell // interpreter for user-invoked "!" commands; zero = auto
-	classifier                 autoPlanClassifier
-	startedOnce                bool                             // guards the one-shot SessionStart hook on first turn
-	onRemember                 func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
-	onRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
+	disableColdResumePrune            bool
+	shell                             sandbox.Shell // interpreter for user-invoked "!" commands; zero = auto
+	classifier                        autoPlanClassifier
+	startedOnce                       bool                             // guards the one-shot SessionStart hook on first turn
+	onRemember                        func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
+	onRememberMCPReadOnlyTrust        func(serverName, rawToolName string) MCPReadOnlyTrustResult
+	onRememberPlanModeReadOnlyCommand func(prefix string) PlanModeReadOnlyCommandTrustResult
 
 	// balanceURL/balanceKey target the active provider's optional wallet-balance
 	// endpoint (empty when the provider declares none). Captured at build so a
@@ -253,6 +254,16 @@ type MCPReadOnlyTrustResult struct {
 	Err       error
 }
 
+// PlanModeReadOnlyCommandTrustResult describes what happened when a trusted bash
+// command prefix was persisted for plan-mode research.
+type PlanModeReadOnlyCommandTrustResult struct {
+	Prefix    string
+	Path      string
+	Saved     bool
+	CoveredBy string
+	Err       error
+}
+
 type externalFolderToolRefs interface {
 	RegisterReadRoot(token, root string)
 }
@@ -320,6 +331,10 @@ type Options struct {
 	// read-only when the user chooses "always allow" from the plan-mode trust
 	// prompt.
 	OnRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
+	// OnRememberPlanModeReadOnlyCommand persists a bash command prefix as trusted
+	// read-only when the user chooses "always allow" from the plan-mode trust
+	// prompt.
+	OnRememberPlanModeReadOnlyCommand func(prefix string) PlanModeReadOnlyCommandTrustResult
 	// PlanModeAllowedTools names extra custom tools the plan-mode policy may treat
 	// as read-only. Known blocked tools and unsafe bash still lose.
 	PlanModeAllowedTools []string
@@ -345,38 +360,39 @@ func New(opts Options) *Controller {
 		pluginCtx = context.Background()
 	}
 	c := &Controller{
-		runner:                     opts.Runner,
-		executor:                   opts.Executor,
-		guardianSess:               opts.Guardian,
-		guardianPath:               guardian.PathFor(opts.SessionPath),
-		sink:                       sink,
-		policy:                     opts.Policy,
-		label:                      opts.Label,
-		modelRef:                   opts.ModelRef,
-		systemPrompt:               opts.SystemPrompt,
-		sessionDir:                 opts.SessionDir,
-		sessionPath:                opts.SessionPath,
-		commands:                   atomic.Pointer[[]command.Command]{},
-		skills:                     newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
-		hooks:                      opts.Hooks,
-		memory:                     newMemoryManager(opts.Memory),
-		cleanup:                    opts.Cleanup,
-		autoPlan:                   normalizeAutoPlan(opts.AutoPlan),
-		responseLanguage:           config.NormalizeLanguage(opts.ResponseLanguage),
-		reasoningLanguage:          config.NormalizeReasoningLanguage(opts.ReasoningLanguage),
-		disableColdResumePrune:     opts.DisableColdResumePrune,
-		shell:                      opts.Shell,
-		classifier:                 classifier,
-		onRemember:                 opts.OnRemember,
-		onRememberMCPReadOnlyTrust: opts.OnRememberMCPReadOnlyTrust,
-		balanceURL:                 opts.BalanceURL,
-		balanceKey:                 opts.BalanceKey,
-		balanceClient:              opts.BalanceClient,
-		jobs:                       opts.Jobs,
-		mcp:                        newMcpManager(opts.Host, opts.Registry, pluginCtx),
-		workspaceRoot:              opts.WorkspaceRoot,
-		externalFolderToolRefs:     opts.ExternalFolderToolRefs,
-		approval:                   newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
+		runner:                            opts.Runner,
+		executor:                          opts.Executor,
+		guardianSess:                      opts.Guardian,
+		guardianPath:                      guardian.PathFor(opts.SessionPath),
+		sink:                              sink,
+		policy:                            opts.Policy,
+		label:                             opts.Label,
+		modelRef:                          opts.ModelRef,
+		systemPrompt:                      opts.SystemPrompt,
+		sessionDir:                        opts.SessionDir,
+		sessionPath:                       opts.SessionPath,
+		commands:                          atomic.Pointer[[]command.Command]{},
+		skills:                            newSkillSet(opts.Skills, opts.AllSkills, opts.SkillStore, opts.AllSkillStore),
+		hooks:                             opts.Hooks,
+		memory:                            newMemoryManager(opts.Memory),
+		cleanup:                           opts.Cleanup,
+		autoPlan:                          normalizeAutoPlan(opts.AutoPlan),
+		responseLanguage:                  config.NormalizeLanguage(opts.ResponseLanguage),
+		reasoningLanguage:                 config.NormalizeReasoningLanguage(opts.ReasoningLanguage),
+		disableColdResumePrune:            opts.DisableColdResumePrune,
+		shell:                             opts.Shell,
+		classifier:                        classifier,
+		onRemember:                        opts.OnRemember,
+		onRememberMCPReadOnlyTrust:        opts.OnRememberMCPReadOnlyTrust,
+		onRememberPlanModeReadOnlyCommand: opts.OnRememberPlanModeReadOnlyCommand,
+		balanceURL:                        opts.BalanceURL,
+		balanceKey:                        opts.BalanceKey,
+		balanceClient:                     opts.BalanceClient,
+		jobs:                              opts.Jobs,
+		mcp:                               newMcpManager(opts.Host, opts.Registry, pluginCtx),
+		workspaceRoot:                     opts.WorkspaceRoot,
+		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
+		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),
 	}
 	if strings.TrimSpace(opts.WorkspaceRoot) != "" {
 		c.autoResearch = autoresearch.NewStore(opts.WorkspaceRoot)
@@ -3512,6 +3528,9 @@ func (g gateApprover) ApproveWithReason(ctx context.Context, tool, subject strin
 type planModeReadOnlyTrustApprover struct{ c *Controller }
 
 func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest) (bool, string, error) {
+	if prefix := normalizePlanModeReadOnlyCommandPrefix(req.Prefix); prefix != "" {
+		return p.checkBashReadOnlyCommandTrust(ctx, req, prefix)
+	}
 	server := strings.TrimSpace(req.ServerName)
 	rawTool := strings.TrimSpace(req.RawToolName)
 	if server == "" || rawTool == "" {
@@ -3531,6 +3550,33 @@ func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Co
 	}
 	if reply.persist && p.c.onRememberMCPReadOnlyTrust != nil {
 		p.c.emitMCPReadOnlyTrustResult(p.c.onRememberMCPReadOnlyTrust(server, rawTool))
+	}
+	return true, "", nil
+}
+
+func (p planModeReadOnlyTrustApprover) checkBashReadOnlyCommandTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest, prefix string) (bool, string, error) {
+	if p.c.approval.planModeReadOnlyCommandTrusted(prefix) {
+		return true, "", nil
+	}
+	command := strings.TrimSpace(req.Command)
+	if command == "" {
+		command = strings.TrimSpace(string(req.Args))
+	}
+	subject := fmt.Sprintf("Trust %q as a read-only command prefix while planning\nCommand: %s", prefix, command)
+	reason := "This bash command is not in Reasonix's built-in read-only set. Confirm only if this exact prefix is read-only for planning and research. Auto/YOLO approval cannot answer this trust prompt."
+	reply, err := p.c.requestFreshApprovalDecision(ctx, agent.PlanModeReadOnlyCommandApprovalTool, subject, req.Args, reason)
+	if err != nil {
+		return false, "approval aborted", err
+	}
+	if !reply.allow {
+		return false, "the user declined to trust this bash command as read-only for plan mode — do not retry it; continue with other trusted read-only tools or ask how to proceed.", nil
+	}
+	if reply.session {
+		p.c.approval.grantPlanModeReadOnlyCommand(prefix)
+	}
+	if reply.persist && p.c.onRememberPlanModeReadOnlyCommand != nil {
+		p.c.emitPlanModeReadOnlyCommandTrustResult(p.c.onRememberPlanModeReadOnlyCommand(prefix))
+		p.c.approval.grantPlanModeReadOnlyCommand(prefix)
 	}
 	return true, "", nil
 }
@@ -4030,6 +4076,24 @@ func (c *Controller) emitMCPReadOnlyTrustResult(r MCPReadOnlyTrustResult) {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustSavedFmt, r.Path, server, toolName)})
 	case strings.TrimSpace(r.CoveredBy) != "":
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustAlreadyFmt, r.Path, server, r.CoveredBy)})
+	}
+}
+
+func (c *Controller) emitPlanModeReadOnlyCommandTrustResult(r PlanModeReadOnlyCommandTrustResult) {
+	prefix := strings.TrimSpace(r.Prefix)
+	if r.Err != nil {
+		c.sink.Emit(event.Event{
+			Kind:  event.Notice,
+			Level: event.LevelWarn,
+			Text:  fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustFailedFmt, prefix, r.Err),
+		})
+		return
+	}
+	switch {
+	case r.Saved:
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustSavedFmt, r.Path, prefix)})
+	case strings.TrimSpace(r.CoveredBy) != "":
+		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PlanModeReadOnlyCommandTrustAlreadyFmt, r.Path, r.CoveredBy)})
 	}
 }
 

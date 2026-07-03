@@ -134,7 +134,11 @@ such as `gh issue view` or an internal query CLI. Entries are concrete command
 prefixes, not tool names: `["gh issue view"]` permits `gh issue view 4572`, while
 `bash`, `sh`, and other shell interpreters are ignored. Shell operators,
 redirection, command substitution, background execution, and unsafe built-in
-command flags remain blocked while planning.
+command flags remain blocked while planning. In interactive plan mode, Reasonix
+can also ask you to trust a concrete unknown query prefix the first time it is
+needed; the persistent choice writes the same
+`[agent].plan_mode_read_only_commands` entry. Auto/YOLO approval never answers
+this trust prompt.
 
 ### Environment variables
 

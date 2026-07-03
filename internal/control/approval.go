@@ -28,11 +28,12 @@ type approvalManager struct {
 
 	// mu guards the prompt maps and posture fields; every critical section under
 	// it is short and non-blocking.
-	mu        sync.Mutex
-	approvals map[string]pendingApproval
-	asks      map[string]pendingAsk
-	granted   map[string]bool
-	nextID    int
+	mu                       sync.Mutex
+	approvals                map[string]pendingApproval
+	asks                     map[string]pendingAsk
+	granted                  map[string]bool
+	planModeReadOnlyCommands map[string]bool
+	nextID                   int
 	// toolApprovalMode is the runtime approval posture: "ask" prompts, "auto"
 	// lets the policy auto-approve the writer fallback while preserving ask/deny
 	// rules, and "yolo" skips every tool approval prompt except plan approval.
@@ -56,12 +57,13 @@ type approvalManager struct {
 
 func newApprovalManager(policy permission.Policy, mode string, timeout time.Duration) approvalManager {
 	return approvalManager{
-		policy:           policy,
-		approvals:        map[string]pendingApproval{},
-		asks:             map[string]pendingAsk{},
-		granted:          map[string]bool{},
-		toolApprovalMode: mode,
-		approvalTimeout:  timeout,
+		policy:                   policy,
+		approvals:                map[string]pendingApproval{},
+		asks:                     map[string]pendingAsk{},
+		granted:                  map[string]bool{},
+		planModeReadOnlyCommands: map[string]bool{},
+		toolApprovalMode:         mode,
+		approvalTimeout:          timeout,
 	}
 }
 
@@ -133,6 +135,26 @@ func (a *approvalManager) grantSession(tool, subject string) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	a.granted[permission.SessionGrantRuleForScope(tool, subject)] = true
+}
+
+func (a *approvalManager) planModeReadOnlyCommandTrusted(prefix string) bool {
+	prefix = normalizePlanModeReadOnlyCommandPrefix(prefix)
+	if prefix == "" {
+		return false
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return a.planModeReadOnlyCommands[prefix]
+}
+
+func (a *approvalManager) grantPlanModeReadOnlyCommand(prefix string) {
+	prefix = normalizePlanModeReadOnlyCommandPrefix(prefix)
+	if prefix == "" {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.planModeReadOnlyCommands[prefix] = true
 }
 
 // cancel drops a pending approval (timeout/abort path).
@@ -247,6 +269,10 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 		asks = append(asks, event.Ask{ID: id, Questions: p.questions})
 	}
 	return approvals, asks
+}
+
+func normalizePlanModeReadOnlyCommandPrefix(prefix string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(prefix)), " ")
 }
 
 // --- decision helpers (caller holds a.mu) ---

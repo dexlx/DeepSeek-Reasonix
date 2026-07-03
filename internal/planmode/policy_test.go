@@ -2,6 +2,7 @@ package planmode
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -153,7 +154,7 @@ func TestDecideDeclaredReadOnlyBashCommandStillBlocksShellSyntax(t *testing.T) {
 }
 
 func TestDecideDeclaredReadOnlyBashCommandIgnoresShellInterpreters(t *testing.T) {
-	p := Policy{ReadOnlyCommands: []string{"bash"}}
+	p := Policy{ReadOnlyCommands: []string{"bash", "gh", "gh issue", "gh issue close"}}
 	args, err := json.Marshal(map[string]any{"command": "bash run-anything"})
 	if err != nil {
 		t.Fatal(err)
@@ -162,8 +163,43 @@ func TestDecideDeclaredReadOnlyBashCommandIgnoresShellInterpreters(t *testing.T)
 	if decision := p.Decide(Call{Name: "bash", Args: args}); !decision.Blocked {
 		t.Fatal("plan_mode_read_only_commands must not reopen shell interpreters")
 	}
-	if got := p.IgnoredReadOnlyCommands(); len(got) != 1 || got[0] != "bash" {
-		t.Fatalf("IgnoredReadOnlyCommands() = %v, want [bash]", got)
+	want := []string{"bash", "gh", "gh issue", "gh issue close"}
+	if got := p.IgnoredReadOnlyCommands(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("IgnoredReadOnlyCommands() = %v, want %v", got, want)
+	}
+}
+
+func TestDecideUnknownBashReadOnlyCommandCanAskForTrust(t *testing.T) {
+	args, err := json.Marshal(map[string]any{"command": "gh issue view 4572 --json title"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	decision := (Policy{}).Decide(Call{Name: "bash", Args: args})
+	if !decision.Blocked || decision.ReadOnlyCommandTrust == nil {
+		t.Fatalf("unknown query should be blocked with trust candidate, got %+v", decision)
+	}
+	if decision.ReadOnlyCommandTrust.Prefix != "gh issue view" {
+		t.Fatalf("trust prefix = %q, want gh issue view", decision.ReadOnlyCommandTrust.Prefix)
+	}
+}
+
+func TestDecideUnsafeUnknownBashCommandDoesNotAskForTrust(t *testing.T) {
+	for _, cmd := range []string{
+		"gh issue close 4572",
+		"gh pr merge 5867",
+		"aws s3 rm s3://bucket/key",
+		"bash -lc 'gh issue view 1'",
+	} {
+		t.Run(cmd, func(t *testing.T) {
+			args, err := json.Marshal(map[string]any{"command": cmd})
+			if err != nil {
+				t.Fatal(err)
+			}
+			decision := (Policy{}).Decide(Call{Name: "bash", Args: args})
+			if decision.ReadOnlyCommandTrust != nil {
+				t.Fatalf("unsafe command should not ask for trust, got %+v", decision.ReadOnlyCommandTrust)
+			}
+		})
 	}
 }
 

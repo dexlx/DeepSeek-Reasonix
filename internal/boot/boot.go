@@ -187,7 +187,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sink.Emit(event.Event{
 			Kind:  event.Notice,
 			Level: event.LevelWarn,
-			Text:  fmt.Sprintf("plan_mode_read_only_commands ignored unsafe entries: %s; declare concrete read-only commands such as \"gh issue view\", not shell interpreters or malformed command prefixes", strings.Join(ignored, ", ")),
+			Text:  fmt.Sprintf("plan_mode_read_only_commands ignored unsafe entries: %s; declare concrete read-only commands such as \"gh issue view\", not shell interpreters, overly broad prefixes, malformed prefixes, or writer-capable command verbs", strings.Join(ignored, ", ")),
 		})
 	}
 	if migErr != nil {
@@ -1108,6 +1108,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		OnRememberMCPReadOnlyTrust: func(serverName, rawToolName string) control.MCPReadOnlyTrustResult {
 			return rememberMCPReadOnlyTrust(root, serverName, rawToolName)
 		},
+		OnRememberPlanModeReadOnlyCommand: func(prefix string) control.PlanModeReadOnlyCommandTrustResult {
+			return rememberPlanModeReadOnlyCommand(root, prefix)
+		},
 	}
 	// Guardian: when guardian_model is configured, spawn an LLM safety reviewer
 	// that can auto-allow safe Ask decisions and annotate risky ones before
@@ -1187,6 +1190,53 @@ func rememberMCPReadOnlyTrust(workspaceRoot, serverName, rawToolName string) con
 	}
 	result.CoveredBy = rawToolName
 	return result
+}
+
+func rememberPlanModeReadOnlyCommand(workspaceRoot, prefix string) control.PlanModeReadOnlyCommandTrustResult {
+	prefix = strings.TrimSpace(prefix)
+	path := rememberPermissionConfigPath(workspaceRoot)
+	edit := config.LoadForEdit(path)
+	result := control.PlanModeReadOnlyCommandTrustResult{Prefix: prefix, Path: path}
+	if prefix == "" {
+		result.Err = fmt.Errorf("empty plan-mode read-only command prefix")
+		return result
+	}
+	if coveredBy := coveredPlanModeReadOnlyCommand(edit.Agent.PlanModeReadOnlyCommands, prefix); coveredBy != "" {
+		result.CoveredBy = coveredBy
+		return result
+	}
+	edit.Agent.PlanModeReadOnlyCommands = append(edit.Agent.PlanModeReadOnlyCommands, prefix)
+	if err := edit.SaveTo(path); err != nil {
+		slog.Warn("persist plan-mode read-only command trust", "prefix", prefix, "err", err)
+		result.Err = err
+		return result
+	}
+	result.Saved = true
+	return result
+}
+
+func coveredPlanModeReadOnlyCommand(existing []string, candidate string) string {
+	candidateFields := strings.Fields(strings.TrimSpace(candidate))
+	if len(candidateFields) == 0 {
+		return ""
+	}
+	for _, item := range existing {
+		itemFields := strings.Fields(strings.TrimSpace(item))
+		if len(itemFields) == 0 || len(itemFields) > len(candidateFields) {
+			continue
+		}
+		matches := true
+		for i, field := range itemFields {
+			if candidateFields[i] != field {
+				matches = false
+				break
+			}
+		}
+		if matches {
+			return strings.Join(itemFields, " ")
+		}
+	}
+	return ""
 }
 
 func coveredPermissionRule(rules []string, rule string) string {

@@ -221,6 +221,18 @@ func (g *fakePlanModeReadOnlyTrustGate) CheckPlanModeReadOnlyTrust(ctx context.C
 	return g.allow, g.reason, nil
 }
 
+type readOnlyRecordingGate struct {
+	readOnly []bool
+}
+
+func (g *readOnlyRecordingGate) Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	g.readOnly = append(g.readOnly, readOnly)
+	if !readOnly {
+		return false, "expected read-only", nil
+	}
+	return true, "", nil
+}
+
 // TestPlanModeUntrustedReadOnlyToolFailsClosed proves the gate does NOT trust an
 // MCP tool's self-reported readOnlyHint: a ReadOnly()==true external tool is
 // still fail-closed in plan mode, and runs only once declared in
@@ -306,6 +318,74 @@ func TestPlanModeUnsafeUntrustedReadOnlyToolDoesNotAskForTrust(t *testing.T) {
 	}
 	if gate.calls != 0 {
 		t.Fatalf("trust gate calls = %d, want 0 for unsafe tool", gate.calls)
+	}
+}
+
+func TestPlanModeUnknownBashReadOnlyCommandCanAskForTrust(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	gate := &fakePlanModeReadOnlyTrustGate{allow: true}
+	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: string(bashCommandArgs(t, "gh issue view 4572 --json title"))})
+	if strings.HasPrefix(out.output, "blocked:") || !strings.Contains(out.output, "done") {
+		t.Fatalf("trusted unknown bash query should run, got: %q", out.output)
+	}
+	if gate.calls != 1 {
+		t.Fatalf("trust gate calls = %d, want 1", gate.calls)
+	}
+	if gate.req.ToolName != PlanModeReadOnlyCommandApprovalTool || gate.req.Command != "gh issue view 4572 --json title" || gate.req.Prefix != "gh issue view" {
+		t.Fatalf("trust request = %+v, want bash command prefix request", gate.req)
+	}
+}
+
+func TestPlanModeTrustedUnknownBashCommandReachesGateAsReadOnly(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	trustGate := &fakePlanModeReadOnlyTrustGate{allow: true}
+	permissionGate := &readOnlyRecordingGate{}
+	a := New(nil, reg, NewSession(""), Options{
+		Gate:                      permissionGate,
+		PlanModeReadOnlyTrustGate: trustGate,
+	}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: string(bashCommandArgs(t, "gh issue view 4572"))})
+	if strings.HasPrefix(out.output, "blocked:") || !strings.Contains(out.output, "done") {
+		t.Fatalf("trusted unknown bash query should run through the normal gate as read-only, got: %q", out.output)
+	}
+	if len(permissionGate.readOnly) != 1 || !permissionGate.readOnly[0] {
+		t.Fatalf("permission gate readOnly calls = %v, want [true]", permissionGate.readOnly)
+	}
+}
+
+func TestPlanModeUnknownBashReadOnlyCommandDeclineBlocks(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	gate := &fakePlanModeReadOnlyTrustGate{allow: false, reason: "not read-only"}
+	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: string(bashCommandArgs(t, "gh issue view 4572"))})
+	if !strings.Contains(out.output, "not read-only") {
+		t.Fatalf("declined bash trust should block with reason, got: %q", out.output)
+	}
+}
+
+func TestPlanModeUnsafeUnknownBashCommandDoesNotAskForTrust(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "bash", readOnly: false})
+	gate := &fakePlanModeReadOnlyTrustGate{allow: true}
+	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "bash", Arguments: string(bashCommandArgs(t, "gh issue view 4572 && rm -rf /"))})
+	if !strings.HasPrefix(out.output, "blocked:") {
+		t.Fatalf("unsafe shell syntax should remain blocked, got: %q", out.output)
+	}
+	if gate.calls != 0 {
+		t.Fatalf("trust gate calls = %d, want 0 for unsafe shell syntax", gate.calls)
 	}
 }
 

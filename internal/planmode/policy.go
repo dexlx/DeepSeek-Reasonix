@@ -51,6 +51,15 @@ type Call struct {
 type Decision struct {
 	Blocked bool
 	Message string
+	// ReadOnlyCommandTrust, when set, means the bash command is syntactically safe
+	// enough to ask the user whether this concrete prefix should be trusted as a
+	// plan-mode read-only command.
+	ReadOnlyCommandTrust *ReadOnlyCommandTrust
+}
+
+type ReadOnlyCommandTrust struct {
+	Command string
+	Prefix  string
 }
 
 // Policy is the single plan-mode stage policy.
@@ -99,6 +108,39 @@ var unsafeDeclaredReadOnlyCommandBases = map[string]bool{
 	"fish":       true,
 	"powershell": true,
 	"pwsh":       true,
+}
+
+var unsafeDeclaredReadOnlyCommandWords = map[string]bool{
+	"add":     true,
+	"apply":   true,
+	"approve": true,
+	"cancel":  true,
+	"close":   true,
+	"commit":  true,
+	"comment": true,
+	"create":  true,
+	"delete":  true,
+	"edit":    true,
+	"exec":    true,
+	"merge":   true,
+	"push":    true,
+	"remove":  true,
+	"restart": true,
+	"review":  true,
+	"rm":      true,
+	"scale":   true,
+	"set":     true,
+	"start":   true,
+	"stop":    true,
+	"submit":  true,
+	"update":  true,
+}
+
+var readOnlyCommandNeedsThreeTokenPrefixBases = map[string]bool{
+	"aws":    true,
+	"az":     true,
+	"gcloud": true,
+	"gh":     true,
 }
 
 // planSafeReadOnly is the audited set of read-only built-in tools confirmed safe
@@ -223,7 +265,7 @@ func (p Policy) IgnoredReadOnlyCommands() []string {
 			seen[cmd] = true
 			continue
 		}
-		if unsafeDeclaredReadOnlyCommandBases[strings.ToLower(fields[0])] {
+		if unsafeDeclaredReadOnlyCommandPrefix(fields) {
 			out = append(out, cmd)
 			seen[cmd] = true
 		}
@@ -357,6 +399,13 @@ func decideBash(args json.RawMessage, readOnlyCommands []string) Decision {
 		} else if ok {
 			return Decision{}
 		}
+		if trust := readOnlyCommandTrustCandidate(cmd); trust != nil {
+			return Decision{
+				Blocked:              true,
+				Message:              fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Ask the user whether to trust %q as a plan-mode read-only command prefix, or exit plan mode to run it.", cmd, trust.Prefix),
+				ReadOnlyCommandTrust: trust,
+			}
+		}
 		return Decision{
 			Blocked: true,
 			Message: fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Use read-only tools for exploration, declare a concrete prefix in plan_mode_read_only_commands, or exit plan mode to run this command.", cmd),
@@ -393,7 +442,7 @@ func declaredReadOnlyCommand(cmd string, prefixes []string) (bool, string) {
 		if prefixMalformed != "" || len(prefixFields) == 0 {
 			continue
 		}
-		if unsafeDeclaredReadOnlyCommandBases[strings.ToLower(prefixFields[0])] {
+		if unsafeDeclaredReadOnlyCommandPrefix(prefixFields) {
 			continue
 		}
 		if len(prefixFields) > len(fields) {
@@ -411,6 +460,79 @@ func declaredReadOnlyCommand(cmd string, prefixes []string) (bool, string) {
 		}
 	}
 	return false, ""
+}
+
+func readOnlyCommandTrustCandidate(cmd string) *ReadOnlyCommandTrust {
+	fields, malformed := shellFields(cmd)
+	if malformed != "" || len(fields) == 0 || unsafeDeclaredReadOnlyCommandPrefix(fields) {
+		return nil
+	}
+	prefixFields := readOnlyCommandTrustPrefixFields(fields)
+	if len(prefixFields) == 0 {
+		return nil
+	}
+	return &ReadOnlyCommandTrust{
+		Command: cmd,
+		Prefix:  strings.Join(prefixFields, " "),
+	}
+}
+
+func readOnlyCommandTrustPrefixFields(fields []string) []string {
+	if len(fields) < 2 {
+		return nil
+	}
+	out := []string{fields[0]}
+	for _, field := range fields[1:] {
+		if strings.HasPrefix(field, "-") {
+			out = append(out, field)
+			break
+		}
+		if !readOnlyCommandPrefixWord(field) {
+			break
+		}
+		out = append(out, field)
+		if len(out) >= 3 {
+			break
+		}
+	}
+	if len(out) < 2 || unsafeDeclaredReadOnlyCommandPrefix(out) {
+		return nil
+	}
+	return out
+}
+
+func readOnlyCommandPrefixWord(field string) bool {
+	if field == "" {
+		return false
+	}
+	for i, r := range field {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if i > 0 && (r >= '0' && r <= '9' || r == '_' || r == '-') {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+func unsafeDeclaredReadOnlyCommandPrefix(fields []string) bool {
+	if len(fields) < 2 {
+		return true
+	}
+	if readOnlyCommandNeedsThreeTokenPrefixBases[strings.ToLower(fields[0])] && len(fields) < 3 {
+		return true
+	}
+	if unsafeDeclaredReadOnlyCommandBases[strings.ToLower(fields[0])] {
+		return true
+	}
+	for _, field := range fields[1:] {
+		if unsafeDeclaredReadOnlyCommandWords[strings.ToLower(field)] {
+			return true
+		}
+	}
+	return false
 }
 
 // unsafePlanModeArg applies plan-mode's stricter, quote-aware argument check on
