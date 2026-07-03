@@ -120,14 +120,6 @@ func loadDotEnvFileAs(path string, source CredentialSource) {
 	}
 }
 
-func readDotEnvFileMap(path string, allow func(string) bool) map[string]string {
-	file, ok := readDotEnvFile(path)
-	if !ok {
-		return nil
-	}
-	return file.filtered(allow)
-}
-
 func readDotEnvFile(path string) (dotEnvFile, bool) {
 	values, err := godotenv.Read(path)
 	if err != nil {
