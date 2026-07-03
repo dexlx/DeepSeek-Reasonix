@@ -419,9 +419,13 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 
 	var tools []chatTool
 	for _, t := range req.Tools {
+		parameters := t.Parameters
+		if len(parameters) == 0 {
+			parameters = provider.CanonicalizeSchema(nil)
+		}
 		tools = append(tools, chatTool{
 			Type:     "function",
-			Function: chatFunction{Name: t.Name, Description: t.Description, Parameters: t.Parameters},
+			Function: chatFunction{Name: t.Name, Description: t.Description, Parameters: parameters},
 		})
 	}
 

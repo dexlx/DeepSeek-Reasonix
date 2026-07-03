@@ -1008,7 +1008,7 @@ func TestBuildRequestOmitsResponseOnlyToolCallIndex(t *testing.T) {
 	}
 }
 
-func TestBuildRequestOmitsEmptyToolDescriptionAndParameters(t *testing.T) {
+func TestBuildRequestDefaultsEmptyToolParameters(t *testing.T) {
 	c := &client{name: "x", model: "m", baseURL: "https://api.example.com/v1"}
 	req := provider.Request{
 		Tools: []provider.ToolSchema{{Name: "noargs"}},
@@ -1035,7 +1035,7 @@ func TestBuildRequestOmitsEmptyToolDescriptionAndParameters(t *testing.T) {
 	if _, ok := fn["description"]; ok {
 		t.Fatalf("empty description should be omitted: %s", body)
 	}
-	if _, ok := fn["parameters"]; ok {
-		t.Fatalf("nil parameters should be omitted: %s", body)
+	if got, want := string(fn["parameters"]), `{"type":"object"}`; got != want {
+		t.Fatalf("nil parameters should default to %s, got %s in %s", want, got, body)
 	}
 }
