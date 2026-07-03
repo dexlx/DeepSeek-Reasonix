@@ -28,7 +28,7 @@ database_id = "54825184-366f-4877-80fc-924efab0239b"
 [[d1_databases]]
 binding = "REGISTRY_DB"
 database_name = "reasonix-registry"
-database_id = "PLACEHOLDER-run-wrangler-d1-create-reasonix-registry"
+database_id = "83786761-5cc5-487d-8624-5cf565d1a57c"
 
 [[unsafe.bindings]]
 name = "RATE_LIMITER"
