@@ -57,6 +57,7 @@ const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 // it; the real gap is a few ms, so keep it short or a deliberate quick second
 // Enter (submit) gets eaten too.
 const IME_CONFIRM_GRACE_MS = 100;
+const FILE_REF_SEARCH_CACHE_TTL_MS = 5000;
 
 type PastedBlock = {
   label: string;
@@ -67,6 +68,11 @@ type PendingGuidance = {
   id: number;
   text: string;
   submitText: string;
+};
+
+type FileRefSearchCacheEntry = {
+  entries: DirEntry[];
+  cachedAt: number;
 };
 
 type ComposerDraft = {
@@ -444,6 +450,7 @@ export function Composer({
   retry,
   transientDismissSignal,
   sessionKey,
+  fileRefRefreshKey,
   guidanceConsumedKey,
   guidanceConsumedText,
   guidanceQueuePreviewItems,
@@ -486,6 +493,7 @@ export function Composer({
   retry?: { attempt: number; max: number };
   transientDismissSignal?: number;
   sessionKey?: string;
+  fileRefRefreshKey?: number | string;
   guidanceConsumedKey?: string;
   guidanceConsumedText?: string;
   guidanceQueuePreviewItems?: readonly string[];
@@ -743,16 +751,9 @@ export function Composer({
   const [entries, setEntries] = useState<DirEntry[]>([]);
   const [searchEntries, setSearchEntries] = useState<DirEntry[]>([]);
   const dirCache = useRef<Record<string, DirEntry[]>>({});
-  const searchCache = useRef<Record<string, DirEntry[]>>({});
+  const searchCache = useRef<Record<string, FileRefSearchCacheEntry>>({});
 
-  // When the workspace/project changes (cwd prop), invalidate all @ mention
-  // state so the picker reloads candidates for the new project. Without this,
-  // dirCache/searchCache retain entries from the old project and the picker
-  // shows stale results (issue #3601).
-  const prevCwdRef = useRef(cwd);
-  useEffect(() => {
-    if (prevCwdRef.current === cwd) return; // skip mount — state already initial
-    prevCwdRef.current = cwd;
+  const clearFileRefState = useCallback(() => {
     dirCache.current = {};
     searchCache.current = {};
     setEntries([]);
@@ -763,29 +764,50 @@ export function Composer({
     setLoadingPastChats(false);
     setActive(0);
     setDismissed(false);
-  }, [cwd]);
+  }, []);
+
+  // When the workspace/project changes (cwd prop), invalidate all @ mention
+  // state so the picker reloads candidates for the new project. Without this,
+  // dirCache/searchCache retain entries from the old project and the picker
+  // shows stale results (issue #3601).
+  const prevCwdRef = useRef(cwd);
+  useEffect(() => {
+    if (prevCwdRef.current === cwd) return; // skip mount — state already initial
+    prevCwdRef.current = cwd;
+    clearFileRefState();
+  }, [clearFileRefState, cwd]);
+
+  const prevFileRefRefreshKeyRef = useRef(fileRefRefreshKey);
+  useEffect(() => {
+    if (prevFileRefRefreshKeyRef.current === fileRefRefreshKey) return;
+    prevFileRefRefreshKeyRef.current = fileRefRefreshKey;
+    clearFileRefState();
+  }, [clearFileRefState, fileRefRefreshKey]);
 
   useEffect(() => {
     if (atRaw === null) return;
     const cached = dirCache.current[atDir];
     if (cached) {
       setEntries(cached);
-      return;
+    } else {
+      setEntries([]);
     }
     let live = true;
     app
       .ListDir(atDir)
       .then((es) => {
         const list = asArray(es);
+        if (!live) return;
         dirCache.current[atDir] = list;
-        if (live) setEntries(list);
+        setEntries(list);
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-    // re-fetch when the menu opens or the directory level changes
-  }, [atRaw === null, atDir, cwd]);
+    // Re-fetch when the menu opens, the directory level changes, or the
+    // workspace tree refreshes; cached data is only a fast first paint.
+  }, [atRaw === null, atDir, cwd, fileRefRefreshKey]);
   useEffect(() => {
     if (atRaw === null || atDir !== "" || atFrag === "") {
       setSearchEntries([]);
@@ -793,23 +815,25 @@ export function Composer({
     }
     const cached = searchCache.current[atFrag];
     if (cached) {
-      setSearchEntries(cached);
-      return;
+      setSearchEntries(cached.entries);
+      if (Date.now() - cached.cachedAt < FILE_REF_SEARCH_CACHE_TTL_MS) return;
+    } else {
+      setSearchEntries([]);
     }
-    setSearchEntries([]);
     let live = true;
     app
       .SearchFileRefs(atFrag)
       .then((es) => {
-        const list = es ?? [];
-        searchCache.current[atFrag] = list;
-        if (live) setSearchEntries(list);
+        const list = asArray(es);
+        if (!live) return;
+        searchCache.current[atFrag] = { entries: list, cachedAt: Date.now() };
+        setSearchEntries(list);
       })
       .catch(() => {});
     return () => {
       live = false;
     };
-  }, [atRaw === null, atDir, atFrag, cwd]);
+  }, [atRaw === null, atDir, atFrag, cwd, fileRefRefreshKey]);
   const atMatches = useMemo(
     () => {
       if (atRaw === null) return [];
