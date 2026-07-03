@@ -1635,6 +1635,7 @@ export const en = {
   "msg.imageAttachment": "Image",
   "msg.workspaceReference": "Workspace reference",
   "msg.folderReference": "Folder · Workspace reference",
+  "msg.pastedExpandTooltip": "Expand pasted text into the message (cannot be undone)",
   "turnActions.summary": "Summary",
   "turnActions.rewind": "Rewind",
   "transcript.jumpToBottom": "Jump to bottom",

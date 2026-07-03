@@ -1637,6 +1637,7 @@ export const zh: Record<DictKey, string> = {
   "msg.imageAttachment": "图片",
   "msg.workspaceReference": "工作区引用",
   "msg.folderReference": "文件夹 · 工作区引用",
+  "msg.pastedExpandTooltip": "将粘贴文本展开至气泡中（不可撤销）",
   "turnActions.summary": "总结",
   "turnActions.rewind": "回溯",
   "transcript.jumpToBottom": "跳到底部",
