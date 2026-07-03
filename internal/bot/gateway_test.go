@@ -117,11 +117,11 @@ func (gatewayFakeProvider) Stream(context.Context, provider.Request) (<-chan pro
 	return ch, nil
 }
 
-func (f *fakeReactionAdapter) AddPendingReaction(ctx context.Context, messageID string) error {
+func (f *fakeReactionAdapter) AddPendingReaction(ctx context.Context, messageID string) (func(), error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.reactions = append(f.reactions, messageID)
-	return nil
+	return func() {}, nil
 }
 
 func TestFakeAdapterInterface(t *testing.T) {

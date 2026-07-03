@@ -106,6 +106,7 @@ type sessionState struct {
 	lastAskID        string
 	createdAt        time.Time
 	lastActive       time.Time
+	pendingReactionCleanups []func()
 }
 
 type sessionEventSink struct {
@@ -114,7 +115,7 @@ type sessionEventSink struct {
 }
 
 type pendingReactionAdapter interface {
-	AddPendingReaction(ctx context.Context, messageID string) error
+	AddPendingReaction(ctx context.Context, messageID string) (func(), error)
 }
 
 func (s *sessionEventSink) setTarget(target event.Sink) {
@@ -324,17 +325,19 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 		return
 	}
 
-	gw.addPendingReaction(ctx, binding.Platform, binding.Adapter, msg)
+	cleanup := gw.addPendingReaction(ctx, binding.Platform, binding.Adapter, msg)
 
 	// session 并发控制
 	acquired, merged := gw.sessions.TryAcquire(key, msg)
 	if merged {
 		gw.logger.Debug("message merged to pending queue", "session", key[:8])
+		gw.storeReactionCleanup(key, cleanup)
 		return
 	}
 	if !acquired {
 		// 正在处理中且非 bypass 命令，已在 TryAcquire 中入队
 		gw.logger.Debug("session busy, queued", "session", key[:8])
+		gw.storeReactionCleanup(key, cleanup)
 		return
 	}
 
@@ -346,20 +349,52 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 	// would unblock it: the session wedges until restart (#4701, #4863, #4402).
 	// Per-session serialization is still held by the session lock (active[key]),
 	// which the deferred Release inside runTurn clears.
-	go gw.runTurn(ctx, binding.Adapter, key, msg)
+	go gw.runTurn(ctx, binding.Adapter, key, msg, cleanup)
 }
 
-func (gw *BotGateway) addPendingReaction(ctx context.Context, plat Platform, adapter Adapter, msg InboundMessage) {
-	if strings.TrimSpace(msg.MessageID) == "" {
+func (gw *BotGateway) storeReactionCleanup(key string, cleanup func()) {
+	if cleanup == nil {
 		return
+	}
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	if state := gw.controllers[key]; state != nil {
+		state.pendingReactionCleanups = append(state.pendingReactionCleanups, cleanup)
+	}
+}
+
+func (gw *BotGateway) flushReactionCleanups(key string, cleanup func()) {
+	gw.mu.Lock()
+	state := gw.controllers[key]
+	if state != nil && len(state.pendingReactionCleanups) > 0 {
+		stored := state.pendingReactionCleanups
+		state.pendingReactionCleanups = nil
+		gw.mu.Unlock()
+		for _, c := range stored {
+			c()
+		}
+	} else {
+		gw.mu.Unlock()
+	}
+	if cleanup != nil {
+		cleanup()
+	}
+}
+
+func (gw *BotGateway) addPendingReaction(ctx context.Context, plat Platform, adapter Adapter, msg InboundMessage) func() {
+	if strings.TrimSpace(msg.MessageID) == "" {
+		return nil
 	}
 	reactor, ok := adapter.(pendingReactionAdapter)
 	if !ok {
-		return
+		return nil
 	}
-	if err := reactor.AddPendingReaction(ctx, msg.MessageID); err != nil {
+	cleanup, err := reactor.AddPendingReaction(ctx, msg.MessageID)
+	if err != nil {
 		gw.logger.Warn("pending reaction failed", "platform", plat, "err", err)
+		return nil
 	}
+	return cleanup
 }
 
 func (gw *BotGateway) checkAllowlist(plat Platform, msg InboundMessage) bool {
@@ -772,14 +807,15 @@ func toolApprovalModeLabel(mode string) string {
 	}
 }
 
-func (gw *BotGateway) runTurn(ctx context.Context, adapter Adapter, key string, msg InboundMessage) {
+func (gw *BotGateway) runTurn(ctx context.Context, adapter Adapter, key string, msg InboundMessage, cleanup func()) {
 	gw.logger.Info("bot turn started", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
 	defer func() {
 		// 检查是否有等待队列中的消息
 		next := gw.sessions.Release(key)
+		gw.flushReactionCleanups(key, cleanup)
 		if next != nil {
 			gw.logger.Info("bot pending message released", "platform", next.Platform, "chat_type", next.ChatType, "chat", hashID(next.ChatID), "session", key[:8])
-			gw.runTurn(ctx, adapter, key, *next)
+			gw.runTurn(ctx, adapter, key, *next, nil)
 			return
 		}
 	}()
