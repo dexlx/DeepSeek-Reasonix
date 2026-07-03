@@ -381,17 +381,18 @@ func decideBash(args json.RawMessage, readOnlyCommands []string) Decision {
 		}
 	}
 	cmd := strings.TrimSpace(p.Command)
+	checkCmd, safeRedirects := shellsafe.NormalizeBashSafeRedirectsForMatch(cmd)
 
-	if shellsafe.ContainsShellSyntax(cmd) {
+	if !safeRedirects || shellsafe.ContainsShellSyntax(checkCmd) {
 		return Decision{
 			Blocked: true,
 			Message: "blocked: bash command in plan mode must not contain shell operators. Use separate calls for chained commands.",
 		}
 	}
 
-	base, sub, ok := shellsafe.CommandIsReadOnly(cmd)
+	base, sub, ok := shellsafe.CommandIsReadOnly(checkCmd)
 	if !ok {
-		if ok, malformed := declaredReadOnlyCommand(cmd, readOnlyCommands); malformed != "" {
+		if ok, malformed := declaredReadOnlyCommand(checkCmd, readOnlyCommands); malformed != "" {
 			return Decision{
 				Blocked: true,
 				Message: fmt.Sprintf("blocked: bash command in plan mode has malformed shell quoting (%s). Use a simple read-only command while planning.", malformed),
@@ -399,19 +400,19 @@ func decideBash(args json.RawMessage, readOnlyCommands []string) Decision {
 		} else if ok {
 			return Decision{}
 		}
-		if trust := readOnlyCommandTrustCandidate(cmd); trust != nil {
+		if trust := readOnlyCommandTrustCandidate(checkCmd); trust != nil {
 			return Decision{
 				Blocked:              true,
-				Message:              fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Ask the user whether to trust %q as a plan-mode read-only command prefix, or exit plan mode to run it.", cmd, trust.Prefix),
+				Message:              fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Ask the user whether to trust %q as a plan-mode read-only command prefix, or exit plan mode to run it.", checkCmd, trust.Prefix),
 				ReadOnlyCommandTrust: trust,
 			}
 		}
 		return Decision{
 			Blocked: true,
-			Message: fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Use read-only tools for exploration, declare a concrete prefix in plan_mode_read_only_commands, or exit plan mode to run this command.", cmd),
+			Message: fmt.Sprintf("blocked: bash commands in plan mode must be read-only. %q is not a known read-only command. Use read-only tools for exploration, declare a concrete prefix in plan_mode_read_only_commands, or exit plan mode to run this command.", checkCmd),
 		}
 	}
-	if arg, malformed := unsafePlanModeArg(cmd, base, sub); malformed != "" {
+	if arg, malformed := unsafePlanModeArg(checkCmd, base, sub); malformed != "" {
 		return Decision{
 			Blocked: true,
 			Message: fmt.Sprintf("blocked: bash command in plan mode has malformed shell quoting (%s). Use a simple read-only command while planning.", malformed),
