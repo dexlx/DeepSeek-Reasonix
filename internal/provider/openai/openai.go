@@ -706,7 +706,7 @@ type chatRequest struct {
 	Tools           []chatTool     `json:"tools,omitempty"`
 	Stream          bool           `json:"stream"`
 	StreamOptions   *streamOptions `json:"stream_options,omitempty"`
-	Temperature     float64        `json:"temperature,omitempty"`
+	Temperature     *float64       `json:"temperature,omitempty"`
 	MaxTokens       int            `json:"max_tokens,omitempty"`
 	ReasoningEffort string         `json:"reasoning_effort,omitempty"`
 	Thinking        *thinkingMode  `json:"thinking,omitempty"`
