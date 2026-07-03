@@ -589,7 +589,7 @@ func searchBotProjects(ctx context.Context, projects []botProjectEntry, query st
 	if rg, err := exec.LookPath("rg"); err == nil {
 		return searchBotProjectsWithRG(ctx, rg, projects, roots, query, limit)
 	}
-	return searchBotProjectsFallback(projects, roots, query, limit), nil
+	return searchBotProjectsFallback(ctx, projects, roots, query, limit)
 }
 
 func searchBotProjectsWithRG(ctx context.Context, rg string, projects []botProjectEntry, roots []string, query string, limit int) ([]botProjectSearchResult, error) {
@@ -659,13 +659,19 @@ func searchBotProjectsWithRG(ctx context.Context, rg string, projects []botProje
 
 var errStopBotSearch = errors.New("stop bot project search")
 
-func searchBotProjectsFallback(projects []botProjectEntry, roots []string, query string, limit int) []botProjectSearchResult {
+func searchBotProjectsFallback(ctx context.Context, projects []botProjectEntry, roots []string, query string, limit int) ([]botProjectSearchResult, error) {
 	queryLower := strings.ToLower(query)
 	var results []botProjectSearchResult
 	for _, root := range roots {
-		_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return results, err
+		}
+		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
 				return nil
+			}
+			if err := ctx.Err(); err != nil {
+				return err
 			}
 			if d.IsDir() {
 				if shouldSkipBotSearchDir(d.Name()) && path != root {
@@ -685,6 +691,10 @@ func searchBotProjectsFallback(projects []botProjectEntry, roots []string, query
 			scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 			line := 0
 			for scanner.Scan() {
+				if err := ctx.Err(); err != nil {
+					_ = file.Close()
+					return err
+				}
 				line++
 				text := scanner.Text()
 				if strings.Contains(strings.ToLower(text), queryLower) {
@@ -705,11 +715,17 @@ func searchBotProjectsFallback(projects []botProjectEntry, roots []string, query
 			_ = file.Close()
 			return nil
 		})
+		if errors.Is(walkErr, errStopBotSearch) {
+			break
+		}
+		if walkErr != nil {
+			return results, walkErr
+		}
 		if len(results) >= limit {
 			break
 		}
 	}
-	return results
+	return results, nil
 }
 
 func shouldSkipBotSearchDir(name string) bool {

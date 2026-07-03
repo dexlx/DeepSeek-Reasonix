@@ -25,6 +25,7 @@ import (
 // fakeAdapter 是一个内存中的假适配器，用于测试 BotGateway。
 type fakeAdapter struct {
 	mu       sync.Mutex
+	stopOnce sync.Once
 	platform Platform
 	name     string
 	msgCh    chan InboundMessage
@@ -56,12 +57,9 @@ func (f *fakeAdapter) Start(ctx context.Context) error {
 }
 
 func (f *fakeAdapter) Stop() error {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.msgCh != nil {
+	f.stopOnce.Do(func() {
 		close(f.msgCh)
-		f.msgCh = nil
-	}
+	})
 	return nil
 }
 
@@ -1014,13 +1012,39 @@ func TestSearchBotProjectsFallbackStopsAtLimit(t *testing.T) {
 		Root: projectRoot,
 	}}
 
-	results := searchBotProjectsFallback(projects, []string{projectRoot}, "fallback needle", 1)
+	results, err := searchBotProjectsFallback(context.Background(), projects, []string{projectRoot}, "fallback needle", 1)
+	if err != nil {
+		t.Fatalf("fallback search: %v", err)
+	}
 
 	if len(results) != 1 {
 		t.Fatalf("fallback results = %d, want 1", len(results))
 	}
 	if results[0].ProjectID != "p1" || !strings.Contains(results[0].Text, "fallback needle") {
 		t.Fatalf("fallback result = %#v, want project hit", results[0])
+	}
+}
+
+func TestSearchBotProjectsFallbackHonorsContextCancel(t *testing.T) {
+	projectRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(projectRoot, "needle.txt"), []byte("fallback needle\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	projects := []botProjectEntry{{
+		ID:   "p1",
+		Name: "project",
+		Root: projectRoot,
+	}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	results, err := searchBotProjectsFallback(ctx, projects, []string{projectRoot}, "fallback needle", 1)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("fallback error = %v, want context canceled", err)
+	}
+	if len(results) != 0 {
+		t.Fatalf("fallback results = %d, want 0 after canceled context", len(results))
 	}
 }
 
