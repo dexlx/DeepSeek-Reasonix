@@ -6,13 +6,14 @@
 &nbsp;·&nbsp;
 <a href="./GUIDE.md">General guide</a>
 
-> For desktop users. This guide explains how to connect Feishu, Lark, WeChat, and QQ
-> bots, how to use Reasonix from IM, and how approvals, Ask questions, YOLO, and
-> bot commands work.
+> For desktop and CLI users. This guide explains how to connect Feishu, Lark,
+> WeChat, and QQ bots, how to use Reasonix from IM, and how approvals, Ask
+> questions, YOLO, and bot commands work.
 
 ## Contents
 
 - [What the bot does](#what-the-bot-does)
+- [Where it runs](#where-it-runs)
 - [Connect the four channels](#connect-the-four-channels)
 - [Run the bot headlessly](#run-the-bot-headlessly)
 - [Usage flow](#usage-flow)
@@ -24,9 +25,10 @@
 
 ## What the bot does
 
-After a bot is connected, you can send Reasonix messages from Feishu, Lark, or
-WeChat. The desktop app handles the model, tools, permissions, sandboxing, and
-local context, then sends progress and results back to the IM channel.
+After a bot is connected, you can send Reasonix messages from Feishu, Lark,
+WeChat, or QQ. The desktop app or `reasonix bot start` process handles the
+model, tools, permissions, sandboxing, and local context, then sends progress
+and results back to the IM channel.
 
 Common uses:
 
@@ -36,6 +38,26 @@ Common uses:
 - Enable YOLO for trusted temporary work so ordinary tool approvals are skipped.
 - Open the matching desktop IM session to inspect context, cost, tokens, and tool
   traces.
+
+## Where it runs
+
+The bot gateway is a shared Go runtime. The same core behavior works on
+Windows, macOS, and Linux; platform differences mostly come from each IM
+provider's credentials, network reachability, callback/WebSocket setup, and
+saved local account state.
+
+There are two supported entry points:
+
+- **Desktop runtime**: configure bots in **Settings -> Bots**. The desktop app
+  starts the gateway, keeps status in the app, persists per-connection tool
+  approval mode changes, and lets you open matching local IM sessions.
+- **CLI runtime**: run `reasonix bot start` for a headless long-lived process.
+  It uses the same config, allowlist, routes, queue settings, pairing store,
+  adapters, and project/session index as the desktop runtime.
+
+The normal `reasonix run` command does not automatically start the IM gateway.
+Remote bot behavior is active only while the desktop bot runtime is running or
+while a `reasonix bot start` process is alive.
 
 ## Connect the four channels
 
@@ -77,7 +99,14 @@ flowchart LR
 
 Feishu and Lark share the same capability set, but they are saved as separate
 connections. You can give them different models, working directories, or tool
-approval modes.
+approval modes. Bot text replies are sent as standalone Interactive Card JSON
+2.0 markdown, which avoids Feishu/Lark platform quote prefixes while preserving
+CommonMark formatting. If a card is too large for the platform limit, Reasonix
+falls back to plain text automatically.
+
+For webhook mode, configure a verification token. Incoming webhook events are
+verified fail-closed: an empty or missing configured token rejects callers
+instead of silently opening the webhook.
 
 ### WeChat
 
@@ -87,8 +116,9 @@ approval modes.
 4. Wait until the page shows the connection as connected.
 5. Send the WeChat bot a message.
 
-WeChat does not provide interactive card buttons here, so approvals and Ask
-questions are handled through text commands.
+WeChat does not provide interactive card buttons here, so approvals use numeric
+or text commands. Ask questions can be answered by replying with normal text,
+option numbers, or `/answer <id> <answer>`.
 
 ### QQ
 
@@ -99,13 +129,16 @@ questions are handled through text commands.
 5. Send the QQ bot a message.
 
 QQ Bot uses the official QQ Bot platform API. It supports inline keyboard
-buttons for approvals. Ask questions are sent as text; for single-choice
-questions you can reply with the option number, or use `/answer <id> <option>`.
-When a button expires or the platform reports an action failure, copy the ID
-shown in the card and send the equivalent text command.
+buttons for approvals. Ask questions are sent as text; reply with normal text,
+option numbers, or `/answer <id> <answer>`. When a button expires or the
+platform reports an action failure, copy the ID shown in the card and send the
+equivalent text command.
 
-QQ does not support QR-code scanning for connection setup. You must
-configure the App ID and App Secret manually.
+QQ does not support QR-code scanning for connection setup. You must configure
+the App ID and App Secret manually. The adapter reads only the configured
+`app_secret_env` value; it does not fall back to an unrelated `QQ_SECRET`
+environment variable. QQ and WeChat HTTP calls use bounded clients so a stalled
+provider request cannot block the gateway indefinitely.
 
 ## Run the bot headlessly
 
@@ -115,7 +148,7 @@ runtime itself can also run as a long-lived headless gateway:
 ```sh
 reasonix bot doctor
 reasonix bot doctor --deep
-reasonix bot start --channels feishu,lark,weixin --dir /path/to/project
+reasonix bot start --channels qq,feishu,lark,weixin --dir /path/to/project
 ```
 
 Use `--channels` to choose which configured IM inputs to accept. `feishu` and
@@ -156,6 +189,13 @@ Access control is still mandatory. You can configure platform user IDs under
 code must be approved locally with `reasonix bot pairing approve <code>` before
 the sender can drive the bot. Group chats are not opened by DM pairing; group IDs
 remain an additional narrowing layer and do not replace the user allowlist.
+Use these commands to manage pending requests:
+
+```sh
+reasonix bot pairing list
+reasonix bot pairing approve CODE
+reasonix bot pairing reject CODE
+```
 
 If `qq_admins`, `feishu_admins`, `weixin_admins`, or the matching
 `*_approvers` lists are configured, `/yolo` and `/mode` are admin-only while
@@ -181,13 +221,33 @@ server only binds to `localhost`, `127.0.0.1`, or `::1`. Current endpoints are
 Prometheus text metrics, and `POST /send` for sending text or media through a
 configured connection.
 
+Example:
+
+```sh
+export REASONIX_BOT_CONTROL_TOKEN="change-me"
+
+curl -H "Authorization: Bearer $REASONIX_BOT_CONTROL_TOKEN" \
+  http://127.0.0.1:37913/status
+
+curl -X POST http://127.0.0.1:37913/send \
+  -H "Authorization: Bearer $REASONIX_BOT_CONTROL_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "connection_id": "feishu-lark",
+    "domain": "lark",
+    "chat_id": "oc_xxx",
+    "chat_type": "dm",
+    "text": "hello from local control API"
+  }'
+```
+
 ## Usage flow
 
 ```mermaid
 sequenceDiagram
   participant U as "User"
   participant IM as "Feishu / Lark / WeChat / QQ"
-  participant R as "Reasonix desktop"
+  participant R as "Reasonix desktop or bot start"
   participant T as "Local tools and model"
 
   U->>IM: "Send a request"
@@ -229,8 +289,8 @@ without exposing real account IDs, local paths, or private chat content.
 | --- | --- | --- | --- | --- |
 | Feishu | Scan to create a PersonalAgent | Interactive card buttons, or commands | Interactive card buttons, or commands | Feishu workspaces, DMs, and groups |
 | Lark | Scan to create a PersonalAgent | Interactive card buttons, or commands | Interactive card buttons, or commands | International Lark workspaces |
-| WeChat | Scan with WeChat | Reply `1` / `2`, or commands | Single-choice questions can use a number, or commands | Lightweight personal/mobile testing |
-| QQ | Manual setup (App ID + App Secret) | Inline keyboard buttons, numeric replies, or commands | Single-choice questions can use a number, or commands | QQ groups, DMs, and official QQ Bot platform |
+| WeChat | Scan with WeChat | Reply `1` / `2`, or commands | Reply with normal text, option numbers, or commands | Lightweight personal/mobile testing |
+| QQ | Manual setup (App ID + App Secret) | Inline keyboard buttons, numeric replies, or commands | Reply with normal text, option numbers, or commands | QQ groups, DMs, and official QQ Bot platform |
 
 Feishu and Lark card buttons are converted into commands such as
 `/approve <id>`, `/deny <id>`, or `/answer <id> <option>`. QQ approval buttons
@@ -274,7 +334,10 @@ These commands work in Feishu, Lark, WeChat, and QQ.
 Shortcut replies:
 
 - When an approval is pending, reply `1` to approve and `2` to deny.
-- When a single-choice Ask question is pending, reply with the option number.
+- When an Ask question is pending, reply with any normal non-slash text. Option
+  numbers still work for choice questions.
+- Slash commands such as `/stop`, `/mode`, or `/answer ...` are not captured as
+  Ask shortcut replies.
 - If there is no pending operation, `1` / `2` are treated as normal text or
   produce guidance.
 
@@ -282,6 +345,29 @@ The default queue mode is `steer`: when the same session is already running, a
 new message is injected as mid-turn guidance instead of waiting for the whole
 turn to finish. `queue_cap` and `queue_drop` bound backlog growth in config.
 `reasonix bot doctor --deep` reports queue, pairing, and role diagnostics.
+
+Queue modes:
+
+- `steer`: mid-run messages become guidance for the current turn when possible.
+- `followup`: mid-run messages are queued as later turns.
+- `collect`: queued messages are merged into one later turn.
+- `interrupt`: the active turn is canceled and the newest message is kept as the
+  next turn.
+
+Project and session navigation:
+
+- `/projects [query]` lists workspaces from configured bot routes, connection
+  workspaces, active bot sessions, and saved session mappings.
+- `/use project <id|name>` pins the current remote session to one indexed
+  project. `/use project default` clears the override.
+- `/sessions search <query>` searches indexed desktop and bot session metadata.
+- `/attach session <id|query>` continues the remote session from an indexed
+  `path:` transcript.
+- `/search all <query>` searches file contents across indexed project roots.
+  Reasonix uses `rg` when available and falls back to a bounded Go scanner.
+
+These navigation commands never accept arbitrary paths typed from IM. They only
+jump to indexed targets and, when role lists are configured, require an admin.
 
 When an adapter supplies media URLs, the gateway downloads those files into the
 current workspace's `.reasonix/attachments` directory and passes them to
@@ -356,11 +442,11 @@ You may need to bind again if:
 | Symptom | What to check |
 | --- | --- |
 | QR code says the link expired | Generate a new QR code in Settings; QR codes expire (Feishu, Lark, WeChat only — QQ uses manual setup and has no QR code). |
-| Connected but no reply | Make sure the Reasonix desktop app is running, the bot connection is enabled, and the sender ID is allowlisted or access is open. |
+| Connected but no reply | Make sure the desktop bot runtime or `reasonix bot start` process is running, the bot connection is enabled, and the sender ID is allowlisted, paired, or access is open. |
 | Feishu or Lark button action fails | Send the text command from the card, such as `/approve <id>` or `/deny <id>`. |
 | QQ button action fails | Same as Feishu/Lark — send the text command from the card, such as `/approve <id>` or `/deny <id>`. |
-| WeChat reply `1` does nothing | Numeric shortcuts only work when an approval or single-choice Ask is pending; use the full command if needed. |
-| QQ reply `1` does nothing | Same as WeChat — numeric shortcuts only work when an approval or single-choice Ask is pending; use the full command if needed. |
+| WeChat reply `1` does nothing | Numeric shortcuts only work when an approval or Ask is pending; use the full command if needed. |
+| QQ reply `1` does nothing | Same as WeChat — numeric shortcuts only work when an approval or Ask is pending; use the full command if needed. |
 | Need to confirm the current mode | Send `/status` or `/yolo status`. |
 | Need a fresh context | Send `/new` or `/reset`. |
 | Need to stop the current task | Send `/stop`. |
