@@ -69,6 +69,18 @@ func TestStripTransientUserBlocksUnwrapsMemoryCompilerExecution(t *testing.T) {
 			want: "ship it",
 		},
 		{
+			name: "active goal prefix is stripped",
+			in:   "<active-goal>\nFix all bugs\n</active-goal>\n\nfix the auth bug",
+			want: "fix the auth bug",
+		},
+		{
+			name: "active goal after other transient prefixes is stripped",
+			in: "<reasoning-language>\nuse Chinese\n</reasoning-language>\n\n" +
+				"<memory-update>\n- note\n</memory-update>\n\n" +
+				"<active-goal>\nDo X\n</active-goal>\n\nhelp me",
+			want: "help me",
+		},
+		{
 			name: "capability route prefix is stripped",
 			in:   "<capability-route version=\"1\">\nRelevant capabilities:\n- skill:review prefer\n</capability-route>\n\nreview this",
 			want: "review this",
