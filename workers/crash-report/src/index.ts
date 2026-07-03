@@ -702,43 +702,77 @@ async function metricUserRows(env: Env, days: 7 | 30): Promise<{ signal: string;
   }
 }
 
+type Bar = { label: string; users: number };
+type MetricTotals = { signal: string; bucket: string; total: number }[];
+
+// Each stats module renders only its own section, so a page load should query
+// only what that section shows — the 30-day COUNT(DISTINCT) over metric_users,
+// the heaviest query, is read solely by the preferences module.
 async function handleStats(request: Request, env: Env, user: User, activeModule: StatsModule): Promise<Response> {
   const url = new URL(request.url);
   const filters = statsFilters(url);
-  const latestVersion = await latestObservedVersion(env);
   const days = filters.windowDays;
-  const [daily, versions, platforms, crashes, metrics, previousMetrics, metricUsers, sources, overview] = await Promise.all([
-    env.DB.prepare(
-      `SELECT date, COUNT(*) AS users, SUM(opens) AS opens FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY date`,
-    ).all<{ date: string; users: number; opens: number }>(),
-    env.DB.prepare(
-      `SELECT version AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY label ORDER BY users DESC LIMIT 15`,
-    ).all<{ label: string; users: number }>(),
-    env.DB.prepare(
-      `SELECT os || ' ' || arch AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${currentWindowSince(days)}') GROUP BY label ORDER BY users DESC`,
-    ).all<{ label: string; users: number }>(),
-    crashGroups(env, filters, latestVersion),
-    metricRows(env, days),
-    metricRows(env, days, true),
-    metricUserRows(env, days),
-    env.DB.prepare("SELECT source AS label, COUNT(*) AS users FROM groups GROUP BY source ORDER BY users DESC").all<{ label: string; users: number }>(),
-    diagnosticOverview(env, latestVersion, days),
-  ]);
+  const since = currentWindowSince(days);
+  const bars = (sql: string) => env.DB.prepare(sql).all<Bar>().then((r) => r.results);
+  const pingVersions = () =>
+    bars(`SELECT version AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${since}') GROUP BY label ORDER BY users DESC LIMIT 15`);
+  const pingPlatforms = () =>
+    bars(`SELECT os || ' ' || arch AS label, COUNT(DISTINCT install_id) AS users FROM pings WHERE date >= date('now', '${since}') GROUP BY label ORDER BY users DESC`);
+
+  let daily: { date: string; users: number; opens: number }[] = [];
+  let versions: Bar[] = [];
+  let platforms: Bar[] = [];
+  let crashes: Awaited<ReturnType<typeof crashGroups>>["results"] = [];
+  let metrics: MetricTotals = [];
+  let previousMetrics: MetricTotals = [];
+  let metricUsers: MetricTotals = [];
+  let sources: Bar[] = [];
+  let overview: OverviewCounts = {
+    latestAdoptionPct: null,
+    openReports: 0,
+    newLatestReports: 0,
+    regressedReports: 0,
+    criticalOpenReports: 0,
+  };
+  let latestVersion = "";
+
+  if (activeModule === "usage") {
+    latestVersion = await latestObservedVersion(env);
+    const [dailyR, versionsR, platformsR, metricsR, overviewR] = await Promise.all([
+      env.DB.prepare(
+        `SELECT date, COUNT(*) AS users, SUM(opens) AS opens FROM pings WHERE date >= date('now', '${since}') GROUP BY date`,
+      ).all<{ date: string; users: number; opens: number }>(),
+      pingVersions(),
+      pingPlatforms(),
+      metricRows(env, days),
+      diagnosticOverview(env, latestVersion, days),
+    ]);
+    daily = dailyR.results;
+    versions = versionsR;
+    platforms = platformsR;
+    metrics = metricsR;
+    overview = overviewR;
+  } else if (activeModule === "diagnostics") {
+    latestVersion = await latestObservedVersion(env);
+    const [crashesR, sourcesR, versionsR, platformsR] = await Promise.all([
+      crashGroups(env, filters, latestVersion),
+      bars("SELECT source AS label, COUNT(*) AS users FROM groups GROUP BY source ORDER BY users DESC"),
+      pingVersions(),
+      pingPlatforms(),
+    ]);
+    crashes = crashesR.results;
+    sources = sourcesR;
+    versions = versionsR;
+    platforms = platformsR;
+  } else if (activeModule === "preferences") {
+    [metrics, metricUsers] = await Promise.all([metricRows(env, days), metricUserRows(env, days)]);
+  } else {
+    [metrics, previousMetrics] = await Promise.all([metricRows(env, days), metricRows(env, days, true)]);
+  }
+
   return html(
     renderStats(
-      {
-        daily: daily.results,
-        versions: versions.results,
-        platforms: platforms.results,
-        crashes: crashes.results,
-        metrics,
-        previousMetrics,
-        metricUsers,
-        sources: sources.results,
-        overview,
-        latestVersion,
-        filters,
-      },
+      { daily, versions, platforms, crashes, metrics, previousMetrics, metricUsers, sources, overview, latestVersion, filters },
       user,
       activeModule,
     ),
