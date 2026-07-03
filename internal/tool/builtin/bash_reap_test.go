@@ -26,7 +26,7 @@ func TestReapTreeKillsGroupStragglers(t *testing.T) {
 	pidFile := filepath.Join(t.TempDir(), "pid")
 	cmd := exec.CommandContext(context.Background(), "sh", "-c",
 		"sleep 60 >/dev/null 2>&1 & echo $! > "+pidFile)
-	proc.SetCancelKillsTree(cmd) // Setpgid — the shell leads its own group
+	proc.SetCancelKillsTree(cmd) // new session — the shell leads its own group
 	if err := cmd.Run(); err != nil {
 		t.Fatalf("run: %v", err)
 	}
