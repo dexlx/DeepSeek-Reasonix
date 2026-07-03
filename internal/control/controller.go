@@ -794,7 +794,7 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 			}
 			return runGoalLoop(ctx, sent, sent, display)
 		})
-	case strings.HasPrefix(trimmed, "//") || strings.HasPrefix(trimmed, "/*"):
+	case SlashCodeCommentLine(trimmed):
 		// Slash-prefixed code comments are prompt text, not slash commands.
 		runRefTurn(input, display)
 	case strings.HasPrefix(trimmed, "/"):
