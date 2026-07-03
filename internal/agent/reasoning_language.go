@@ -114,6 +114,12 @@ func hasLeadingInjectedBlock(content, target string) bool {
 			if !ok {
 				return false
 			}
+		case strings.HasPrefix(s, "<hook-context"):
+			var ok bool
+			s, ok = trimLeadingTransientBlock(s, "hook-context")
+			if !ok {
+				return false
+			}
 		default:
 			return false
 		}

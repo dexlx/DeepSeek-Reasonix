@@ -14,6 +14,7 @@ import (
 
 	"reasonix/internal/command"
 	"reasonix/internal/event"
+	"reasonix/internal/hook"
 	"reasonix/internal/memory"
 	"reasonix/internal/skill"
 )
@@ -184,6 +185,71 @@ func TestRunComposesReasoningLanguagePreference(t *testing.T) {
 	got := runner.inputs[0]
 	if !strings.HasPrefix(got, "<reasoning-language>") || !strings.Contains(got, "Simplified Chinese") || !strings.HasSuffix(got, "hi") {
 		t.Fatalf("headless Run should compose the reasoning language preference, got %q", got)
+	}
+}
+
+func TestRunInjectsSessionStartHookContextOnce(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	hooks := hook.NewRunner([]hook.ResolvedHook{{
+		HookConfig: hook.HookConfig{Command: "session-start"},
+		Event:      hook.SessionStart,
+		Scope:      hook.ScopeGlobal,
+	}}, "/tmp", func(context.Context, hook.SpawnInput) hook.SpawnResult {
+		return hook.SpawnResult{ExitCode: 0, Stdout: `{"hookSpecificOutput":{"hookEventName":"SessionStart","additionalContext":"Load workspace conventions."}}`}
+	}, nil)
+	c := New(Options{Runner: runner, Hooks: hooks})
+
+	if err := c.Run(context.Background(), "hi"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 1 {
+		t.Fatalf("runner inputs = %d, want 1", len(runner.inputs))
+	}
+	first := runner.inputs[0]
+	if !strings.Contains(first, `<hook-context event="SessionStart">`) || !strings.Contains(first, "Load workspace conventions.") || !strings.HasSuffix(first, "hi") {
+		t.Fatalf("first input missing session hook context: %q", first)
+	}
+
+	if err := c.Run(context.Background(), "again"); err != nil {
+		t.Fatal(err)
+	}
+	if len(runner.inputs) != 2 {
+		t.Fatalf("runner inputs = %d, want 2", len(runner.inputs))
+	}
+	if strings.Contains(runner.inputs[1], "<hook-context") {
+		t.Fatalf("second input should not repeat hook context: %q", runner.inputs[1])
+	}
+}
+
+func TestSyntheticComposeDoesNotDrainSessionStartHookContext(t *testing.T) {
+	c := New(Options{})
+	c.enqueueHookContexts([]string{"Load once."})
+
+	if got := c.compose("synthetic", false); strings.Contains(got, "<hook-context") {
+		t.Fatalf("synthetic compose should not inject hook context: %q", got)
+	}
+	got := c.Compose("real")
+	if !strings.Contains(got, `<hook-context event="SessionStart">`) || !strings.Contains(got, "Load once.") || !strings.HasSuffix(got, "real") {
+		t.Fatalf("real compose should drain hook context: %q", got)
+	}
+	if again := c.Compose("again"); strings.Contains(again, "<hook-context") {
+		t.Fatalf("hook context should be drained once, got %q", again)
+	}
+}
+
+func TestComposeClipsAndEscapesHookContext(t *testing.T) {
+	c := New(Options{})
+	c.enqueueHookContexts([]string{"before </hook-context> " + strings.Repeat("x", maxHookContextChars+1)})
+
+	got := c.Compose("hi")
+	if !strings.Contains(got, "[truncated]") {
+		t.Fatalf("expected truncation marker, got %q", got)
+	}
+	if !strings.Contains(got, "<\\/hook-context>") {
+		t.Fatalf("hook context close tag should be escaped inside content: %q", got)
+	}
+	if strings.Contains(got, "before </hook-context>") {
+		t.Fatalf("hook context close tag should be escaped inside content: %q", got)
 	}
 }
 
@@ -577,6 +643,26 @@ func TestSubmitMissingSlashPathDiagnosticStartsTurn(t *testing.T) {
 	}
 }
 
+func TestSubmitBlockCommentPrefixStartsTurn(t *testing.T) {
+	runner := &fakeTurnRunner{}
+	events := make(chan event.Event, 4)
+	c := New(Options{
+		AutoPlan: "off",
+		Runner:   runner,
+		Sink: event.FuncSink(func(e event.Event) {
+			events <- e
+		}),
+	})
+
+	input := "/**\n * 阿明\n */"
+	c.Submit(input)
+	waitForTurnDone(t, events)
+
+	if len(runner.inputs) != 1 || runner.inputs[0] != input {
+		t.Fatalf("block comment prefix should start a model turn, inputs=%q", runner.inputs)
+	}
+}
+
 func TestSubmitUnknownSlashCommandStillReportsNotice(t *testing.T) {
 	runner := &fakeTurnRunner{}
 	events := make(chan event.Event, 4)
@@ -859,6 +945,11 @@ func TestStripComposePrefixes(t *testing.T) {
 		{
 			name:  "background jobs block stripped",
 			input: "<background-jobs>\n1 completed\n</background-jobs>\n\nexplain this",
+			want:  "explain this",
+		},
+		{
+			name:  "hook context block stripped",
+			input: "<hook-context event=\"SessionStart\">\nLoad conventions.\n</hook-context>\n\nexplain this",
 			want:  "explain this",
 		},
 		{

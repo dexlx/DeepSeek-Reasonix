@@ -56,12 +56,13 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
 const MCPServersSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.MCPServersSettingsPage })));
 const SkillsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.SkillsSettingsPage })));
+const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.PluginsSettingsPage })));
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
@@ -169,7 +170,8 @@ export function SettingsPanel({
   }, [requestClose]);
 
   // The settings-reliant pages (general, models, network, permissions,
-  // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, and Memory
+  // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
+  // and Memory
   // load their own data and render regardless.
   const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
@@ -213,6 +215,7 @@ export function SettingsPanel({
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SkillsSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "plugins" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><PluginsSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "memory" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MemorySettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "hooks" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><HooksSection onChanged={onChanged} /></SettingsPageShell>}
                 {tab === "shortcuts" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><ShortcutsSection /></SettingsPageShell>}
@@ -319,6 +322,7 @@ function settingsPageKind(tab: SettingsTab): "form" | "manager" {
     case "models":
     case "mcp":
     case "skills":
+    case "plugins":
     case "memory":
       return "manager";
     default:
@@ -402,6 +406,7 @@ function settingsTabPageTitle(id: SettingsTab, t: ReturnType<typeof useT>): stri
   switch (id) {
     case "mcp": return t("settings.tab.mcp");
     case "skills": return t("settings.tab.skills");
+    case "plugins": return t("settings.tab.plugins");
     case "memory": return t("settings.tab.memory");
     case "shortcuts": return t("settings.tab.shortcuts");
     default: return settingsTabLabel(id, t);
@@ -432,6 +437,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.mcp");
     case "skills":
       return t("settings.tab.skills");
+    case "plugins":
+      return t("settings.tab.plugins");
     case "memory":
       return t("settings.tab.memory");
     case "hooks":
@@ -465,6 +472,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return t("caps.connectorsTab");
     case "skills":
       return t("caps.skillsTab");
+    case "plugins":
+      return t("settings.tabSub.plugins");
     case "memory":
       return t("settings.tabSub.memory");
     case "hooks":
@@ -636,6 +645,7 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // inferred by the backend or edited in TOML for rare gateways.
 const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
+const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
 const LANGUAGE_PREFS: LangPref[] = ["", "zh", "en"];
 const AUTO_PLAN_MODES = ["off", "on"] as const;
@@ -666,6 +676,11 @@ function normalizeAutoPlan(mode: string | undefined): AutoPlanMode {
 
 function normalizeReasoningProtocol(protocol: string | undefined): string {
   return REASONING_PROTOCOLS.includes(protocol ?? "") ? protocol ?? "" : "";
+}
+
+function normalizeThinkingMode(thinking: string | undefined): string {
+  const v = String(thinking ?? "").trim().toLowerCase();
+  return THINKING_MODES.includes(v) ? v : "";
 }
 
 export function providerEditorEffectiveKind(isNewCustomProvider: boolean, kind: string, kinds: string[]): string {
@@ -710,6 +725,60 @@ function parseProviderHeaders(raw: string): Record<string, string> {
     const key = trimmed.slice(0, cut).trim();
     const value = trimmed.slice(cut + 1).trim();
     if (key && value) out[key] = value;
+  }
+  return out;
+}
+
+function sortedJSONValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(sortedJSONValue);
+  if (value && typeof value === "object") {
+    const out: Record<string, unknown> = {};
+    for (const key of Object.keys(value as Record<string, unknown>).sort((a, b) => a.localeCompare(b))) {
+      out[key] = sortedJSONValue((value as Record<string, unknown>)[key]);
+    }
+    return out;
+  }
+  return value;
+}
+
+function validateProviderExtraBodyValue(value: unknown, path = "extra_body"): void {
+  if (value === null) {
+    throw new Error(`${path} cannot contain null`);
+  }
+  if (Array.isArray(value)) {
+    value.forEach((item, index) => validateProviderExtraBodyValue(item, `${path}[${index}]`));
+    return;
+  }
+  if (typeof value === "object") {
+    for (const [key, child] of Object.entries(value as Record<string, unknown>)) {
+      validateProviderExtraBodyValue(child, `${path}.${key}`);
+    }
+  }
+}
+
+export function formatProviderExtraBody(extraBody: Record<string, unknown> | null | undefined): string {
+  const cleaned: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(extraBody ?? {})) {
+    const key = rawKey.trim();
+    if (!key || value === undefined) continue;
+    cleaned[key] = value;
+  }
+  if (Object.keys(cleaned).length === 0) return "";
+  return JSON.stringify(sortedJSONValue(cleaned), null, 2);
+}
+
+export function parseProviderExtraBody(raw: string): Record<string, unknown> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  const parsed = JSON.parse(trimmed) as unknown;
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("extra body must be a JSON object");
+  }
+  validateProviderExtraBodyValue(parsed);
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, value] of Object.entries(parsed as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key) out[key] = value;
   }
   return out;
 }
@@ -867,6 +936,16 @@ function normalizeStringMap(value: unknown): Record<string, string> {
   return out;
 }
 
+function normalizeExtraBodyMap(value: unknown): Record<string, unknown> {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [rawKey, rawValue] of Object.entries(value as Record<string, unknown>)) {
+    const key = rawKey.trim();
+    if (key && rawValue !== undefined) out[key] = rawValue;
+  }
+  return out;
+}
+
 function normalizeProviderView(p: ProviderView): ProviderView {
   const visionModels = asArray(p.visionModels);
   const requiresKey = providerRequiresKey(p);
@@ -880,7 +959,9 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     visionModelsConfigured: Boolean(p.visionModelsConfigured ?? visionModels.length > 0),
     modelsUrl: p.modelsUrl ?? "",
     headers: normalizeStringMap(p.headers),
+    extraBody: normalizeExtraBodyMap(p.extraBody),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
+    thinking: normalizeThinkingMode(p.thinking),
     supportedEfforts: asArray(p.supportedEfforts),
     modelOverrides: asArray(p.modelOverrides),
     requiresKey,
@@ -900,9 +981,10 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     noProxy: "",
     proxy: { type: "socks5", server: "", port: 0, username: "", password: "" },
   };
-  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = view.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
   agent.plannerMaxSteps = Number.isFinite(agent.plannerMaxSteps) ? Math.max(0, Math.trunc(agent.plannerMaxSteps)) : 0;
   agent.maxSteps = Number.isFinite(agent.maxSteps) ? Math.max(0, Math.trunc(agent.maxSteps)) : 0;
+  agent.maxSubagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   agent.reasoningLanguage = normalizeReasoningLanguage(agent.reasoningLanguage);
   return {
     ...view,
@@ -1037,6 +1119,19 @@ function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): s
       return t("settings.reasoningProtocol.none");
     default:
       return t("settings.reasoningProtocol.auto");
+  }
+}
+
+function thinkingModeLabel(mode: string, t: ReturnType<typeof useT>): string {
+  switch (mode) {
+    case "enabled":
+      return t("settings.thinkingMode.enabled");
+    case "disabled":
+      return t("settings.thinkingMode.disabled");
+    case "adaptive":
+      return t("settings.thinkingMode.adaptive");
+    default:
+      return t("settings.thinkingMode.auto");
   }
 }
 
@@ -3124,7 +3219,8 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
     : !providerIsConfigured(defaultProviderView)
       ? t("settings.modelNeedsKey", { provider: modelProviderLabel(defaultProvider, defaultProviderView, t) })
       : "";
-  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const agent = s.agent ?? { temperature: 0, maxSteps: 0, plannerMaxSteps: 0, maxSubagentDepth: 2, systemPrompt: "", coldResumePrune: true, reasoningLanguage: "auto" };
+  const subagentDepth = Number.isFinite(agent.maxSubagentDepth) && agent.maxSubagentDepth <= 1 ? 1 : 2;
   const setAgentSteps = (maxSteps: number, plannerMaxSteps: number) => (
     app.SetAgentParams(agent.temperature, maxSteps, plannerMaxSteps, agent.systemPrompt)
   );
@@ -3234,6 +3330,23 @@ function ModelsSection({ s, busy, apply, backgroundApply }: ModelsSectionProps) 
                   </option>
                 ))}
               </select>
+            </SettingsField>
+
+            <SettingsField label={t("settings.subagentDepth")} hint={t("settings.subagentDepthHint")}>
+              <div className="provider-add-segmented" role="group" aria-label={t("settings.subagentDepth")}>
+                {[1, 2].map((depth) => (
+                  <button
+                    key={depth}
+                    type="button"
+                    className={subagentDepth === depth ? "provider-add-segmented__item provider-add-segmented__item--active" : "provider-add-segmented__item"}
+                    disabled={busy}
+                    aria-pressed={subagentDepth === depth}
+                    onClick={() => void apply(() => app.SetMaxSubagentDepth(depth))}
+                  >
+                    {depth === 1 ? t("settings.subagentDepthOne") : t("settings.subagentDepthTwo")}
+                  </button>
+                ))}
+              </div>
             </SettingsField>
 
             {modelIssue && <div className="provider-fetch-banner provider-fetch-banner--warn">{modelIssue}</div>}
@@ -4469,12 +4582,14 @@ function ProviderEditor({
   const [modelsUrl, setModelsUrl] = useState(initial?.modelsUrl ?? "");
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
+  const [extraBodyDraft, setExtraBodyDraft] = useState(formatProviderExtraBody(initial?.extraBody));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
   // of a bare "0"; saved back as 0.
   const [ctx, setCtx] = useState(initial?.contextWindow ? String(initial.contextWindow) : "");
   const [reasoningProtocol, setReasoningProtocol] = useState(normalizeReasoningProtocol(initial?.reasoningProtocol));
+  const [thinking, setThinking] = useState(normalizeThinkingMode(initial?.thinking));
   const [supportedEfforts] = useState<string[]>(initial?.supportedEfforts ?? []);
   const [defaultEffort] = useState(initial?.defaultEffort ?? "");
   const [fetchingModels, setFetchingModels] = useState(false);
@@ -4488,6 +4603,15 @@ function ProviderEditor({
   const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
   const effectiveModelsUrl = modelsUrl.trim();
   const effectiveHeaders = parseProviderHeaders(headersDraft);
+  const extraBodyParse = useMemo(() => {
+    try {
+      return { value: parseProviderExtraBody(extraBodyDraft), error: "" };
+    } catch {
+      return { value: {}, error: t("settings.providerExtraBodyError") };
+    }
+  }, [extraBodyDraft, t]);
+  const effectiveExtraBody = extraBodyParse.value;
+  const extraBodyInvalid = Boolean(extraBodyDraft.trim() && extraBodyParse.error);
   const previewChatUrl = providerChatURLPreview(baseUrl, chatUrl, fullChatUrl);
 
   // Empty supportedEfforts means "use protocol defaults". The simplified
@@ -4504,6 +4628,7 @@ function ProviderEditor({
   const cleanDefaultEffort = cleanedSupportedEfforts.includes(normalizedDefaultEffort) ? normalizedDefaultEffort : "";
 
   const fetchModels = async () => {
+    if (extraBodyInvalid) return;
     setFetchingModels(true);
     setFetchStatus(null);
     setFetchFallback(null);
@@ -4525,10 +4650,12 @@ function ProviderEditor({
         default: "",
         apiKeyEnv: effectiveApiKeyEnv,
         headers: effectiveHeaders,
+        extraBody: effectiveExtraBody,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
         balanceUrl: balanceUrl.trim(),
         contextWindow: Number(ctx) || 0,
         reasoningProtocol,
+        thinking,
         supportedEfforts: cleanedSupportedEfforts,
         defaultEffort: cleanDefaultEffort,
         modelOverrides: initial?.modelOverrides ?? [],
@@ -4554,6 +4681,7 @@ function ProviderEditor({
   };
 
   const save = async () => {
+    if (extraBodyInvalid) return;
     const ms = parseProviderListInput(models);
     const vms = parseProviderListInput(visionModels).filter((model) => ms.includes(model));
     const effectiveApiKeyEnv = providerApiKeyEnvForSave(name, apiKeyEnv, keyDraft);
@@ -4571,11 +4699,13 @@ function ProviderEditor({
       default: ms[0] ?? "",
       apiKeyEnv: effectiveApiKeyEnv,
       headers: effectiveHeaders,
+      extraBody: effectiveExtraBody,
       modelsUrl: effectiveModelsUrl,
       keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
       balanceUrl: balanceUrl.trim(),
       contextWindow: Number(ctx) || 0,
       reasoningProtocol,
+      thinking,
       supportedEfforts: cleanedSupportedEfforts,
       // Clear the stored default if no levels are selected; the backend's
       // NormalizeEffort would otherwise silently ignore an unsupported value.
@@ -4714,6 +4844,17 @@ function ProviderEditor({
           rows={3}
         />
         <div className="mem-hint">{t("settings.providerHeadersHint")}</div>
+        <label className="set-label">{t("settings.providerExtraBody")}</label>
+        <textarea
+          className="mem-textarea provider-headers-textarea"
+          placeholder={t("settings.providerExtraBodyPlaceholder")}
+          value={extraBodyDraft}
+          onChange={(e) => setExtraBodyDraft(e.target.value)}
+          rows={4}
+        />
+        <div className={`mem-hint${extraBodyInvalid ? " mem-hint--error" : ""}`}>
+          {extraBodyInvalid ? extraBodyParse.error : t("settings.providerExtraBodyHint")}
+        </div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (
@@ -4723,6 +4864,15 @@ function ProviderEditor({
           ))}
         </select>
         <div className="mem-hint">{t("settings.reasoningProtocolHint")}</div>
+        <label className="set-label">{t("settings.thinkingMode")}</label>
+        <select className="mem-select" value={thinking} onChange={(e) => setThinking(normalizeThinkingMode(e.target.value))}>
+          {THINKING_MODES.map((mode) => (
+            <option key={mode || "auto"} value={mode}>
+              {thinkingModeLabel(mode, t)}
+            </option>
+          ))}
+        </select>
+        <div className="mem-hint">{t("settings.thinkingModeHint")}</div>
         <label className="set-label">{t("settings.providerBalanceUrl")}</label>
         <input
           className="mem-input"
@@ -4820,7 +4970,7 @@ function ProviderEditor({
         <button
           type="button"
           className="btn btn--small"
-          disabled={busy || fetchingModels || !canFetch}
+          disabled={busy || fetchingModels || !canFetch || extraBodyInvalid}
           onClick={() => void fetchModels()}
         >
           {fetchingModels ? t("settings.fetchingModels") : t("settings.testFetchModels")}
@@ -4847,7 +4997,7 @@ function ProviderEditor({
         <button className="btn btn--small" onClick={onCancel} disabled={busy}>
           {t("common.cancel")}
         </button>
-        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !effectiveBaseUrl || !models.trim()}>
+        <button className="btn btn--primary btn--small" onClick={() => void save()} disabled={busy || !name.trim() || !effectiveBaseUrl || !models.trim() || extraBodyInvalid}>
           {t("common.save")}
         </button>
       </div>

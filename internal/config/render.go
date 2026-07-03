@@ -119,7 +119,7 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 		b.WriteString("\n")
 
 		b.WriteString("[notifications]\n")
-		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI chat/run; default off\n", c.Notifications.Enabled)
+		fmt.Fprintf(&b, "enabled = %v   # system notifications for CLI and desktop turns; default off\n", c.Notifications.Enabled)
 		fmt.Fprintf(&b, "turn_done = %v   # notify when a turn finishes\n", c.Notifications.TurnDone)
 		fmt.Fprintf(&b, "approval_request = %v   # notify when a tool approval is waiting\n", c.Notifications.ApprovalRequest)
 		fmt.Fprintf(&b, "ask_request = %v   # notify when a question is waiting\n", c.Notifications.AskRequest)
@@ -263,6 +263,11 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 	} else {
 		b.WriteString("# subagent_efforts = { review = \"max\", task = \"high\" }   # per-tool/skill effort overrides\n")
 	}
+	if c.Agent.MaxSubagentDepth != defaults.Agent.MaxSubagentDepth {
+		fmt.Fprintf(&b, "max_subagent_depth = %d   # nested subagent delegation depth; 1 restores the old single-layer boundary\n", c.Agent.MaxSubagentDepth)
+	} else {
+		b.WriteString("# max_subagent_depth = 2   # nested subagent delegation depth; set 1 to disable nested delegation\n")
+	}
 	if c.Agent.OutputStyle != "" {
 		fmt.Fprintf(&b, "output_style = %q   # persona/tone folded into the prompt\n", c.Agent.OutputStyle)
 	} else {
@@ -293,6 +298,9 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
 			if len(p.Headers) > 0 {
 				fmt.Fprintf(&b, "headers     = %s   # extra static request headers; keep secrets in api_key_env\n", renderStringMap(p.Headers))
+			}
+			if len(p.ExtraBody) > 0 {
+				fmt.Fprintf(&b, "extra_body  = %s   # extra top-level JSON request body fields for compatible gateways\n", renderAnyMap(p.ExtraBody))
 			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
@@ -741,6 +749,10 @@ func RenderTOMLProjectDelta(c *Config) string {
 		fmt.Fprintf(&agentBuf, "subagent_efforts = %s\n", renderStringMap(c.Agent.SubagentEfforts))
 		anyAgent = true
 	}
+	if c.Agent.MaxSubagentDepth != d.Agent.MaxSubagentDepth {
+		fmt.Fprintf(&agentBuf, "max_subagent_depth = %d\n", c.Agent.MaxSubagentDepth)
+		anyAgent = true
+	}
 	if c.Agent.OutputStyle != "" && c.Agent.OutputStyle != d.Agent.OutputStyle {
 		fmt.Fprintf(&agentBuf, "output_style = %q\n", c.Agent.OutputStyle)
 		anyAgent = true
@@ -777,6 +789,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
 			if len(p.Headers) > 0 {
 				fmt.Fprintf(&b, "headers     = %s\n", renderStringMap(p.Headers))
+			}
+			if len(p.ExtraBody) > 0 {
+				fmt.Fprintf(&b, "extra_body  = %s\n", renderAnyMap(p.ExtraBody))
 			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q\n", p.BalanceURL)
@@ -1193,6 +1208,86 @@ func renderStringMap(m map[string]string) string {
 	}
 	b.WriteString(" }")
 	return b.String()
+}
+
+func renderAnyMap(m map[string]any) string {
+	keys := make([]string, 0, len(m))
+	for k, v := range m {
+		if strings.TrimSpace(k) == "" {
+			continue
+		}
+		if _, ok := renderAnyValue(v); ok {
+			keys = append(keys, k)
+		}
+	}
+	sort.Strings(keys)
+	var b strings.Builder
+	b.WriteString("{ ")
+	for i, k := range keys {
+		if i > 0 {
+			b.WriteString(", ")
+		}
+		value, _ := renderAnyValue(m[k])
+		fmt.Fprintf(&b, "%s = %s", strconv.Quote(k), value)
+	}
+	b.WriteString(" }")
+	return b.String()
+}
+
+func renderAnyValue(v any) (string, bool) {
+	switch x := v.(type) {
+	case nil:
+		return "", false
+	case string:
+		return strconv.Quote(x), true
+	case bool:
+		if x {
+			return "true", true
+		}
+		return "false", true
+	case int:
+		return strconv.Itoa(x), true
+	case int8:
+		return strconv.FormatInt(int64(x), 10), true
+	case int16:
+		return strconv.FormatInt(int64(x), 10), true
+	case int32:
+		return strconv.FormatInt(int64(x), 10), true
+	case int64:
+		return strconv.FormatInt(x, 10), true
+	case uint:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint8:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint16:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint32:
+		return strconv.FormatUint(uint64(x), 10), true
+	case uint64:
+		return strconv.FormatUint(x, 10), true
+	case float32:
+		return formatFloat(float64(x)), true
+	case float64:
+		return formatFloat(x), true
+	case []any:
+		parts := make([]string, 0, len(x))
+		for _, item := range x {
+			part, ok := renderAnyValue(item)
+			if !ok {
+				return "", false
+			}
+			parts = append(parts, part)
+		}
+		return "[" + strings.Join(parts, ", ") + "]", true
+	case []string:
+		return renderStringArray(x), true
+	case map[string]any:
+		return renderAnyMap(x), true
+	case map[string]string:
+		return renderStringMap(x), true
+	default:
+		return "", false
+	}
 }
 
 func renderModelOverrides(m map[string]ProviderModelOverride) string {

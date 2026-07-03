@@ -17,6 +17,7 @@
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
 - [Custom OpenAI-compatible providers](#custom-openai-compatible-providers)
+- [Desktop hooks](#desktop-hooks)
 - [Keyboard shortcuts](#keyboard-shortcuts)
 - [Permissions & sandbox](#permissions--sandbox)
 - [Plugins (MCP)](#plugins-mcp)
@@ -63,6 +64,7 @@ reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # planner_model = "deepseek-pro"      # optional low-frequency planner
 # subagent_model = "deepseek-pro"     # optional default for runAs=subagent skills
 # subagent_models = { review = "deepseek-pro", security_review = "deepseek-pro" }
+# max_subagent_depth = 2              # nested delegation depth; set 1 for the old single-layer boundary
 auto_plan = "off"                  # user-level only; off|on; off keeps plan mode manual
 # auto_plan_classifier = "deepseek-flash"   # optional; only borderline tasks call it
 tool_result_snip_ratio = 0.6       # shorten stale tool output before summary compaction
@@ -219,12 +221,86 @@ preview under the field shows the exact request URL that will be used.
 
 Model discovery uses the API address to try likely model-list URLs such as
 `/models` and `/v1/models`. If the gateway requires a separate model-list
-endpoint, open **Advanced settings** and set `models_url`, for example
+endpoint, open **Compatibility settings** and set `models_url`, for example
 `https://gateway.example.com/v1/models`. If discovery is not available, fill the
 model list manually.
 
 **Full URL** still uses the OpenAI-compatible chat request body. It does not
 switch the request schema to the OpenAI Responses API.
+
+### Compatibility settings
+
+The **Compatibility settings (usually leave unchanged)** section is for gateways
+whose authentication, model-list endpoint, or reasoning/thinking request shape
+differs from the normal OpenAI-compatible defaults. Leave these fields at their
+defaults unless the provider documentation or a proxy error tells you otherwise.
+
+| Field | What it controls | When to change it |
+| --- | --- | --- |
+| `api_key_env` | The environment-variable name used for this provider's API key. Desktop-saved key values are stored in Reasonix home `.env` under this name; the TOML config stores only the name. | Change it when several providers need distinct keys, or leave it blank for a service that does not require an API key. |
+| `models_url` | The URL used only for model discovery. Chat requests still use the API address or Full URL above. | Set it when `/models` or `/v1/models` is not where the gateway exposes its model list. |
+| Extra request headers | Static HTTP headers, one `Header: value` per line. | Use for gateways such as OpenRouter that require `HTTP-Referer`, `X-Title`, or similar site headers. Keep bearer/API keys in the key field instead of duplicating them here. |
+| Extra request body | A JSON object merged into the top-level chat request body. | Use only for provider-specific flags such as `{"enable_thinking": true}`. Reasonix still owns core fields such as `model`, `messages`, `tools`, `stream`, and `thinking`, and null values are rejected. |
+| Model capability mode | Which reasoning request protocol Reasonix should use for this provider. | Keep **Auto-detect** unless the gateway is misdetected or the model docs require a specific reasoning format. |
+| Thinking override | Provider-specific override for `thinking.type`. | Keep **Auto** unless the backend documents `enabled`, `disabled`, or `adaptive`. Unsupported values can make some OpenAI-compatible gateways reject the request. |
+| Balance URL | Optional endpoint for wallet/balance lookup. | Set it when the provider exposes a balance endpoint and you want the desktop status bar to show it. |
+| Context window | The maximum number of tokens this provider keeps in context. `0` means provider default. | Set it when the model's real context size differs from Reasonix's default or built-in metadata. |
+
+Model capability mode options:
+
+| Option | Effect |
+| --- | --- |
+| Auto-detect (recommended) | Reasonix chooses the request shape from model capability metadata and endpoint detection. |
+| DeepSeek thinking | Uses DeepSeek-style thinking control, including `thinking.type` and DeepSeek-supported reasoning depth. |
+| OpenAI reasoning | Uses the standard OpenAI-compatible `reasoning_effort` levels. |
+| Plain chat | Sends no reasoning or thinking control fields. Use this for text-only proxies that reject reasoning parameters. |
+
+Thinking override options:
+
+| Option | Effect |
+| --- | --- |
+| Auto (provider default) | Does not write an explicit provider-level `thinking` override. Reasonix uses the provider/model default behavior. |
+| Enabled | Sends `thinking.type = "enabled"` for compatible providers. |
+| Disabled | Sends `thinking.type = "disabled"` for compatible providers. On DeepSeek-style providers this also avoids sending a reasoning depth hint. |
+| Adaptive (self-adjusting) | Sends or preserves `thinking.type = "adaptive"` only for providers that document adaptive thinking, such as MiniMax-M3-style endpoints. |
+
+Some OpenAI-compatible gateways require non-standard top-level request body
+fields. Add them with `extra_body` on the provider entry:
+
+```toml
+[[providers]]
+name        = "spark"
+kind        = "openai"
+base_url    = "https://maas-coding-api.cn-huabei-1.xf-yun.com/v2"
+models      = ["xopglm52"]
+api_key_env = "SPARK_API_KEY"
+extra_body  = { enable_thinking = true }
+```
+
+`extra_body` is merged into the chat JSON request body. Reasonix keeps core
+fields such as `model`, `messages`, `tools`, `stream`, and `thinking` under its
+own control.
+
+## Desktop hooks
+
+Desktop hooks run local commands at lifecycle events such as `SessionStart`,
+`UserPromptSubmit`, `PreToolUse`, and `PreCompact`. A successful `SessionStart`
+hook may write plain text to stdout, or return JSON with
+`hookSpecificOutput.additionalContext`; Reasonix injects that text once into the
+next real user turn as `<hook-context event="SessionStart">...</hook-context>`.
+This is intended for plugin or workflow bootstrap context, including
+Superpowers-style startup instructions, without baking that workflow into
+Reasonix's system prompt.
+
+Plugin packages can provide this startup context through
+`hooks/session-start-codex` or a plugin-root `CLAUDE.md`. Claude-style
+`.claude/settings.json` command hooks are also mapped to matching Reasonix hook
+events.
+
+The injected hook context is dynamic current-turn context. It does not change
+the stable system prompt, memory prefix, or tool schema, though dynamic content
+can still reduce cache reuse for that turn. The detailed desktop hook schema and
+trust model are documented in [the Chinese desktop hooks guide](./DESKTOP_HOOKS.zh-CN.md).
 
 ## Keyboard shortcuts
 
@@ -302,7 +378,8 @@ Chat and transcript shortcuts:
 | `Ctrl+L` or `/cls` | Clears only the visible transcript | The LLM context, session file, tools, memory, and plugins stay loaded. Use `/clear` when you want to discard the conversation context. |
 | `Esc` | Backs out of the current action | It un-sends a just-submitted turn before any reply, cancels a running turn, or clears non-empty input. |
 | Double `Esc` on an empty idle composer | Opens the rewind picker | Same entry point as `/rewind`. |
-| Transcript text selection | Copies transcript text | The full-screen TUI enables mouse reporting, so drag in the transcript to select text in-app, then press `Ctrl+C`, `Super+C`, `Meta+C`, or right-click the active selection to copy it. |
+| Transcript text selection | Copies transcript text | The full-screen TUI enables mouse reporting, so drag in the transcript to select text in-app; releasing the mouse copies it automatically, and `Ctrl+C`/`Super+C`/`Meta+C` or right-clicking the active selection copy it again. |
+| `/mouse` | Toggles in-app mouse capture | Off hands the mouse back to your terminal, restoring its native click-drag selection and right-click context menu, at the cost of in-app drag-select, the transcript scrollbar, and wheel-scroll. Set `REASONIX_DISABLE_MOUSE=1` to start every session with it off. |
 | `Ctrl+C` | Copies, cancels, clears, or quits | Copies an active transcript selection first. Otherwise it cancels a running turn, clears non-empty input, or quits on a second empty-composer press. |
 | `Ctrl+D` | Quits the TUI | Immediate quit. |
 | `Ctrl+V`, `Ctrl+Shift+V`, `Meta+V`, or `Super+V` | Pastes clipboard content | The CLI tries an image first, then falls back to text or file references. |
@@ -611,11 +688,22 @@ Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only
 specific skills such as `review` or `security_review`.
 
+Subagents may delegate one more layer by default: the root session is depth 0,
+first-layer subagents are depth 1, and the maximum `max_subagent_depth = 2`
+means a depth-1 workflow can dispatch a depth-2 reviewer or implementer. Depth-2
+subagents do not receive recursive agent/skill tools. Set
+`agent.max_subagent_depth = 1` to restore the old single-layer boundary. This is
+intended for workflows such as Superpowers where a workflow skill may dispatch a
+reviewer subagent, while still avoiding unbounded recursion and background
+fanout.
+
 Use `read_only_task` when planning needs isolated, deeper research without
 granting write-capable delegation. Use `read_only_skill` when the same need is
 best expressed through an existing skill. Both run ephemeral read-only
 subagents with only read-only research tools plus safe foreground bash, return
-only the final answer, and do not create resumable subagent transcripts. In
+only the final answer, and do not create resumable subagent transcripts.
+Read-only nested delegation may be available until `max_subagent_depth` is
+reached, but writer-capable `task` / `run_skill` remain unavailable. In
 token economy mode, connect only this narrow surface with
 `connect_tool_source(source="read_only_skill")`; the full `skills` source still
 enables writer-capable skill tools and remains blocked in plan mode.

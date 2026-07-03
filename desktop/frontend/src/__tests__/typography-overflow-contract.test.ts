@@ -160,6 +160,16 @@ ok(
 );
 
 eq(finalDeclaration(".composer-modebar", "overflow"), "hidden", "chat mode switcher contains enlarged labels");
+eq(
+  finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
+  "0 !important",
+  "collapsed creation tool bodies keep mounted content clipped",
+);
+eq(
+  finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "visibility"),
+  "hidden",
+  "collapsed creation tool bodies do not paint hidden tool text",
+);
 ok(
   /@container\s*\(max-width:\s*760px\)[\s\S]*?\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(240px,\s*42vw\)[\s\S]*?\.composer-meta--has-intent-chip\s+\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(220px,\s*38vw\)[\s\S]*?\.composer-meta__control--effort\s*\{[\s\S]*?display\s*:\s*none[\s\S]*?\.composer-meta__control--more\s*\{[\s\S]*?display\s*:\s*inline-flex/.test(styles),
   "composer compact controls activate at the capped theme width",

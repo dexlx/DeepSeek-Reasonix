@@ -84,6 +84,9 @@ type Controller struct {
 	// skill.go.
 	skills skillSet
 	hooks  *hook.Runner // session hook runner; nil-safe (no hooks configured)
+	// hookContexts carries one-shot lifecycle hook context into the next real
+	// user turn without changing the cache-stable system prompt.
+	hookContexts []string
 	// memory owns the loaded memory snapshot, the pending turn-tail notes queue,
 	// and write serialization behind its own locks, off c.mu — so a memory-panel
 	// save never stalls an approval or status poll. See memory.go.
@@ -758,7 +761,7 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 				c.notice("compaction failed: " + err.Error())
 			} else {
 				c.notice("compacted")
-				if err := c.Snapshot(); err != nil {
+				if err := c.SnapshotRewrite(); err != nil {
 					slog.Warn("controller: snapshot after compact", "err", err)
 				}
 			}
@@ -791,9 +794,8 @@ func (c *Controller) submitCommandOrTurn(trimmed, input, display string, scopedR
 			}
 			return runGoalLoop(ctx, sent, sent, display)
 		})
-	case strings.HasPrefix(trimmed, "//"):
-		// Double-slash — not a command. Common in code snippets (JS
-		// comments, file:// URLs). Run as a normal turn.
+	case SlashCodeCommentLine(trimmed):
+		// Slash-prefixed code comments are prompt text, not slash commands.
 		runRefTurn(input, display)
 	case strings.HasPrefix(trimmed, "/"):
 		if ref, ok := FileRefLine(trimmed); ok {
@@ -1941,7 +1943,7 @@ func (c *Controller) maybeSessionStart(ctx context.Context) {
 	}
 	c.startedOnce = true
 	c.mu.Unlock()
-	c.hooks.SessionStart(ctx)
+	c.enqueueHookContexts(c.hooks.SessionStart(ctx))
 }
 
 // NewSession snapshots the current conversation, rotates to a fresh file, and
@@ -1971,7 +1973,7 @@ func (c *Controller) NewSession() error {
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
-	c.hooks.SessionStart(context.Background())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
 	return nil
 }
 
@@ -2019,7 +2021,7 @@ func (c *Controller) ClearSession() error {
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
-	c.hooks.SessionStart(context.Background())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
 	if destroy.Async {
 		go func() {
 			result := destroy.Wait()
@@ -2146,7 +2148,7 @@ func (c *Controller) Rewind(turn int, scope RewindScope) error {
 		}
 		s.Messages = s.Messages[:boundary]
 		c.checkpoints.truncateFrom(turn) // renumber future turns from here; later turns are gone
-		if err := c.Snapshot(); err != nil {
+		if err := c.SnapshotRewrite(); err != nil {
 			slog.Warn("controller: snapshot after rewind", "err", err)
 		}
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
@@ -2436,7 +2438,7 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 	// the turn counter monotonic so new turns don't collide with the store) —
 	// conversation rewind degrades to "unavailable" until fresh turns rebuild them.
 	c.checkpoints.clearBounds()
-	if err := c.Snapshot(); err != nil {
+	if err := c.SnapshotRewrite(); err != nil {
 		slog.Warn("controller: post-summarize snapshot", "err", err)
 	}
 	return nil
@@ -2520,7 +2522,7 @@ func (c *Controller) maybeColdResumePrune(path string) {
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(
 		"resumed after %s idle (provider cache expired) — elided %d stale tool results to cheapen the cold restart",
 		time.Since(last).Round(time.Minute), st.Results)})
-	if err := c.Snapshot(); err != nil {
+	if err := c.SnapshotRewrite(); err != nil {
 		slog.Warn("controller: post-prune snapshot", "err", err)
 	}
 }
@@ -2531,7 +2533,7 @@ func (c *Controller) maybeColdResumePrune(path string) {
 // path, so a misconfigured deployment surfaces instead of dropping data.
 // Called after every turn so a crash loses at most one in-flight prompt.
 func (c *Controller) Snapshot() error {
-	return c.snapshot(false)
+	return c.snapshot(false, false)
 }
 
 // SnapshotActivity writes the active conversation and marks the session as
@@ -2539,7 +2541,14 @@ func (c *Controller) Snapshot() error {
 // transcript; switch/close snapshots should call Snapshot so they do not reorder
 // recent-session pickers.
 func (c *Controller) SnapshotActivity() error {
-	return c.snapshot(true)
+	return c.snapshot(true, false)
+}
+
+// SnapshotRewrite persists an intentional history rewrite, such as rewind or
+// manual compaction. Ordinary autosave paths should use Snapshot so stale
+// controllers cannot overwrite a newer transcript.
+func (c *Controller) SnapshotRewrite() error {
+	return c.snapshot(false, true)
 }
 
 // midTurnSnapshotInterval is atomic (nanoseconds) so a test shrinking it
@@ -2560,14 +2569,14 @@ func (c *Controller) autosaveWhileRunning(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case <-t.C:
-			if err := c.snapshot(false); err != nil {
+			if err := c.snapshot(false, false); err != nil {
 				slog.Warn("controller: mid-turn snapshot", "err", err)
 			}
 		}
 	}
 }
 
-func (c *Controller) snapshot(markActivity bool) error {
+func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
 	c.mu.Lock()
 	path := c.sessionPath
 	modelRef := c.modelRef
@@ -2601,7 +2610,13 @@ func (c *Controller) snapshot(markActivity bool) error {
 			"label", c.Label(), "session_dir", c.SessionDir())
 		return errNoSessionPath
 	}
-	if err := s.Save(path); err != nil {
+	var err error
+	if forceRewrite {
+		err = s.SaveRewrite(path)
+	} else {
+		err = s.SaveSnapshot(path)
+	}
+	if err != nil {
 		return err
 	}
 	// Persist guardian session so the prefix cache stays warm after restart.
@@ -2670,7 +2685,7 @@ func (c *Controller) recoverInterruptedTurn(path string) {
 		} else {
 			c.stripTurnMessagesAfter(marker.StartMessageIndex)
 		}
-		if err := c.snapshot(false); err != nil {
+		if err := c.snapshot(false, true); err != nil {
 			slog.Warn("controller: post-interrupted-turn snapshot", "err", err)
 		}
 	}
@@ -2727,16 +2742,16 @@ func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
 	// the in_progress items written by the cancelled turn.
 	c.executor.RebuildTodoState()
 	// The mid-turn autosave may have already written a partial transcript to
-	// disk.  snapshotActivityIfChanged skips the write when messageCount()
-	// returns to startMessages, so force a flush here to overwrite the stale
-	// file.  We call Session.Save directly to cover the edge case where the
-	// strip leaves only a system message (HasContent() == false), which would
-	// cause snapshot() to return early without writing.
+	// disk. snapshotActivityIfChanged skips the write when messageCount()
+	// returns to startMessages, so flush the cleaned transcript here. SaveRewrite
+	// still checks that this controller owns the current on-disk baseline before
+	// overwriting it, and also covers the edge case where the strip leaves only a
+	// system message (HasContent() == false).
 	c.mu.Lock()
 	path := c.sessionPath
 	c.mu.Unlock()
 	if path != "" {
-		if err := c.executor.Session().Save(path); err != nil {
+		if err := c.executor.Session().SaveRewrite(path); err != nil {
 			slog.Warn("controller: post-cancel transcript flush", "err", err)
 		}
 	}
