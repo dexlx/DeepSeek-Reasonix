@@ -2660,6 +2660,11 @@ a[href] {
   color: var(--warn);
   border-bottom: 1px solid var(--border-soft);
 }
+.banner--success {
+  background: color-mix(in srgb, var(--ok) 10%, var(--bg-elev));
+  color: var(--ok);
+  border-bottom: 1px solid var(--border-soft);
+}
 .banner--update {
   display: flex;
   align-items: center;
@@ -10241,6 +10246,200 @@ body > .mermaid-diagram--fullscreen {
   gap: 8px;
   flex: 0 0 auto;
 }
+.cap-plugin-installer {
+  --cap-plugin-side: minmax(240px, 280px);
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.cap-plugin-installer__head {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--cap-plugin-side);
+  align-items: flex-start;
+  column-gap: 16px;
+}
+.cap-plugin-installer__copy,
+.cap-server-section__copy {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.cap-plugin-installer__title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1.35;
+}
+.cap-plugin-installer__hint {
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.4;
+}
+.cap-plugin-installer__mode {
+  width: 100%;
+}
+.cap-plugin-form-grid {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--cap-plugin-side);
+  gap: 10px;
+}
+.cap-plugin-fields,
+.cap-plugin-installer__options {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--cap-plugin-side);
+  gap: 10px 16px;
+  align-items: flex-start;
+}
+.cap-plugin-fields {
+  min-height: 35px;
+}
+.cap-plugin-folder-field {
+  grid-column: 1 / -1;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+.cap-plugin-field {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.cap-plugin-field .mem-input,
+.cap-plugin-fields > .mem-input {
+  width: 100%;
+}
+.cap-plugin-path {
+  min-height: 34px;
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  padding: 7px 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 7px;
+  background: var(--bg);
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.cap-plugin-path--empty {
+  color: var(--fg-faint);
+  font-family: inherit;
+}
+.cap-plugin-installer__options {
+  min-height: 48px;
+}
+.cap-plugin-option-block {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.cap-plugin-installer__actions {
+  grid-column: 2;
+  display: inline-flex;
+  justify-content: flex-end;
+  justify-self: flex-end;
+  gap: 8px;
+}
+.cap-plugin-option {
+  --wails-draggable: no-drag;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.35;
+}
+.cap-plugin-option input {
+  margin: 0;
+  accent-color: var(--accent);
+}
+.cap-plugin-option-hint {
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.cap-plugin-plan {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0 0 12px;
+  padding: 10px 0 10px 12px;
+  border-left: 2px solid color-mix(in srgb, var(--accent) 42%, var(--border));
+}
+.cap-plugin-plan--error {
+  border-left-color: var(--err);
+}
+.cap-plugin-plan__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cap-plugin-plan__title {
+  color: var(--fg);
+  font-size: 12px;
+  font-weight: 700;
+}
+.cap-plugin-plan__meta,
+.cap-plugin-action__source {
+  color: var(--fg-dim);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cap-plugin-plan__warning {
+  color: var(--warn);
+  font-size: 11px;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.cap-plugin-plan__raw {
+  max-height: 150px;
+  margin: 0;
+  overflow: auto;
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.cap-plugin-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+}
+.cap-plugin-action {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 5px 8px;
+}
+.cap-plugin-action__name {
+  color: var(--fg);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.cap-plugin-description {
+  margin-top: 8px;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
 .cap-tabs {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -10666,6 +10865,7 @@ body > .mermaid-diagram--fullscreen {
 @media (max-width: 760px) {
   .cap-mcp-toolbar,
   .cap-server-section__head,
+  .cap-plugin-installer__head,
   .cap-failures__head,
   .cap-failure {
     display: flex;
@@ -10674,10 +10874,26 @@ body > .mermaid-diagram--fullscreen {
   }
 
   .cap-mcp-toolbar__actions,
+  .cap-plugin-installer__actions,
   .cap-failures__actions,
   .cap-failure__actions,
   .cap-failures__bulk {
     justify-content: flex-start;
+  }
+
+  .cap-plugin-form-grid,
+  .cap-plugin-fields,
+  .cap-plugin-installer__options,
+  .cap-plugin-folder-field {
+    grid-template-columns: 1fr;
+  }
+
+  .cap-plugin-installer__actions {
+    grid-column: auto;
+  }
+
+  .cap-plugin-installer__actions {
+    justify-self: flex-start;
   }
 }
 .cap-skills {
