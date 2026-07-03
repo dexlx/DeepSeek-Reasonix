@@ -287,6 +287,7 @@ export function ContextPanel({
   const [info, setInfo] = useState<ContextPanelInfo | null>(null);
   const [analysisView, setAnalysisView] = useState<UsageAnalysisView>("source");
   const refreshSeq = useRef(0);
+  const lastRefreshTime = useRef(0);
 
   const refresh = useCallback(async () => {
     if (!tabId) return;
@@ -311,19 +312,25 @@ export function ContextPanel({
     void refresh();
   }, [refresh, refreshKey]);
 
-  const hasPanelUsage = Boolean(
-    (info?.requestCount ?? 0) > 0 ||
-    (info?.promptTokens ?? 0) > 0 ||
-    (info?.completionTokens ?? 0) > 0 ||
-    (info?.totalTokens ?? 0) > 0 ||
-    (info?.reasoningTokens ?? 0) > 0 ||
-    (info?.cacheHitTokens ?? 0) > 0 ||
-    (info?.cacheMissTokens ?? 0) > 0
-  );
+  // Throttled background refresh during streaming — calls app.ContextPanel() at
+  // most once per second so session-cumulative data (totalTokens, elapsedMs,
+  // requestCount, sources, readFiles, changedFiles) stays near real-time while
+  // the AI is actively generating. Deps are session-cumulative cache values that
+  // change on every usage event; once streaming stops the effect stops firing.
+  useEffect(() => {
+    const now = Date.now();
+    if (now - lastRefreshTime.current >= 1000) {
+      lastRefreshTime.current = now;
+      void refresh();
+    }
+  }, [usage?.sessionCacheHitTokens, usage?.sessionCacheMissTokens, refresh]);
+
   const usedTokens = context?.used && context.used > 0 ? context.used : info?.usedTokens ?? 0;
   const windowTokens = context?.window && context.window > 0 ? context.window : info?.windowTokens ?? 0;
-  const promptTokens = hasPanelUsage ? info?.promptTokens ?? 0 : usage?.promptTokens ?? 0;
-  const completionTokens = hasPanelUsage ? info?.completionTokens ?? 0 : usage?.completionTokens ?? 0;
+  // Prefer live usage props (updated in real-time by the reducer during streaming)
+  // over the async-fetched info snapshot (only refreshed on turn_done).
+  const promptTokens = usage?.promptTokens ?? info?.promptTokens ?? 0;
+  const completionTokens = usage?.completionTokens ?? info?.completionTokens ?? 0;
   const totalTokens = info?.totalTokens && info.totalTokens > 0
     ? info.totalTokens
     : sessionTokens && sessionTokens > 0
@@ -331,10 +338,12 @@ export function ContextPanel({
       : usage?.totalTokens && usage.totalTokens > 0
         ? usage.totalTokens
         : promptTokens + completionTokens;
-  const reasoningTokens = hasPanelUsage ? info?.reasoningTokens ?? 0 : usage?.reasoningTokens ?? 0;
+  const reasoningTokens = usage?.reasoningTokens ?? info?.reasoningTokens ?? 0;
   // Session-cumulative values for the top summary.
-  const sessionCacheHit = info?.sessionCacheHitTokens ?? usage?.sessionCacheHitTokens ?? context?.cacheHitTokens ?? 0;
-  const sessionCacheMiss = info?.sessionCacheMissTokens ?? usage?.sessionCacheMissTokens ?? context?.cacheMissTokens ?? 0;
+  // Prefer usage.sessionCacheHitTokens — it is the session-cumulative value from
+  // the Go agent (includes background tasks) and arrives with every usage event.
+  const sessionCacheHit = usage?.sessionCacheHitTokens ?? info?.sessionCacheHitTokens ?? context?.cacheHitTokens ?? 0;
+  const sessionCacheMiss = usage?.sessionCacheMissTokens ?? info?.sessionCacheMissTokens ?? context?.cacheMissTokens ?? 0;
   const totalTokensMetric = formatMetricTokens(totalTokens, locale);
   const cost = contextCostDisplay({ info, sessionCost, sessionCurrency, usage });
   const sourceUsageRows = contextSourceRows(info, sessionCurrency);
