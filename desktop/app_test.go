@@ -4926,6 +4926,10 @@ func TestCapabilitiesIncludesInstalledPlugins(t *testing.T) {
 }
 
 func TestDesktopSharedHostBackgroundMCPAutoConnectsOnBoot(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping background MCP boot integration test in short mode")
+	}
+
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -5712,6 +5716,7 @@ args = ["-y", "@playwright/mcp"]
 	app := NewApp()
 	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
 	defer app.activeCtrl().Close()
+	app.activeTab().disabledMCP["playwright"] = ServerView{}
 
 	if err := app.UpdateMCPServer("playwright", MCPServerInput{
 		Name:      "playwright",
@@ -6021,6 +6026,10 @@ func TestRunShellForTabRoutesToRequestedTab(t *testing.T) {
 }
 
 func TestRunShellForTabStaysBoundDuringRapidProjectTabSwitching(t *testing.T) {
+	if testing.Short() {
+		t.Skip("skipping shell cancellation integration test in short mode")
+	}
+
 	isolateDesktopUserDirs(t)
 
 	projectA := t.TempDir()

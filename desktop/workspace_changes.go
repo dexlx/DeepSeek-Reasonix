@@ -149,6 +149,12 @@ func workspaceGitCommand(ctx context.Context, args ...string) *exec.Cmd {
 	return cmd
 }
 
+func workspaceGitOutputWithTimeout(timeout time.Duration, args ...string) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	return workspaceGitCommand(ctx, args...).Output()
+}
+
 func workspaceGitStatus(base string) ([]gitStatusEntry, error) {
 	cmd := workspaceGit("-C", base, "status", "--porcelain=v1", "-z", "--untracked-files=all")
 	raw, err := cmd.Output()
@@ -229,11 +235,7 @@ func workspaceRelPathFromGitStatus(repoRoot, base, path string) string {
 // at base, or an empty string when base is not inside a git repository or when
 // git is unavailable.
 func workspaceGitBranch(base string) string {
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	cmd := workspaceGitCommand(ctx, "-C", base, "branch", "--show-current")
-	raw, err := cmd.Output()
+	raw, err := workspaceGitOutputWithTimeout(2*time.Second, "-C", base, "branch", "--show-current")
 	if err != nil {
 		return ""
 	}
@@ -241,8 +243,7 @@ func workspaceGitBranch(base string) string {
 		return branch
 	}
 
-	headCmd := workspaceGitCommand(ctx, "-C", base, "rev-parse", "--short", "HEAD")
-	raw, err = headCmd.Output()
+	raw, err = workspaceGitOutputWithTimeout(2*time.Second, "-C", base, "rev-parse", "--short", "HEAD")
 	if err != nil {
 		return ""
 	}
