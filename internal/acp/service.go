@@ -176,7 +176,10 @@ type acpSession struct {
 func (s *acpSession) begin(ctx context.Context) (context.Context, context.CancelFunc, bool) {
 	runCtx, cancel := context.WithCancel(ctx)
 	s.mu.Lock()
-	if s.running || s.deleted || s.maintenanceDone != nil {
+	// A queued pendingConfig blocks new turns so a prompt never runs on the
+	// outgoing config. The turn or maintenance that queued it applies it from
+	// its defer, so no new turn is needed to drain the queue.
+	if s.running || s.deleted || s.maintenanceDone != nil || s.pendingConfig != nil {
 		s.mu.Unlock()
 		cancel()
 		return nil, nil, false
@@ -710,6 +713,8 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 		sess.sink.send(configOptionUpdate{SessionUpdate: "config_option_update", ConfigOptions: cfgState.ConfigOptions})
 		return nil
 	}
+	// Claim the queue in the same critical section that raises maintenanceDone
+	// below: begin must never observe an idle session between the two.
 	sess.pendingConfig = nil
 
 	cur := sess.ctrl
@@ -788,18 +793,20 @@ func (s *service) applyPendingSessionConfig(ctx context.Context, sess *acpSessio
 		return nil
 	}
 	cfgState := cloneSessionConfigState(*sess.pendingConfig)
-	sess.pendingConfig = nil
+	// Keep pendingConfig set while rebuilding: begin refuses new turns until
+	// rebuildSession claims it together with raising maintenanceDone, so no
+	// promptable instant is visible in between.
 	sess.mu.Unlock()
 
 	if err := s.rebuildSession(ctx, sess, cfgState); err != nil {
-		if !isSessionConfigActiveWorkError(err) {
-			sess.mu.Lock()
-			if !sess.deleted && sess.pendingConfig == nil {
-				pending := cloneSessionConfigState(cfgState)
-				sess.pendingConfig = &pending
-			}
-			sess.mu.Unlock()
+		// Once this attempt failed nothing in flight is left to retry a parked
+		// config, and begin refuses new turns while one is queued — drop it so
+		// the session stays promptable (the caller reports the failure).
+		sess.mu.Lock()
+		if !sess.deleted && !sess.running && sess.maintenanceDone == nil {
+			sess.pendingConfig = nil
 		}
+		sess.mu.Unlock()
 		return err
 	}
 	return nil

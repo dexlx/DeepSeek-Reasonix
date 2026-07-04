@@ -229,3 +229,111 @@ func TestACPCtrlReadPathsDoNotRaceWithRebuild(t *testing.T) {
 		t.Fatalf("factory builds = %d, want %d", got, rebuilds)
 	}
 }
+
+// TestACPBeginRefusesWhilePendingConfigQueued pins the invariant begin relies
+// on: a session with a queued (not yet applied) config switch must not start a
+// new turn, or the prompt would run on the outgoing config.
+func TestACPBeginRefusesWhilePendingConfigQueued(t *testing.T) {
+	sess := &acpSession{id: "sess-pending", ctrl: control.New(control.Options{})}
+	pending := SessionConfigState{Model: "pro"}
+	sess.mu.Lock()
+	sess.pendingConfig = &pending
+	sess.mu.Unlock()
+
+	if _, _, ok := sess.begin(context.Background()); ok {
+		t.Fatal("begin succeeded while a pending config switch was queued")
+	}
+
+	sess.mu.Lock()
+	sess.pendingConfig = nil
+	sess.mu.Unlock()
+	_, cancel, ok := sess.begin(context.Background())
+	if !ok {
+		t.Fatal("begin failed on an idle session with no pending config")
+	}
+	cancel()
+	sess.finish()
+}
+
+// TestACPBeginRefusesDuringPendingConfigApplyWindow drives the exact
+// interleaving begin used to lose: rebuildSession's defer first finishes
+// maintenance (maintenanceDone back to nil) and only then applies the queued
+// pendingConfig. Holding service.mu parks applyPendingSessionConfig on its
+// initial s.session lookup, so the session sits in that window with the queue
+// still set; begin must keep refusing until the pending config has landed.
+func TestACPBeginRefusesDuringPendingConfigApplyWindow(t *testing.T) {
+	sink := newUpdateSink(&fakeNotifier{}, "sess-window")
+	sess := &acpSession{
+		id:    "sess-window",
+		sink:  sink,
+		cwd:   t.TempDir(),
+		model: "fast",
+		ctrl:  control.New(control.Options{}),
+	}
+	factory := &blockingConfigFactory{
+		started:      make(chan string, 2),
+		releaseFirst: make(chan struct{}),
+	}
+	svc := &service{
+		factory:  factory,
+		sessions: map[string]*acpSession{sess.id: sess},
+	}
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"})
+	}()
+	select {
+	case <-factory.started:
+	case <-time.After(time.Second):
+		t.Fatal("first rebuild did not start")
+	}
+
+	// Queue a second switch while the first build is blocked in maintenance.
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "fast"}); err != nil {
+		t.Fatalf("queue pending rebuild: %v", err)
+	}
+	sess.mu.Lock()
+	maintenanceDone := sess.maintenanceDone
+	queued := sess.pendingConfig != nil
+	sess.mu.Unlock()
+	if maintenanceDone == nil || !queued {
+		t.Fatalf("maintenance in flight = %v, pending queued = %v, want both", maintenanceDone != nil, queued)
+	}
+
+	svc.mu.Lock()
+	close(factory.releaseFirst)
+	select {
+	case <-maintenanceDone: // closed after maintenanceDone is reset to nil
+	case <-time.After(time.Second):
+		svc.mu.Unlock()
+		t.Fatal("maintenance did not finish")
+	}
+	if _, _, ok := sess.begin(context.Background()); ok {
+		svc.mu.Unlock()
+		t.Fatal("begin succeeded between maintenance end and pending config apply; the turn would run on the outgoing config")
+	}
+	svc.mu.Unlock()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("first rebuild: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first rebuild did not finish")
+	}
+
+	_, cancel, ok := sess.begin(context.Background())
+	if !ok {
+		t.Fatal("begin failed after the pending config was applied")
+	}
+	cancel()
+	sess.finish()
+	if sess.model != "fast" {
+		t.Fatalf("session model = %q, want pending fast", sess.model)
+	}
+	if got := factory.buildCount(); got != 2 {
+		t.Fatalf("factory builds = %d, want 2", got)
+	}
+}
