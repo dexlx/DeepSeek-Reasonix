@@ -236,6 +236,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	mm.ChatURL = "http://localhost:8000/v1/chat/completions"
 	mm.ModelsURL = "http://localhost:8000/v1/models"
 	mm.ReasoningProtocol = "openai"
+	mm.PresetID = "mimo-api"
+	mm.PresetVersion = ProviderPresetVersion
 	ds, _ := orig.Provider("deepseek-flash")
 	ds.Effort = "max"
 
@@ -399,6 +401,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if g, _ := got.Provider("mimo-pro"); g == nil || g.BaseURL != "http://localhost:8000/v1" || g.ChatURL != "http://localhost:8000/v1/chat/completions" || g.ModelsURL != "http://localhost:8000/v1/models" || g.ReasoningProtocol != "openai" {
 		t.Errorf("mimo-pro endpoint fields not preserved: %+v", g)
+	}
+	if g, _ := got.Provider("mimo-pro"); g == nil || g.PresetID != "mimo-api" || g.PresetVersion != ProviderPresetVersion {
+		t.Errorf("mimo-pro preset metadata not preserved: %+v", g)
 	}
 	if g, _ := got.Provider("deepseek-flash"); g == nil || g.Effort != "max" {
 		t.Errorf("deepseek-flash effort not preserved: %+v", g)
@@ -877,6 +882,7 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 				"mode": "fast",
 			},
 		},
+		AuthHeader: true,
 		ModelOverrides: map[string]ProviderModelOverride{
 			"deepseek-v4-flash": {
 				ReasoningProtocol: ReasoningProtocolDeepSeek,
@@ -893,6 +899,9 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	}
 	if !strings.Contains(rendered, `extra_body`) || !strings.Contains(rendered, `"enable_thinking" = true`) {
 		t.Fatalf("rendered TOML missing extra_body:\n%s", rendered)
+	}
+	if !strings.Contains(rendered, `auth_header = true`) {
+		t.Fatalf("rendered TOML missing auth_header:\n%s", rendered)
 	}
 	if !strings.Contains(rendered, `model_overrides`) || !strings.Contains(rendered, `reasoning_protocol = "deepseek"`) {
 		t.Fatalf("rendered TOML missing model overrides:\n%s", rendered)
@@ -911,6 +920,9 @@ func TestRenderTOMLRoundTripsProviderHeadersAndModelOverrides(t *testing.T) {
 	}
 	if p.ExtraBody["enable_thinking"] != true || p.ExtraBody["top_p"] != 0.8 {
 		t.Fatalf("extra_body after round trip = %+v", p.ExtraBody)
+	}
+	if !p.AuthHeader {
+		t.Fatal("auth_header after round trip = false, want true")
 	}
 	metadata, ok := p.ExtraBody["metadata"].(map[string]any)
 	if !ok || metadata["mode"] != "fast" {

@@ -43,6 +43,7 @@ type ProviderView struct {
 	APIKeyEnv         string                      `json:"apiKeyEnv"`
 	Headers           map[string]string           `json:"headers"`
 	ExtraBody         map[string]any              `json:"extraBody"`
+	AuthHeader        bool                        `json:"authHeader"`
 	KeySet            bool                        `json:"keySet"` // the env var currently resolves to a non-empty value
 	RequiresKey       bool                        `json:"requiresKey"`
 	Configured        bool                        `json:"configured"` // selectable: either key is present or no key is required
@@ -56,6 +57,31 @@ type ProviderView struct {
 	DefaultEffort     string                      `json:"defaultEffort"`
 	ModelOverrides    []ProviderModelOverrideView `json:"modelOverrides"`
 }
+
+type ProviderPresetView struct {
+	ID                  string   `json:"id"`
+	Label               string   `json:"label"`
+	Description         string   `json:"description"`
+	KeyEnv              string   `json:"keyEnv"`
+	ProviderNames       []string `json:"providerNames"`
+	Models              []string `json:"models"`
+	Added               bool     `json:"added"`
+	Status              string   `json:"status"`
+	StatusProviderNames []string `json:"statusProviderNames"`
+	KeySet              bool     `json:"keySet"`
+	RequiresKey         bool     `json:"requiresKey"`
+	Configured          bool     `json:"configured"`
+	KeySource           string   `json:"keySource,omitempty"`
+	KeySourcePath       string   `json:"keySourcePath,omitempty"`
+}
+
+const (
+	providerPresetStatusAvailable         = "available"
+	providerPresetStatusInstalled         = "installed"
+	providerPresetStatusInstalledModified = "installed_modified"
+	providerPresetStatusNameConflict      = "name_conflict"
+	providerPresetStatusSimilarExisting   = "similar_existing"
+)
 
 type ProviderModelOverrideView struct {
 	Model             string   `json:"model"`
@@ -206,33 +232,34 @@ type BotSettingsView struct {
 
 // SettingsView is the whole Settings panel payload.
 type SettingsView struct {
-	DefaultModel            string          `json:"defaultModel"`
-	PlannerModel            string          `json:"plannerModel"`
-	SubagentModel           string          `json:"subagentModel"`
-	SubagentEffort          string          `json:"subagentEffort"`
-	AutoPlan                string          `json:"autoPlan"`
-	Providers               []ProviderView  `json:"providers"`
-	OfficialProviders       []ProviderView  `json:"officialProviders"`
-	Permissions             PermissionsView `json:"permissions"`
-	Sandbox                 SandboxView     `json:"sandbox"`
-	Network                 NetworkView     `json:"network"`
-	Agent                   AgentView       `json:"agent"`
-	Bot                     BotSettingsView `json:"bot"`
-	DesktopLanguage         string          `json:"desktopLanguage"`
-	DesktopLayoutStyle      string          `json:"desktopLayoutStyle"`
-	DesktopTheme            string          `json:"desktopTheme"`
-	DesktopThemeStyle       string          `json:"desktopThemeStyle"`
-	CloseBehavior           string          `json:"closeBehavior"`
-	DisplayMode             string          `json:"displayMode"`
-	StatusBarStyle          string          `json:"statusBarStyle"`
-	StatusBarItems          []string        `json:"statusBarItems"`
-	DefaultToolApprovalMode string          `json:"defaultToolApprovalMode"`
-	CheckUpdates            bool            `json:"checkUpdates"`
-	Telemetry               bool            `json:"telemetry"`
-	Metrics                 bool            `json:"metrics"`
-	MemoryCompiler          bool            `json:"memoryCompilerEnabled"`
-	ExpandThinking          bool            `json:"expandThinking"`
-	ConfigPath              string          `json:"configPath"`
+	DefaultModel            string               `json:"defaultModel"`
+	PlannerModel            string               `json:"plannerModel"`
+	SubagentModel           string               `json:"subagentModel"`
+	SubagentEffort          string               `json:"subagentEffort"`
+	AutoPlan                string               `json:"autoPlan"`
+	Providers               []ProviderView       `json:"providers"`
+	OfficialProviders       []ProviderView       `json:"officialProviders"`
+	ProviderPresets         []ProviderPresetView `json:"providerPresets"`
+	Permissions             PermissionsView      `json:"permissions"`
+	Sandbox                 SandboxView          `json:"sandbox"`
+	Network                 NetworkView          `json:"network"`
+	Agent                   AgentView            `json:"agent"`
+	Bot                     BotSettingsView      `json:"bot"`
+	DesktopLanguage         string               `json:"desktopLanguage"`
+	DesktopLayoutStyle      string               `json:"desktopLayoutStyle"`
+	DesktopTheme            string               `json:"desktopTheme"`
+	DesktopThemeStyle       string               `json:"desktopThemeStyle"`
+	CloseBehavior           string               `json:"closeBehavior"`
+	DisplayMode             string               `json:"displayMode"`
+	StatusBarStyle          string               `json:"statusBarStyle"`
+	StatusBarItems          []string             `json:"statusBarItems"`
+	DefaultToolApprovalMode string               `json:"defaultToolApprovalMode"`
+	CheckUpdates            bool                 `json:"checkUpdates"`
+	Telemetry               bool                 `json:"telemetry"`
+	Metrics                 bool                 `json:"metrics"`
+	MemoryCompiler          bool                 `json:"memoryCompilerEnabled"`
+	ExpandThinking          bool                 `json:"expandThinking"`
+	ConfigPath              string               `json:"configPath"`
 	// ProviderKinds lists the provider implementations the kernel actually
 	// registered (provider.Kinds()), so the editor's "kind" picker offers only
 	// kinds that resolve — selecting an unregistered one would fail the rebuild.
@@ -453,6 +480,7 @@ func providerViewFromEntryForRootWithResolver(p config.ProviderEntry, builtIn, a
 		APIKeyEnv:         p.APIKeyEnv,
 		Headers:           nonNilStringMap(p.Headers),
 		ExtraBody:         nonNilAnyMap(p.ExtraBody),
+		AuthHeader:        p.AuthHeader,
 		KeySet:            key.Set,
 		RequiresKey:       requiresKey,
 		Configured:        !requiresKey || key.Set,
@@ -499,6 +527,185 @@ func officialProviderViewsForRootWithResolver(added map[string]bool, pricingLang
 		for _, entry := range entries {
 			out = append(out, providerViewFromEntryForRootWithResolver(entry, true, added[entry.Name], root, resolver))
 		}
+	}
+	return out
+}
+
+func providerPresetViewsForRootWithResolver(cfg *config.Config, root string, resolver *config.CredentialResolver) []ProviderPresetView {
+	if resolver == nil {
+		resolver = config.NewCredentialResolverForRoot(root)
+	}
+	presets := config.CuratedProviderPresets()
+	out := make([]ProviderPresetView, 0, len(presets))
+	for _, preset := range presets {
+		keyEnv := strings.TrimSpace(preset.KeyEnv)
+		names := make([]string, 0, len(preset.Entries))
+		models := make([]string, 0)
+		modelSeen := map[string]bool{}
+		requiresKey := false
+		for _, entry := range preset.Entries {
+			if keyEnv == "" {
+				keyEnv = strings.TrimSpace(entry.APIKeyEnv)
+			}
+			if entry.RequiresAPIKey() {
+				requiresKey = true
+			}
+			name := strings.TrimSpace(entry.Name)
+			if name != "" {
+				names = append(names, name)
+			}
+			for _, model := range chatProviderModels(entry.ChatModelList()) {
+				if modelSeen[model] {
+					continue
+				}
+				modelSeen[model] = true
+				models = append(models, model)
+			}
+		}
+		key := config.CredentialResolution{}
+		if keyEnv != "" {
+			key = resolver.ResolveGlobalFirst(keyEnv)
+		}
+		status, statusNames := classifyProviderPresetStatus(cfg, preset)
+		added := status == providerPresetStatusInstalled || status == providerPresetStatusInstalledModified || status == providerPresetStatusNameConflict
+		out = append(out, ProviderPresetView{
+			ID:                  preset.ID,
+			Label:               preset.Label,
+			Description:         preset.Description,
+			KeyEnv:              keyEnv,
+			ProviderNames:       nonNil(names),
+			Models:              nonNil(models),
+			Added:               added,
+			Status:              status,
+			StatusProviderNames: nonNil(statusNames),
+			KeySet:              key.Set,
+			RequiresKey:         requiresKey,
+			Configured:          !requiresKey || key.Set,
+			KeySource:           key.Source.Label,
+			KeySourcePath:       key.Source.Path,
+		})
+	}
+	return out
+}
+
+func classifyProviderPresetStatus(cfg *config.Config, preset config.ProviderPreset) (string, []string) {
+	if cfg == nil {
+		return providerPresetStatusAvailable, nil
+	}
+	installed := make([]string, 0)
+	modified := make([]string, 0)
+	conflicts := make([]string, 0)
+	similar := make([]string, 0)
+	presetID := strings.TrimSpace(preset.ID)
+	for _, entry := range preset.Entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		existing, ok := cfg.Provider(name)
+		if !ok {
+			continue
+		}
+		if providerEntryMatchesPreset(*existing, entry, presetID) {
+			installed = append(installed, name)
+		} else if providerEntryUsesPresetID(*existing, presetID) {
+			modified = append(modified, name)
+		} else {
+			conflicts = append(conflicts, name)
+		}
+	}
+	if len(conflicts) > 0 {
+		return providerPresetStatusNameConflict, uniqueNonEmptyStrings(conflicts)
+	}
+	if len(modified) > 0 {
+		return providerPresetStatusInstalledModified, uniqueNonEmptyStrings(modified)
+	}
+	if len(installed) > 0 {
+		return providerPresetStatusInstalled, uniqueNonEmptyStrings(installed)
+	}
+	for i := range cfg.Providers {
+		existing := cfg.Providers[i]
+		existingName := strings.TrimSpace(existing.Name)
+		if existingName == "" {
+			continue
+		}
+		for _, entry := range preset.Entries {
+			if existingName == strings.TrimSpace(entry.Name) {
+				continue
+			}
+			if providerEntrySimilarToPreset(existing, entry, presetID) {
+				similar = append(similar, existingName)
+				break
+			}
+		}
+	}
+	if len(similar) > 0 {
+		return providerPresetStatusSimilarExisting, uniqueNonEmptyStrings(similar)
+	}
+	return providerPresetStatusAvailable, nil
+}
+
+func providerEntryMatchesPreset(existing, preset config.ProviderEntry, presetID string) bool {
+	if strings.TrimSpace(existing.PresetID) != "" {
+		if providerEntryUsesPresetID(existing, presetID) {
+			return providerEntryCoreMatches(existing, preset)
+		}
+		return false
+	}
+	return providerEntryCoreMatches(existing, preset)
+}
+
+func providerEntrySimilarToPreset(existing, preset config.ProviderEntry, presetID string) bool {
+	if providerEntryUsesPresetID(existing, presetID) {
+		return true
+	}
+	return providerEntryCoreMatches(existing, preset)
+}
+
+func providerEntryUsesPresetID(existing config.ProviderEntry, presetID string) bool {
+	presetID = strings.TrimSpace(presetID)
+	return presetID != "" && strings.TrimSpace(existing.PresetID) == presetID
+}
+
+func providerEntryCoreMatches(existing, preset config.ProviderEntry) bool {
+	return strings.EqualFold(strings.TrimSpace(existing.Kind), strings.TrimSpace(preset.Kind)) &&
+		normalizeProviderURL(existing.BaseURL) == normalizeProviderURL(preset.BaseURL) &&
+		strings.TrimSpace(existing.ChatURL) == strings.TrimSpace(preset.ChatURL) &&
+		strings.TrimSpace(existing.APIKeyEnv) == strings.TrimSpace(preset.APIKeyEnv) &&
+		existing.AuthHeader == preset.AuthHeader
+}
+
+func normalizeProviderURL(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	u, err := url.Parse(raw)
+	if err == nil && u.Scheme != "" && u.Host != "" {
+		u.Scheme = strings.ToLower(u.Scheme)
+		u.Host = strings.ToLower(u.Host)
+		u.Path = strings.TrimRight(u.Path, "/")
+		u.RawPath = ""
+		u.RawQuery = ""
+		u.Fragment = ""
+		return strings.TrimRight(u.String(), "/")
+	}
+	return strings.TrimRight(raw, "/")
+}
+
+func uniqueNonEmptyStrings(in []string) []string {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(in))
+	seen := map[string]bool{}
+	for _, s := range in {
+		s = strings.TrimSpace(s)
+		if s == "" || seen[s] {
+			continue
+		}
+		seen[s] = true
+		out = append(out, s)
 	}
 	return out
 }
@@ -565,6 +772,7 @@ func (a *App) Settings() SettingsView {
 		return SettingsView{
 			Providers:         []ProviderView{},
 			OfficialProviders: officialProviderViews(map[string]bool{}, ""),
+			ProviderPresets:   providerPresetViewsForRootWithResolver(nil, a.activeWorkspaceRoot(), nil),
 			ProviderKinds:     nonNil(provider.Kinds()),
 			Permissions: PermissionsView{
 				Mode:  "ask",
@@ -614,6 +822,7 @@ func (a *App) Settings() SettingsView {
 		AutoPlan:          desktopAutoPlanMode(cfg.Agent.AutoPlan),
 		Providers:         []ProviderView{},
 		OfficialProviders: []ProviderView{},
+		ProviderPresets:   []ProviderPresetView{},
 		Permissions: PermissionsView{
 			Mode:  orDefault(cfg.Permissions.Mode, "ask"),
 			Allow: nonNil(cfg.Permissions.Allow),
@@ -662,6 +871,7 @@ func (a *App) Settings() SettingsView {
 	added := providerAccessSet(cfg.Desktop.ProviderAccess)
 	resolver := config.NewCredentialResolverForRoot(root)
 	v.OfficialProviders = officialProviderViewsForRootWithResolver(officialProviderAddedSet(cfg), cfg.DeepSeekOfficialPricingLanguage(), root, resolver)
+	v.ProviderPresets = providerPresetViewsForRootWithResolver(cfg, root, resolver)
 	for i := range cfg.Providers {
 		p := &cfg.Providers[i]
 		v.Providers = append(v.Providers, providerViewFromEntryForRootWithResolver(*p, isOfficialBuiltInProvider(*p), added[p.Name], root, resolver))
@@ -1496,6 +1706,7 @@ func (a *App) SaveProvider(p ProviderView) error {
 		e.APIKeyEnv = p.APIKeyEnv
 		e.Headers = p.Headers
 		e.ExtraBody = p.ExtraBody
+		e.AuthHeader = p.AuthHeader
 		e.BalanceURL = strings.TrimSpace(p.BalanceURL)
 		e.ContextWindow = p.ContextWindow
 		e.ReasoningProtocol = p.ReasoningProtocol
@@ -1570,16 +1781,137 @@ func (a *App) AddOfficialProviderAccess(kind, key string) (string, error) {
 	return keyWarning, nil
 }
 
+// AddProviderPresetAccess installs one editable custom-provider preset. Unlike
+// official built-ins, these entries are saved as normal providers so users can
+// tweak endpoints, model lists, and capability overrides after the one-click
+// setup path.
+func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
+	preset, ok := config.CuratedProviderPreset(id)
+	if !ok {
+		return "", fmt.Errorf("unknown provider preset %q", id)
+	}
+	if len(preset.Entries) == 0 {
+		return "", fmt.Errorf("provider preset %q has no provider entries", id)
+	}
+	if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
+		return "", err
+	}
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return "", err
+	}
+	if existing := existingProviderNames(cfg, preset.Entries); len(existing) > 0 {
+		return "", providerPresetAlreadyAddedError(preset.ID, existing)
+	}
+	keyEnv := strings.TrimSpace(preset.KeyEnv)
+	if keyEnv == "" {
+		for _, e := range preset.Entries {
+			if keyEnv = strings.TrimSpace(e.APIKeyEnv); keyEnv != "" {
+				break
+			}
+		}
+	}
+	keyWarning := ""
+	if strings.TrimSpace(key) != "" && keyEnv != "" {
+		var err error
+		keyWarning, err = a.saveProviderCredential(keyEnv, key)
+		if err != nil {
+			return "", err
+		}
+	}
+	if err := a.applyConfigChange(func(c *config.Config) error {
+		if existing := existingProviderNames(c, preset.Entries); len(existing) > 0 {
+			return providerPresetAlreadyAddedError(preset.ID, existing)
+		}
+		names := make([]string, 0, len(preset.Entries))
+		for _, e := range preset.Entries {
+			if err := c.UpsertProvider(e); err != nil {
+				return err
+			}
+			names = append(names, e.Name)
+		}
+		addProviderAccess(c, names...)
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return keyWarning, nil
+}
+
+// ResetProviderPresetAccess intentionally overwrites same-name provider entries
+// with the curated preset template. It only mutates config; provider secrets stay
+// in Reasonix home .env under whichever api_key_env the resulting preset uses.
+func (a *App) ResetProviderPresetAccess(id string) error {
+	preset, ok := config.CuratedProviderPreset(id)
+	if !ok {
+		return fmt.Errorf("unknown provider preset %q", id)
+	}
+	if len(preset.Entries) == 0 {
+		return fmt.Errorf("provider preset %q has no provider entries", id)
+	}
+	if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
+		return err
+	}
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	if err != nil {
+		return err
+	}
+	if existing := existingProviderNames(cfg, preset.Entries); len(existing) == 0 {
+		return providerPresetNoExistingProviderError(preset.ID)
+	}
+	return a.applyConfigChange(func(c *config.Config) error {
+		if existing := existingProviderNames(c, preset.Entries); len(existing) == 0 {
+			return providerPresetNoExistingProviderError(preset.ID)
+		}
+		names := make([]string, 0, len(preset.Entries))
+		for _, e := range preset.Entries {
+			if err := c.UpsertProvider(e); err != nil {
+				return err
+			}
+			names = append(names, e.Name)
+		}
+		addProviderAccess(c, names...)
+		return nil
+	})
+}
+
+func existingProviderNames(c *config.Config, entries []config.ProviderEntry) []string {
+	if c == nil || len(entries) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		name := strings.TrimSpace(entry.Name)
+		if name == "" {
+			continue
+		}
+		if _, ok := c.Provider(name); ok {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func providerPresetAlreadyAddedError(id string, names []string) error {
+	return fmt.Errorf("provider preset %q cannot be added because provider name(s) already exist: %s; edit, rename, or remove the existing provider before adding it again", id, strings.Join(names, ", "))
+}
+
+func providerPresetNoExistingProviderError(id string) error {
+	return fmt.Errorf("provider preset %q cannot be reset because no same-name provider exists; add the preset instead", id)
+}
+
 // FetchProviderModels probes the provider's OpenAI-compatible model-list
 // endpoint and returns the available model IDs. This is a settings-only helper:
 // it never touches chat request serialization or provider-visible prompt data.
 func (a *App) FetchProviderModels(p ProviderView) ([]string, error) {
 	e := config.ProviderEntry{
-		Name:      p.Name,
-		BaseURL:   p.BaseURL,
-		ModelsURL: strings.TrimSpace(p.ModelsURL),
-		APIKeyEnv: p.APIKeyEnv,
-		Headers:   p.Headers,
+		Name:       p.Name,
+		Kind:       p.Kind,
+		BaseURL:    p.BaseURL,
+		ModelsURL:  strings.TrimSpace(p.ModelsURL),
+		APIKeyEnv:  p.APIKeyEnv,
+		Headers:    p.Headers,
+		AuthHeader: p.AuthHeader,
 	}
 	e.ResolveAPIKeyForRoot(a.activeWorkspaceRoot())
 	ctx, cancel := context.WithTimeout(a.reqCtx(), 15*time.Second)

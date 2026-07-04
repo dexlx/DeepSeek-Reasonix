@@ -46,7 +46,7 @@ import {
   shortcutDefinitions,
   type ShortcutAction,
 } from "../lib/keyboardShortcuts";
-import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
+import type { BotAllowlistView, BotConnectionDiagnostic, BotConnectionView, BotInstallStartResult, BotSettingsView, HookConfigView, HooksSettingsView, NetworkView, ProviderPresetView, ProviderView, SettingsTab, SettingsView } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { Tooltip } from "./Tooltip";
 import { AnchoredPopover } from "./AnchoredPopover";
@@ -684,7 +684,9 @@ function normalizeThinkingMode(thinking: string | undefined): string {
 }
 
 export function providerEditorEffectiveKind(isNewCustomProvider: boolean, kind: string, kinds: string[]): string {
-  return isNewCustomProvider ? "openai" : (kind.trim() || kinds[0] || "openai");
+  void isNewCustomProvider;
+  const selected = kind.trim();
+  return selected || kinds[0] || "openai";
 }
 
 function trimmedURL(value: string): string {
@@ -960,12 +962,43 @@ function normalizeProviderView(p: ProviderView): ProviderView {
     modelsUrl: p.modelsUrl ?? "",
     headers: normalizeStringMap(p.headers),
     extraBody: normalizeExtraBodyMap(p.extraBody),
+    authHeader: Boolean(p.authHeader),
     reasoningProtocol: normalizeReasoningProtocol(p.reasoningProtocol),
     thinking: normalizeThinkingMode(p.thinking),
     supportedEfforts: asArray(p.supportedEfforts),
     modelOverrides: asArray(p.modelOverrides),
     requiresKey,
     configured: providerIsConfigured({ ...p, requiresKey }),
+    keySource: p.keySource ?? "",
+    keySourcePath: p.keySourcePath ?? "",
+  };
+}
+
+type ProviderPresetStatus = NonNullable<ProviderPresetView["status"]>;
+
+function normalizeProviderPresetStatus(status: ProviderPresetView["status"] | undefined, added: boolean): ProviderPresetStatus {
+  if (status === "installed" || status === "installed_modified" || status === "name_conflict" || status === "similar_existing") return status;
+  return added ? "installed" : "available";
+}
+
+function normalizeProviderPresetView(p: ProviderPresetView): ProviderPresetView {
+  const requiresKey = Boolean(p.requiresKey ?? p.keyEnv);
+  const configured = Boolean(p.configured ?? (!requiresKey || p.keySet));
+  const status = normalizeProviderPresetStatus(p.status, Boolean(p.added));
+  return {
+    ...p,
+    id: String(p.id ?? "").trim(),
+    label: String(p.label ?? "").trim(),
+    description: String(p.description ?? "").trim(),
+    keyEnv: String(p.keyEnv ?? "").trim(),
+    providerNames: asArray(p.providerNames),
+    models: asArray(p.models),
+    added: Boolean(p.added || status === "installed" || status === "installed_modified" || status === "name_conflict"),
+    status,
+    statusProviderNames: asArray(p.statusProviderNames),
+    keySet: Boolean(p.keySet),
+    requiresKey,
+    configured,
     keySource: p.keySource ?? "",
     keySourcePath: p.keySourcePath ?? "",
   };
@@ -990,6 +1023,7 @@ function normalizeSettingsView(view: SettingsView | null | undefined): SettingsV
     ...view,
     providers: asArray(view.providers).map(normalizeProviderView),
     officialProviders: asArray(view.officialProviders).map(normalizeProviderView),
+    providerPresets: asArray(view.providerPresets).map(normalizeProviderPresetView).filter((p) => p.id),
     providerKinds: asArray(view.providerKinds),
     permissions: {
       ...permissions,
@@ -1109,6 +1143,21 @@ function permissionModeLabel(mode: string, t: ReturnType<typeof useT>): string {
 
 function sandboxModeLabel(mode: string, t: ReturnType<typeof useT>): string {
   return mode === "off" ? t("settings.bashOffShort") : t("settings.bashEnforceShort");
+}
+
+function providerKindLabel(kind: string, t: ReturnType<typeof useT>): string {
+  switch (kind) {
+    case "anthropic":
+      return t("settings.providerProtocolAnthropic");
+    case "openai":
+      return t("settings.providerProtocolOpenAI");
+    default:
+      return kind;
+  }
+}
+
+function providerKindHint(kind: string, t: ReturnType<typeof useT>): string {
+  return kind === "anthropic" ? t("settings.providerProtocolAnthropicHint") : t("settings.providerProtocolOpenAIHint");
 }
 
 function reasoningProtocolLabel(protocol: string, t: ReturnType<typeof useT>): string {
@@ -3645,10 +3694,19 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
   const defaultProvider = toRef(s.defaultModel, s).split("/")[0];
   const [editing, setEditing] = useState<string | null>(null);
   const [adding, setAdding] = useState<AddProviderMode>(null);
+  const [revealedProvider, setRevealedProvider] = useState<string | null>(null);
   const [fetchingProvider, setFetchingProvider] = useState<string | null>(null);
   const [fetchResults, setFetchResults] = useState<Record<string, ProviderFetchResult>>({});
   const [modelDrafts, setModelDrafts] = useState<Record<string, ProviderModelDraft>>({});
-  const groups = useMemo(() => providerAccessGroups(s.providers.filter((p) => p.added), t), [s.providers, t]);
+  const visibleProviders = useMemo(() => s.providers.filter((p) => p.added || p.name === revealedProvider), [s.providers, revealedProvider]);
+  const groups = useMemo(() => providerAccessGroups(visibleProviders, t), [visibleProviders, t]);
+
+  useEffect(() => {
+    if (revealedProvider && !s.providers.some((p) => p.name === revealedProvider)) {
+      setRevealedProvider(null);
+      if (editing === revealedProvider) setEditing(null);
+    }
+  }, [editing, revealedProvider, s.providers]);
 
   const setGroupFetchResult = (groupID: string, result: ProviderFetchResult | null) => {
     setFetchResults((prev) => {
@@ -3852,10 +3910,18 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
           <AddProviderPanel
             mode={adding}
             kinds={s.providerKinds}
+            providerPresets={s.providerPresets}
             busy={busy}
             onMode={setAdding}
             onCancel={() => setAdding(null)}
             onAddOfficial={(kind, key) => apply(() => app.AddOfficialProviderAccess(kind, key)).then(() => setAdding(null))}
+            onAddPreset={(id, key) => apply(() => app.AddProviderPresetAccess(id, key)).then(() => setAdding(null))}
+            onViewPresetConflict={(providerName) => {
+              setRevealedProvider(providerName);
+              setEditing(providerName);
+              setAdding(null);
+            }}
+            onResetPreset={(id) => apply(() => app.ResetProviderPresetAccess(id)).then(() => setAdding(null))}
             onAddCustom={(pv) => apply(() => app.SaveProvider(pv)).then(() => setAdding(null))}
           />
         )}
@@ -3889,7 +3955,12 @@ function ProvidersSection({ s, busy, apply }: SectionProps) {
             onSaveDraftModels={() => void saveModelDraft(group)}
             onSaveEditorKey={(env, value) => group.builtIn ? saveProviderKey(group, env, value) : saveKeyEnvAndAutoRefresh(group, env, value)}
             onClearEditorKey={clearProviderKey}
-            onDelete={(p) => apply(() => app.RemoveProviderAccess(p.name))}
+            onDelete={(p) => apply(() => app.RemoveProviderAccess(p.name)).then(() => {
+              if (revealedProvider === p.name) {
+                setRevealedProvider(null);
+                setEditing(null);
+              }
+            })}
           />
         ))}
       </div>
@@ -3933,27 +4004,187 @@ const OFFICIAL_PROVIDER_CHOICES: Array<{ kind: OfficialProviderKind; labelKey: D
   { kind: "deepseek", labelKey: "settings.addProvider.official.deepseek", descKey: "settings.addProvider.official.deepseekDesc", keyEnv: "DEEPSEEK_API_KEY" },
 ];
 
+type ProviderTemplateChoice =
+  | { id: string; source: "official"; kind: OfficialProviderKind; label: string; description: string; keyEnv: string; added: boolean; keySet: boolean }
+  | { id: string; source: "preset"; presetID: string; label: string; description: string; keyEnv: string; added: boolean; status: ProviderPresetStatus; statusProviderNames: string[]; keySet: boolean };
+
+function providerTemplateCanAdd(choice: ProviderTemplateChoice | undefined): boolean {
+  if (!choice) return false;
+  if (choice.source === "official") return !choice.added;
+  return choice.status !== "installed" && choice.status !== "installed_modified" && choice.status !== "name_conflict";
+}
+
+function providerTemplateStatusBadge(choice: ProviderTemplateChoice, t: ReturnType<typeof useT>): string {
+  if (choice.source === "official") return choice.added ? t("settings.addProvider.addedBadge") : "";
+  if (choice.status === "installed") return t("settings.addProvider.addedBadge");
+  if (choice.status === "installed_modified") return t("settings.addProvider.modifiedBadge");
+  if (choice.status === "name_conflict") return t("settings.addProvider.nameConflictBadge");
+  if (choice.status === "similar_existing") return t("settings.addProvider.similarExistingBadge");
+  return "";
+}
+
+function providerTemplateActionLabel(choice: ProviderTemplateChoice | undefined, t: ReturnType<typeof useT>): string {
+  if (!choice) return t("settings.addProvider.confirm");
+  if (choice.source === "preset" && choice.status === "name_conflict") return t("settings.addProvider.nameConflictAction");
+  if (!providerTemplateCanAdd(choice)) return t("settings.addProvider.alreadyAddedAction");
+  return t("settings.addProvider.confirm");
+}
+
+function providerTemplateStatusClass(choice: ProviderTemplateChoice): string {
+  if (choice.source !== "preset" || choice.status === "available") return "";
+  return ` provider-template-card--${choice.status.split("_").join("-")}`;
+}
+
+function providerTemplateConflictProviderName(choice: ProviderTemplateChoice): string {
+  if (choice.source !== "preset" || (choice.status !== "name_conflict" && choice.status !== "installed_modified")) return "";
+  return choice.statusProviderNames[0] ?? "";
+}
+
+function providerPresetDescription(preset: ProviderPresetView, t: ReturnType<typeof useT>): string {
+  switch (preset.id) {
+    case "kimi-cn":
+      return t("settings.addProvider.preset.kimiCnDesc");
+    case "kimi-global":
+      return t("settings.addProvider.preset.kimiGlobalDesc");
+    case "kimi-coding-plan":
+      return t("settings.addProvider.preset.kimiCodingPlanDesc");
+    case "mimo-api":
+      return t("settings.addProvider.preset.mimoApiDesc");
+    case "mimo-anthropic":
+      return t("settings.addProvider.preset.mimoAnthropicDesc");
+    case "mimo-token-plan-cn":
+      return t("settings.addProvider.preset.mimoTokenPlanCnDesc");
+    case "mimo-token-plan-cn-anthropic":
+      return t("settings.addProvider.preset.mimoTokenPlanCnAnthropicDesc");
+    case "mimo-token-plan-sgp":
+      return t("settings.addProvider.preset.mimoTokenPlanSgpDesc");
+    case "mimo-token-plan-sgp-anthropic":
+      return t("settings.addProvider.preset.mimoTokenPlanSgpAnthropicDesc");
+    case "mimo-token-plan-ams":
+      return t("settings.addProvider.preset.mimoTokenPlanAmsDesc");
+    case "mimo-token-plan-ams-anthropic":
+      return t("settings.addProvider.preset.mimoTokenPlanAmsAnthropicDesc");
+    case "minimax-cn-api":
+      return t("settings.addProvider.preset.minimaxCnApiDesc");
+    case "minimax-global-api":
+      return t("settings.addProvider.preset.minimaxGlobalApiDesc");
+    case "minimax-cn-anthropic":
+      return t("settings.addProvider.preset.minimaxCnAnthropicDesc");
+    case "minimax-global-anthropic":
+      return t("settings.addProvider.preset.minimaxGlobalAnthropicDesc");
+    case "glm-cn":
+      return t("settings.addProvider.preset.glmCnDesc");
+    case "zai-global":
+      return t("settings.addProvider.preset.zaiGlobalDesc");
+    case "glm-coding-plan-cn":
+      return t("settings.addProvider.preset.glmCodingPlanCnDesc");
+    case "glm-coding-plan-cn-anthropic":
+      return t("settings.addProvider.preset.glmCodingPlanCnAnthropicDesc");
+    case "zai-coding-plan-global":
+      return t("settings.addProvider.preset.zaiCodingPlanGlobalDesc");
+    case "zai-coding-plan-global-anthropic":
+      return t("settings.addProvider.preset.zaiCodingPlanGlobalAnthropicDesc");
+    case "opencode-go":
+      return t("settings.addProvider.preset.opencodeGoDesc");
+    case "opencode-go-anthropic":
+      return t("settings.addProvider.preset.opencodeGoAnthropicDesc");
+    case "opencode-zen-anthropic":
+      return t("settings.addProvider.preset.opencodeZenAnthropicDesc");
+    case "qwen-cn":
+      return t("settings.addProvider.preset.qwenCnDesc");
+    case "qwen-global":
+      return t("settings.addProvider.preset.qwenGlobalDesc");
+    case "qwen-coding-plan-cn":
+      return t("settings.addProvider.preset.qwenCodingPlanCnDesc");
+    case "qwen-coding-plan-cn-anthropic":
+      return t("settings.addProvider.preset.qwenCodingPlanCnAnthropicDesc");
+    case "qwen-coding-plan-global":
+      return t("settings.addProvider.preset.qwenCodingPlanGlobalDesc");
+    case "qwen-coding-plan-global-anthropic":
+      return t("settings.addProvider.preset.qwenCodingPlanGlobalAnthropicDesc");
+    case "stepfun":
+      return t("settings.addProvider.preset.stepfunDesc");
+    case "stepfun-anthropic":
+      return t("settings.addProvider.preset.stepfunAnthropicDesc");
+    case "novita":
+      return t("settings.addProvider.preset.novitaDesc");
+    case "gmi":
+      return t("settings.addProvider.preset.gmiDesc");
+    case "vercel-ai-gateway":
+      return t("settings.addProvider.preset.vercelAiGatewayDesc");
+    case "huggingface":
+      return t("settings.addProvider.preset.huggingfaceDesc");
+    case "nvidia":
+      return t("settings.addProvider.preset.nvidiaDesc");
+    case "kilocode":
+      return t("settings.addProvider.preset.kilocodeDesc");
+    case "ollama-cloud":
+      return t("settings.addProvider.preset.ollamaCloudDesc");
+    default:
+      return preset.description;
+  }
+}
+
 function AddProviderPanel({
   mode,
   kinds,
+  providerPresets,
   busy,
   onMode,
   onCancel,
   onAddOfficial,
+  onAddPreset,
+  onViewPresetConflict,
+  onResetPreset,
   onAddCustom,
 }: {
   mode: AddProviderMode;
   kinds: string[];
+  providerPresets: ProviderPresetView[];
   busy: boolean;
   onMode: (mode: AddProviderMode) => void;
   onCancel: () => void;
   onAddOfficial: (kind: OfficialProviderKind, key: string) => Promise<void>;
+  onAddPreset: (id: string, key: string) => Promise<void>;
+  onViewPresetConflict: (providerName: string) => void;
+  onResetPreset: (id: string) => Promise<void>;
   onAddCustom: (p: ProviderView) => void | Promise<void>;
 }) {
   const t = useT();
-  const [officialKind, setOfficialKind] = useState<OfficialProviderKind>("deepseek");
+  const templateChoices = useMemo<ProviderTemplateChoice[]>(() => [
+    ...OFFICIAL_PROVIDER_CHOICES.map((choice) => ({
+      id: `official:${choice.kind}`,
+      source: "official" as const,
+      kind: choice.kind,
+      label: t(choice.labelKey),
+      description: t(choice.descKey),
+      keyEnv: choice.keyEnv,
+      added: false,
+      keySet: false,
+    })),
+    ...providerPresets.map((preset) => ({
+      id: `preset:${preset.id}`,
+      source: "preset" as const,
+      presetID: preset.id,
+      label: preset.label,
+      description: providerPresetDescription(preset, t),
+      keyEnv: preset.keyEnv,
+      added: preset.added,
+      status: normalizeProviderPresetStatus(preset.status, preset.added),
+      statusProviderNames: asArray(preset.statusProviderNames),
+      keySet: preset.keySet,
+    })),
+  ], [providerPresets, t]);
+  const [templateID, setTemplateID] = useState("official:deepseek");
   const [key, setKey] = useState("");
-  const selected = OFFICIAL_PROVIDER_CHOICES.find((choice) => choice.kind === officialKind) ?? OFFICIAL_PROVIDER_CHOICES[0];
+  const firstAvailableTemplateID = templateChoices.find(providerTemplateCanAdd)?.id ?? templateChoices[0]?.id ?? "";
+  const selected = templateChoices.find((choice) => choice.id === templateID) ?? templateChoices.find((choice) => choice.id === firstAvailableTemplateID) ?? templateChoices[0];
+  useEffect(() => {
+    const current = templateChoices.find((choice) => choice.id === templateID);
+    if (firstAvailableTemplateID && (!current || (!providerTemplateCanAdd(current) && firstAvailableTemplateID !== templateID))) {
+      setTemplateID(firstAvailableTemplateID);
+    }
+  }, [firstAvailableTemplateID, templateChoices, templateID]);
 
   const header = (
     <div className="provider-add-panel__head">
@@ -3998,26 +4229,66 @@ function AddProviderPanel({
         {modeSwitch}
         <div className="provider-add-panel__hint">{t("settings.addProvider.officialHint")}</div>
         <div className="provider-template-grid">
-          {OFFICIAL_PROVIDER_CHOICES.map((choice) => (
-            <button
-              key={choice.kind}
-              type="button"
-              className={`provider-template-card${officialKind === choice.kind ? " provider-template-card--active" : ""}`}
-              disabled={busy}
-              onClick={() => setOfficialKind(choice.kind)}
-            >
-              <strong>{t(choice.labelKey)}</strong>
-              <span>{t(choice.descKey)}</span>
-            </button>
-          ))}
+          {templateChoices.map((choice) => {
+            const canAdd = providerTemplateCanAdd(choice);
+            const badge = providerTemplateStatusBadge(choice, t);
+            const conflictProviderName = providerTemplateConflictProviderName(choice);
+            if (choice.source === "preset" && (choice.status === "name_conflict" || choice.status === "installed_modified")) {
+              return (
+                <div
+                  key={choice.id}
+                  className={`provider-template-card${providerTemplateStatusClass(choice)}`}
+                >
+                  <strong>
+                    {choice.label}
+                    {badge ? ` · ${badge}` : ""}
+                  </strong>
+                  <span>{choice.description}</span>
+                  <div className="provider-template-card__actions">
+                    <button
+                      type="button"
+                      className="btn btn--small"
+                      disabled={busy || !conflictProviderName}
+                      onClick={() => onViewPresetConflict(conflictProviderName)}
+                    >
+                      {choice.status === "installed_modified" ? t("settings.addProvider.viewPresetProvider") : t("settings.addProvider.viewConflictProvider")}
+                    </button>
+                    <InlineConfirmButton
+                      label={t("settings.addProvider.resetPreset")}
+                      confirmLabel={t("settings.addProvider.confirmResetPreset")}
+                      cancelLabel={t("common.cancel")}
+                      disabled={busy}
+                      danger
+                      onConfirm={() => onResetPreset(choice.presetID)}
+                    />
+                  </div>
+                </div>
+              );
+            }
+            return (
+              <button
+                key={choice.id}
+                type="button"
+                className={`provider-template-card${selected?.id === choice.id ? " provider-template-card--active" : ""}${providerTemplateStatusClass(choice)}`}
+                disabled={busy || !canAdd}
+                onClick={() => setTemplateID(choice.id)}
+              >
+                <strong>
+                  {choice.label}
+                  {badge ? ` · ${badge}` : ""}
+                </strong>
+                <span>{choice.description}</span>
+              </button>
+            );
+          })}
         </div>
         <label className="set-label">{t("settings.providerKeyOptional")}</label>
         <input
           className="mem-input"
           type="password"
-          placeholder={t("settings.setKey", { env: selected.keyEnv })}
+          placeholder={selected ? t("settings.setKey", { env: selected.keyEnv }) : ""}
           value={key}
-          disabled={busy}
+          disabled={busy || !providerTemplateCanAdd(selected)}
           onChange={(e) => setKey(e.target.value)}
         />
         <div className="prov-card__actions">
@@ -4027,10 +4298,14 @@ function AddProviderPanel({
           <button
             type="button"
             className="btn btn--primary btn--small"
-            disabled={busy}
-            onClick={() => void onAddOfficial(officialKind, key.trim())}
+            disabled={busy || !providerTemplateCanAdd(selected)}
+            onClick={() => {
+              if (!providerTemplateCanAdd(selected)) return;
+              if (selected.source === "official") void onAddOfficial(selected.kind, key.trim());
+              else void onAddPreset(selected.presetID, key.trim());
+            }}
           >
-            {t("settings.addProvider.confirm")}
+            {providerTemplateActionLabel(selected, t)}
           </button>
         </div>
       </div>
@@ -4571,7 +4846,7 @@ function ProviderEditor({
 }) {
   const t = useT();
   const [name, setName] = useState(initial?.name ?? "");
-  const [kind] = useState(initial?.kind ?? "openai");
+  const [kind, setKind] = useState(initial?.kind ?? "openai");
   const [baseUrl, setBaseUrl] = useState(initial?.baseUrl ?? "");
   const [chatUrl, setChatUrl] = useState(initial?.chatUrl ?? "");
   const [fullChatUrl, setFullChatUrl] = useState(Boolean((initial?.chatUrl ?? "").trim()));
@@ -4585,6 +4860,7 @@ function ProviderEditor({
   const [apiKeyEnv, setApiKeyEnv] = useState(initial?.apiKeyEnv ?? "");
   const [headersDraft, setHeadersDraft] = useState(formatProviderHeaders(initial?.headers));
   const [extraBodyDraft, setExtraBodyDraft] = useState(formatProviderExtraBody(initial?.extraBody));
+  const [authHeader, setAuthHeader] = useState(Boolean(initial?.authHeader));
   const [keyDraft, setKeyDraft] = useState("");
   const [balanceUrl, setBalanceUrl] = useState(initial?.balanceUrl ?? "");
   // Empty when unset so the placeholder (and its "0 = default" hint) reads instead
@@ -4600,7 +4876,11 @@ function ProviderEditor({
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const builtIn = initial?.builtIn ?? false;
   const isNewCustomProvider = !initial;
-  const effectiveKind = providerEditorEffectiveKind(isNewCustomProvider, kind, kinds);
+  const providerKindChoices = useMemo(() => {
+    const choices = uniqueStrings([kind, ...kinds].map((candidate) => candidate.trim()).filter(Boolean));
+    return choices.length > 0 ? choices : ["openai"];
+  }, [kind, kinds]);
+  const effectiveKind = providerEditorEffectiveKind(isNewCustomProvider, kind, providerKindChoices);
   const effectiveBaseUrl = fullChatUrl ? providerBaseURLFromChatURL(chatUrl) : baseUrl.trim();
   const effectiveChatUrl = fullChatUrl ? trimmedURL(chatUrl) : "";
   const effectiveModelsUrl = modelsUrl.trim();
@@ -4653,6 +4933,7 @@ function ProviderEditor({
         apiKeyEnv: effectiveApiKeyEnv,
         headers: effectiveHeaders,
         extraBody: effectiveExtraBody,
+        authHeader,
         keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
         balanceUrl: balanceUrl.trim(),
         contextWindow: Number(ctx) || 0,
@@ -4702,6 +4983,7 @@ function ProviderEditor({
       apiKeyEnv: effectiveApiKeyEnv,
       headers: effectiveHeaders,
       extraBody: effectiveExtraBody,
+      authHeader,
       modelsUrl: effectiveModelsUrl,
       keySet: Boolean(keyDraft.trim()) || (initial?.keySet ?? false),
       balanceUrl: balanceUrl.trim(),
@@ -4857,6 +5139,15 @@ function ProviderEditor({
         <div className={`mem-hint${extraBodyInvalid ? " mem-hint--error" : ""}`}>
           {extraBodyInvalid ? extraBodyParse.error : t("settings.providerExtraBodyHint")}
         </div>
+        <label className="set-check">
+          <input
+            type="checkbox"
+            checked={authHeader}
+            onChange={(e) => setAuthHeader(e.target.checked)}
+          />
+          {t("settings.providerAuthHeader")}
+        </label>
+        <div className="mem-hint">{t("settings.providerAuthHeaderHint")}</div>
         <label className="set-label">{t("settings.reasoningProtocol")}</label>
         <select className="mem-select" value={reasoningProtocol} onChange={(e) => setReasoningProtocol(e.target.value)}>
           {REASONING_PROTOCOLS.map((protocol) => (
@@ -4902,6 +5193,15 @@ function ProviderEditor({
     <div className={`provider-editor${isNewCustomProvider ? " provider-editor--wizard" : ""}`}>
       <label className="set-label">{t("settings.customProviderName")}</label>
       <input className="mem-input" placeholder={t("settings.customProviderNamePlaceholder")} value={name} onChange={(e) => setName(e.target.value)} disabled={!!initial} />
+      <label className="set-label">{t("settings.providerProtocol")}</label>
+      <select className="mem-select" value={kind} onChange={(e) => setKind(e.target.value)}>
+        {providerKindChoices.map((choice) => (
+          <option key={choice} value={choice}>
+            {providerKindLabel(choice, t)}
+          </option>
+        ))}
+      </select>
+      <div className="mem-hint">{providerKindHint(effectiveKind, t)}</div>
       <div className="set-row">
         <label className="set-label set-grow">
           {t(fullChatUrl ? "settings.providerChatUrlLabel" : "settings.providerBaseUrlLabel")}

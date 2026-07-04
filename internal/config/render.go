@@ -301,11 +301,20 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				fmt.Fprintf(&b, "models_url  = %q   # auto-fetch models from this URL on startup\n", p.ModelsURL)
 			}
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if p.PresetID != "" {
+				fmt.Fprintf(&b, "preset_id   = %q   # curated preset identity; settings UI uses it to avoid duplicate installs\n", p.PresetID)
+			}
+			if p.PresetVersion > 0 {
+				fmt.Fprintf(&b, "preset_version = %d\n", p.PresetVersion)
+			}
 			if len(p.Headers) > 0 {
 				fmt.Fprintf(&b, "headers     = %s   # extra static request headers; keep secrets in api_key_env\n", renderStringMap(p.Headers))
 			}
 			if len(p.ExtraBody) > 0 {
 				fmt.Fprintf(&b, "extra_body  = %s   # extra top-level JSON request body fields for compatible gateways\n", renderAnyMap(p.ExtraBody))
+			}
+			if p.AuthHeader {
+				b.WriteString("auth_header = true   # Anthropic-compatible: send Authorization: Bearer <api_key> instead of x-api-key\n")
 			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q   # optional; wallet-balance endpoint shown in the status bar\n", p.BalanceURL)
@@ -852,11 +861,20 @@ func RenderTOMLProjectDelta(c *Config) string {
 				fmt.Fprintf(&b, "models_url  = %q\n", p.ModelsURL)
 			}
 			fmt.Fprintf(&b, "api_key_env = %q\n", p.APIKeyEnv)
+			if p.PresetID != "" {
+				fmt.Fprintf(&b, "preset_id   = %q\n", p.PresetID)
+			}
+			if p.PresetVersion > 0 {
+				fmt.Fprintf(&b, "preset_version = %d\n", p.PresetVersion)
+			}
 			if len(p.Headers) > 0 {
 				fmt.Fprintf(&b, "headers     = %s\n", renderStringMap(p.Headers))
 			}
 			if len(p.ExtraBody) > 0 {
 				fmt.Fprintf(&b, "extra_body  = %s\n", renderAnyMap(p.ExtraBody))
+			}
+			if p.AuthHeader {
+				b.WriteString("auth_header = true\n")
 			}
 			if p.BalanceURL != "" {
 				fmt.Fprintf(&b, "balance_url = %q\n", p.BalanceURL)
