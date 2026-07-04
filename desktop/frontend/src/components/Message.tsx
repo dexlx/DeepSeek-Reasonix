@@ -390,11 +390,12 @@ export function UserMessage({
                     <ComposerContextCard
                       key={attachment.path}
                       variant={attachment.source === "workspace" ? "workspace" : "attachment"}
-                      tooltipLabel={attachment.source === "workspace" ? formatAttachmentRefForSubmit(attachment) : attachment.path}
+                      tooltipLabel={imagePreview ? `${t("imageViewer.clickToPreview")} — ${attachment.path}` : attachment.source === "workspace" ? formatAttachmentRefForSubmit(attachment) : attachment.path}
                       removeLabel={attachment.source === "workspace" ? t("composer.removeReference") : t("composer.removeImage")}
                       removeDisabled={editSubmitting}
                       onRemove={() => removeDraftAttachment(attachment.path)}
                       previewUrl={imagePreview}
+                      onImageClick={imagePreview ? () => openImageViewer(attachment.path, attachment.name) : undefined}
                       imageOnly={imageOnly}
                       folder={attachment.kind === "folder"}
                       label={attachment.kind === "folder" ? `${attachment.name}/` : attachment.name}

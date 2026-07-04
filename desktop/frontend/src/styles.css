@@ -16478,10 +16478,12 @@ body > .mermaid-diagram--fullscreen {
   flex-shrink: 0;
   width: 56px;
   height: 56px;
+}
+.composer-context__thumb--interactive {
   cursor: pointer;
   transition: transform 0.15s ease;
 }
-.composer-context__thumb:hover {
+.composer-context__thumb--interactive:hover {
   transform: scale(1.08);
 }
 .composer-context__item--image-only .composer-context__thumb {

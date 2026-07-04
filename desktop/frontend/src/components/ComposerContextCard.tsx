@@ -50,7 +50,7 @@ export function ComposerContextCard({
         <span className="composer-context__label">
           {previewUrl ? (
             <span
-              className="composer-context__thumb"
+              className={`composer-context__thumb${onImageClick ? " composer-context__thumb--interactive" : ""}`}
               onClick={onImageClick}
               role={onImageClick ? "button" : undefined}
               tabIndex={onImageClick ? 0 : undefined}
