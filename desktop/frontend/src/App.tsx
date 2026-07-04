@@ -1030,6 +1030,9 @@ export default function App() {
   const rightDockMode = useLayoutStore((s) => s.rightDockMode);
   const setRightDockMode = useLayoutStore((s) => s.setRightDockMode);
   const [dockRefreshKey, setDockRefreshKey] = useState(0);
+  const [fileRefRefreshKey, setFileRefRefreshKey] = useState(0);
+  const refreshComposerFileRefs = useCallback(() => setFileRefRefreshKey((value) => value + 1), []);
+  const composerFileRefRefreshKey = `${dockRefreshKey}:${fileRefRefreshKey}`;
   const [projectRevision, setProjectRevision] = useState(0);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
   const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
@@ -3583,6 +3586,7 @@ export default function App() {
               retry={state.retry}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
+              fileRefRefreshKey={composerFileRefRefreshKey}
               guidanceConsumedKey={latestGuidanceConsumed?.key}
               guidanceConsumedText={latestGuidanceConsumed?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
@@ -3701,6 +3705,7 @@ export default function App() {
                   onPreviewModeChange={handleWorkspacePreviewModeChange}
                   onAddToChat={addWorkspaceTextToComposer}
                   onRequestPanelWidth={ensureWorkspacePanelWidth}
+                  onFileTreeRefresh={refreshComposerFileRefs}
                   refreshKey={dockRefreshKey}
                   initialViewMode={rightDockMode === "changed" ? "changed" : "files"}
                   showViewTabs={false}
