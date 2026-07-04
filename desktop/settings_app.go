@@ -1071,20 +1071,30 @@ func (a *App) applyConfigChange(mutate func(*config.Config) error) error {
 	if err := a.ensureActiveTabRebuildAllowed("settings"); err != nil {
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := mutate(cfg); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	if err := func() error {
+		// Serialize the load-modify-save against other in-process config editors
+		// (bot auto-session persistence, applyConfigOnly) so neither drops the
+		// other's fields. rebuild() runs after unlocking — it does slow work and
+		// must not hold the config edit lock.
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := mutate(cfg); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 	return a.rebuild()
 }
 
 func (a *App) applyConfigOnly(mutate func(*config.Config) error) error {
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
 	cfg, path, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
@@ -1103,7 +1113,7 @@ func (a *App) ensureActiveTabRebuildAllowed(setting string) error {
 		}
 		return fmt.Errorf("no active tab")
 	}
-	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError(setting)
 	}
 	return nil
@@ -1123,6 +1133,17 @@ func (a *App) ensureLiveControllersRuntimeMutationAllowed(setting string) error 
 	return nil
 }
 
+// loadDesktopUserConfigForEdit loads the user config for a write path and
+// persists any pending one-time legacy migrations (provider-access normalize,
+// legacy bot-config move) to disk as part of the load.
+//
+// Contract: the caller must already hold config.LockUserConfigEdits() across
+// its whole load→mutate→SaveTo cycle, so the migration write-back cannot race
+// other in-process config editors. This helper must never acquire that lock
+// itself: applyConfigChange/applyConfigOnly (and every other caller) invoke it
+// with the lock held, so an inner acquire would self-deadlock. Read-only
+// callers must use loadDesktopUserConfigForView (or its WithCredentials
+// variant), which never writes to disk.
 func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	userPath := config.UserConfigPath()
 	if userPath == "" {
@@ -1157,44 +1178,63 @@ func (a *App) loadDesktopUserConfigForEdit() (*config.Config, string, error) {
 	return legacyCfg, userPath, nil
 }
 
+// loadDesktopUserConfigForView loads the user config for read-only callers.
+// Contract: it never writes to disk, so it is safe without
+// config.LockUserConfigEdits(). Legacy migrations (provider-access normalize,
+// legacy bot-config merge) are applied to the returned copy in memory only;
+// the on-disk file migrates the first time a locked write path runs
+// loadDesktopUserConfigForEdit. Credentials (Reasonix global .env) are not
+// loaded; callers that hand the config to a runtime resolving secrets from the
+// process env must use loadDesktopUserConfigForViewWithCredentials.
 func (a *App) loadDesktopUserConfigForView() (*config.Config, string, error) {
+	return a.loadDesktopUserConfigReadOnly(config.LoadForEditWithoutCredentials)
+}
+
+// loadDesktopUserConfigForViewWithCredentials is loadDesktopUserConfigForView
+// plus credential resolution: like config.LoadForEdit it loads Reasonix's
+// global .env into the process env. Use it for read-only loads whose result
+// feeds a runtime that resolves env-based secrets — the bot runtime
+// (app-secret/control-token envs) and MCP server connects. It still never
+// writes to disk.
+func (a *App) loadDesktopUserConfigForViewWithCredentials() (*config.Config, string, error) {
+	return a.loadDesktopUserConfigReadOnly(config.LoadForEdit)
+}
+
+// loadDesktopUserConfigReadOnly is the shared pure-read loader behind the View
+// variants: same shape as loadDesktopUserConfigForEdit, but every legacy
+// migration stays in memory (zero SaveTo).
+func (a *App) loadDesktopUserConfigReadOnly(load func(string) *config.Config) (*config.Config, string, error) {
 	userPath := config.UserConfigPath()
 	if userPath == "" {
 		return nil, "", fmt.Errorf("cannot resolve user config directory")
 	}
 	if _, err := os.Stat(userPath); err == nil {
-		cfg := config.LoadForEditWithoutCredentials(userPath)
-		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
-			return nil, "", err
-		}
+		cfg := load(userPath)
+		normalizeLegacyDesktopProviderAccessInMemory(cfg, userPath)
 		legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
 		if legacyPath != "" && !sameConfigPath(legacyPath, userPath) {
-			legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
-			if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
-				return nil, "", err
-			}
+			mergeLegacyBotConfigInMemory(cfg, load(legacyPath))
 		}
 		return cfg, userPath, nil
 	}
-	cfg := config.LoadForEditWithoutCredentials(userPath)
+	cfg := load(userPath)
 	legacyPath := config.SourcePathForRoot(a.activeWorkspaceRoot())
 	if legacyPath == "" || sameConfigPath(legacyPath, userPath) {
-		if err := normalizeLegacyDesktopProviderAccessForSettings(cfg, userPath); err != nil {
-			return nil, "", err
-		}
+		normalizeLegacyDesktopProviderAccessInMemory(cfg, userPath)
 		return cfg, userPath, nil
 	}
-	legacyCfg := config.LoadForEditWithoutCredentials(legacyPath)
-	if err := normalizeLegacyDesktopProviderAccessForSettings(legacyCfg, legacyPath); err != nil {
-		return nil, "", err
-	}
+	// The user config does not exist yet: serve the legacy config as the view.
+	// It already carries any legacy bot config, so no merge is needed; the
+	// write path creates the migrated user file later.
+	legacyCfg := load(legacyPath)
+	normalizeLegacyDesktopProviderAccessInMemory(legacyCfg, legacyPath)
 	legacyCfg.ConfigVersion = config.Default().ConfigVersion
-	if err := migrateLegacyBotConfigToUser(cfg, legacyCfg, userPath); err != nil {
-		return nil, "", err
-	}
 	return legacyCfg, userPath, nil
 }
 
+// migrateLegacyBotConfigToUser (method) is the write-path legacy bot-config
+// migration against the active workspace's legacy config file. Callers must
+// hold config.LockUserConfigEdits() (see loadDesktopUserConfigForEdit).
 func (a *App) migrateLegacyBotConfigToUser(userCfg *config.Config, userPath string) error {
 	if userCfg == nil {
 		return nil
@@ -1207,18 +1247,32 @@ func (a *App) migrateLegacyBotConfigToUser(userCfg *config.Config, userPath stri
 	return migrateLegacyBotConfigToUser(userCfg, legacyCfg, userPath)
 }
 
+// migrateLegacyBotConfigToUser is the write-path variant: it merges the legacy
+// bot config in memory and persists the result to userPath. Callers must hold
+// config.LockUserConfigEdits() (see loadDesktopUserConfigForEdit). Read paths
+// use mergeLegacyBotConfigInMemory instead.
 func migrateLegacyBotConfigToUser(userCfg, legacyCfg *config.Config, userPath string) error {
-	if userCfg == nil || legacyCfg == nil || desktopBotConfigConfigured(userCfg.Bot) {
+	if !mergeLegacyBotConfigInMemory(userCfg, legacyCfg) {
 		return nil
 	}
-	if !desktopBotConfigConfigured(legacyCfg.Bot) {
-		return nil
-	}
-	userCfg.Bot = legacyCfg.Bot
 	if err := userCfg.SaveTo(userPath); err != nil {
 		return fmt.Errorf("migrate legacy bot config: %w", err)
 	}
 	return nil
+}
+
+// mergeLegacyBotConfigInMemory copies the legacy bot config onto userCfg when
+// the user config has none of its own. It never touches disk; it reports
+// whether userCfg changed (i.e. whether a write path should persist it).
+func mergeLegacyBotConfigInMemory(userCfg, legacyCfg *config.Config) bool {
+	if userCfg == nil || legacyCfg == nil || desktopBotConfigConfigured(userCfg.Bot) {
+		return false
+	}
+	if !desktopBotConfigConfigured(legacyCfg.Bot) {
+		return false
+	}
+	userCfg.Bot = legacyCfg.Bot
+	return true
 }
 
 func desktopBotConfigConfigured(bot config.BotConfig) bool {
@@ -1278,12 +1332,12 @@ func desktopBotConfigConfigured(bot config.BotConfig) bool {
 	return false
 }
 
+// normalizeLegacyDesktopProviderAccessForSettings is the write-path variant:
+// it normalizes in memory and persists the migrated form to path. Callers must
+// hold config.LockUserConfigEdits() (see loadDesktopUserConfigForEdit). Read
+// paths use normalizeLegacyDesktopProviderAccessInMemory instead.
 func normalizeLegacyDesktopProviderAccessForSettings(cfg *config.Config, path string) error {
-	if cfg == nil || len(cfg.Desktop.ProviderAccess) > 0 || configDeclaresProviderAccess(path) {
-		return nil
-	}
-	config.NormalizeLegacyDesktopProviderAccess(cfg)
-	if len(cfg.Desktop.ProviderAccess) == 0 || strings.TrimSpace(path) == "" {
+	if !normalizeLegacyDesktopProviderAccessInMemory(cfg, path) {
 		return nil
 	}
 	if _, err := os.Stat(path); err != nil {
@@ -1293,6 +1347,19 @@ func normalizeLegacyDesktopProviderAccessForSettings(cfg *config.Config, path st
 		return err
 	}
 	return cfg.SaveTo(path)
+}
+
+// normalizeLegacyDesktopProviderAccessInMemory seeds cfg.Desktop.ProviderAccess
+// from configs written before Settings tracked explicit provider access. It
+// never touches disk; it reports whether cfg now carries a normalized list
+// that the file at path does not declare (i.e. whether a write path should
+// persist it).
+func normalizeLegacyDesktopProviderAccessInMemory(cfg *config.Config, path string) bool {
+	if cfg == nil || len(cfg.Desktop.ProviderAccess) > 0 || configDeclaresProviderAccess(path) {
+		return false
+	}
+	config.NormalizeLegacyDesktopProviderAccess(cfg)
+	return len(cfg.Desktop.ProviderAccess) > 0 && strings.TrimSpace(path) != ""
 }
 
 func configDeclaresProviderAccess(path string) bool {
@@ -1376,7 +1443,7 @@ func (a *App) rebuildSetting(setting string) error {
 	if tab == nil {
 		return fmt.Errorf("no active tab")
 	}
-	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError(setting)
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
@@ -1386,13 +1453,13 @@ func (a *App) rebuildSetting(setting string) error {
 	if prevPath == "" {
 		prevPath = strings.TrimSpace(tab.currentSessionPath())
 	}
-	if tab.Ctrl == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
 		prevPath = a.reconciledSessionPathForTab(tab)
 		if prevPath == "" {
 			prevPath = strings.TrimSpace(tab.currentSessionPath())
 		}
 	}
-	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError(setting)
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
@@ -1400,7 +1467,7 @@ func (a *App) rebuildSetting(setting string) error {
 	}
 
 	var carried []provider.Message
-	oldCtrl := tab.Ctrl
+	oldCtrl := a.controllerForTab(tab)
 	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
@@ -1466,6 +1533,12 @@ func (a *App) rebuildSetting(setting string) error {
 	}
 	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current != tab {
+		a.mu.Unlock()
+		ctrl.Close()
+		tab.releaseSessionLease()
+		return fmt.Errorf("tab %q changed while rebuilding settings; retry", tab.ID)
+	}
 	tab.Ctrl = ctrl
 	tab.model = model
 	tab.Label = ctrl.Label()
@@ -1483,18 +1556,26 @@ func (a *App) SetDefaultModel(ref string) error {
 	if tab == nil {
 		return fmt.Errorf("no active tab")
 	}
+	// applyConfigChange ends in rebuild(), which reads tab.model to pick the
+	// runtime model — the new ref must be visible on the tab before that runs.
+	a.mu.Lock()
 	prev := tab.model
 	tab.model = ref
+	a.mu.Unlock()
 	if err := a.applyConfigChange(func(c *config.Config) error {
 		resolved, err := selectableDesktopModelRef(c, ref)
 		if err != nil {
 			return err
 		}
 		c.DefaultModel = resolved
+		a.mu.Lock()
 		tab.model = resolved
+		a.mu.Unlock()
 		return nil
 	}); err != nil {
+		a.mu.Lock()
 		tab.model = prev
+		a.mu.Unlock()
 		return err
 	}
 	return nil
@@ -1593,14 +1674,25 @@ func (a *App) SetAutoPlan(mode string) error {
 	if err := a.ensureLiveControllersRuntimeMutationAllowed("auto-plan"); err != nil {
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetAutoPlan(mode); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	var cfg *config.Config
+	// Lock only the load-modify-save cycle; the live-controller fan-out and the
+	// optional rebuild below are slow and must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		loaded, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := loaded.SetAutoPlan(mode); err != nil {
+			return err
+		}
+		if err := loaded.SaveTo(path); err != nil {
+			return err
+		}
+		cfg = loaded
+		return nil
+	}(); err != nil {
 		return err
 	}
 	a.applyAutoPlanToLiveControllers(cfg.Agent.AutoPlan)
@@ -1620,14 +1712,20 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 
 // SetMemoryCompilerEnabled toggles the Memory v5 execution compiler.
 func (a *App) SetMemoryCompilerEnabled(enabled bool) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetMemoryCompilerEnabled(enabled); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	// Lock only the load-modify-save cycle; the live-controller fan-out below
+	// must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := cfg.SetMemoryCompilerEnabled(enabled); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 	a.applyMemoryCompilerToLiveControllers(enabled)
@@ -1816,7 +1914,9 @@ func (a *App) SaveProvider(p ProviderView) error {
 // Settings > Model > Access list. The runtime default providers still exist
 // independently; this only records the user's explicit access setup.
 func (a *App) AddOfficialProviderAccess(kind, key string) (string, error) {
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only pre-read (pricing language); the actual write happens inside
+	// applyConfigChange below, under the config edit lock.
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return "", err
 	}
@@ -1866,7 +1966,9 @@ func (a *App) AddProviderPresetAccess(id, key string) (string, error) {
 	if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
 		return "", err
 	}
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only duplicate-name pre-check; applyConfigChange re-checks under the
+	// config edit lock before writing.
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return "", err
 	}
@@ -1922,7 +2024,9 @@ func (a *App) ResetProviderPresetAccess(id string) error {
 	if err := a.ensureActiveTabRebuildAllowed("provider access"); err != nil {
 		return err
 	}
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only existence pre-check; applyConfigChange re-checks under the
+	// config edit lock before writing.
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return err
 	}
@@ -2008,7 +2112,9 @@ func (a *App) RemoveProviderAccess(name string) error {
 	if name == "" {
 		return fmt.Errorf("remove provider access: empty provider name")
 	}
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only dispatch check (built-in vs custom); the removal paths below
+	// reload and write under the config edit lock.
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		return err
 	}
@@ -2061,7 +2167,12 @@ func retargetProviderReferences(c *config.Config, name, fallbackRef string) {
 }
 
 func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	// This first load is a read-only planning copy (fallback ref + affected-tab
+	// scan); it loads credentials because the fallback choice depends on which
+	// providers resolve a key. The saved edit below reloads under the config
+	// edit lock so the slow snapshot work in between cannot widen the
+	// read-modify-write window.
+	cfg, _, err := a.loadDesktopUserConfigForViewWithCredentials()
 	if err != nil {
 		return err
 	}
@@ -2104,9 +2215,20 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			}
 		}
 	}
-	retargetProviderReferences(cfg, name, fallbackRef)
-	removeProviderAccess(cfg, name)
-	if err := cfg.SaveTo(path); err != nil {
+	// Reload-modify-save under the config edit lock: the pre-save snapshots
+	// above are slow and must not hold the lock, so mutate a fresh copy here
+	// instead of the stale planning copy loaded before them.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		fresh, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		retargetProviderReferences(fresh, name, fallbackRef)
+		removeProviderAccess(fresh, name)
+		return fresh.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 	if len(affected) == 0 {
@@ -2123,6 +2245,11 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 	for _, item := range affected {
 		tab := a.tabs[item.id]
 		if tab == nil {
+			continue
+		}
+		if tab.Ctrl != item.ctrl {
+			// The tab swapped controllers while we worked off-lock; nil-ing the
+			// replacement would leak it. Leave the new runtime alone.
 			continue
 		}
 		tab.Ctrl = nil
@@ -2148,7 +2275,10 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	if name == "" {
 		return fmt.Errorf("remove provider: empty provider name")
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	// Read-only planning copy (with credentials — the fallback choice depends
+	// on which providers resolve a key); the saved edit below reloads under the
+	// config edit lock (see removeBuiltInProviderAccessAndRetargetTabs).
+	cfg, _, err := a.loadDesktopUserConfigForViewWithCredentials()
 	if err != nil {
 		return err
 	}
@@ -2192,11 +2322,21 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			}
 		}
 	}
-	if err := cfg.RemoveProvider(name); err != nil {
-		return err
-	}
-	removeProviderAccess(cfg, name)
-	if err := cfg.SaveTo(path); err != nil {
+	// Reload-modify-save under the config edit lock; the snapshots above ran
+	// off-lock against the stale planning copy.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		fresh, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := fresh.RemoveProvider(name); err != nil {
+			return err
+		}
+		removeProviderAccess(fresh, name)
+		return fresh.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 
@@ -2214,6 +2354,11 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	for _, item := range affected {
 		tab := a.tabs[item.id]
 		if tab == nil {
+			continue
+		}
+		if tab.Ctrl != item.ctrl {
+			// The tab swapped controllers while we worked off-lock; nil-ing the
+			// replacement would leak it. Leave the new runtime alone.
 			continue
 		}
 		tab.Ctrl = nil
@@ -2262,6 +2407,10 @@ func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
 	if apiKeyEnv == "" {
 		return nil
 	}
+	// Pure load-modify-save on the user config; the caller (SetProviderKey)
+	// rebuilds after we return, outside the config edit lock.
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
 	cfg, path, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
@@ -2666,14 +2815,25 @@ func (a *App) SetReasoningLanguage(lang string) error {
 	if err := a.ensureLiveControllersRuntimeMutationAllowed("reasoning language"); err != nil {
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetReasoningLanguage(lang); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	var cfg *config.Config
+	// Lock only the load-modify-save cycle; the live-controller fan-out below
+	// must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		loaded, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := loaded.SetReasoningLanguage(lang); err != nil {
+			return err
+		}
+		if err := loaded.SaveTo(path); err != nil {
+			return err
+		}
+		cfg = loaded
+		return nil
+	}(); err != nil {
 		return err
 	}
 	a.applyReasoningLanguageToLiveControllers(cfg.ReasoningLanguage())

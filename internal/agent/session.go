@@ -61,6 +61,13 @@ func (s *Session) Snapshot() []provider.Message {
 	return msgs
 }
 
+// Len returns the number of messages, safe to call from any goroutine.
+func (s *Session) Len() int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return len(s.Messages)
+}
+
 // CloneWithMessages returns a fresh Session carrying msgs while preserving the
 // persistence baseline of the source session. Resume paths use this when they
 // need to adjust loaded history before a rewrite; dropping persisted would make

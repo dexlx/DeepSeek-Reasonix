@@ -116,6 +116,12 @@ type App struct {
 	// another navigation is still activating.
 	singleSurfaceMu sync.Mutex
 
+	// sessionRemovalMu serializes operations that remove visible or detached
+	// session bindings. Those operations may snapshot controllers before
+	// deletion; keep that snapshot outside a.mu, but do not let DeleteSession or
+	// topic/workspace removal trash the same files while it is in flight.
+	sessionRemovalMu sync.Mutex
+
 	// detachedSessions keeps live session runtimes whose visible tab was closed.
 	// It is process-local by design: shutdown closes every detached controller.
 	detachedSessions map[string]*WorkspaceTab
@@ -384,7 +390,7 @@ func (a *App) beforeClose(ctx context.Context) bool {
 	if a.forceQuit.Swap(false) || consumeSystemQuitRequested() {
 		return false
 	}
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err != nil {
 		cfg = config.LoadForEdit(config.UserConfigPath())
 	}
@@ -749,7 +755,7 @@ func (a *App) SubmitToTab(tabID, input string) error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -766,7 +772,7 @@ func (a *App) submitUserTurnToTab(tabID, input string) bool {
 	if ctrl == nil || a.ensureTabControllerWorkspace(tab) != nil {
 		return false
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return false
 	}
@@ -792,7 +798,7 @@ func (a *App) RunShellForTab(tabID, command string) error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -818,7 +824,7 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -838,7 +844,7 @@ func (a *App) SubmitEditedDisplayToTab(tabID, display, input, original string) e
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -888,7 +894,7 @@ func (a *App) SteerForTab(tabID, text string) error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -911,6 +917,18 @@ func (a *App) tabAndCtrlByID(tabID string) (*WorkspaceTab, control.SessionAPI) {
 	return tab, tab.Ctrl
 }
 
+func (a *App) controllerForTab(tab *WorkspaceTab) control.SessionAPI {
+	if tab == nil {
+		return nil
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	if tab.ID != "" && a.tabs[tab.ID] != tab {
+		return nil
+	}
+	return tab.Ctrl
+}
+
 func readOnlyChannelErr() error {
 	return fmt.Errorf("channel session is read-only")
 }
@@ -927,13 +945,6 @@ func (a *App) snapshotTab(tab *WorkspaceTab) error {
 		return nil
 	}
 	return ctrl.Snapshot()
-}
-
-func snapshotTabDirect(tab *WorkspaceTab) error {
-	if tab == nil || tab.ReadOnly || tab.Ctrl == nil {
-		return nil
-	}
-	return tab.Ctrl.Snapshot()
 }
 
 func (a *App) snapshotTabForAction(tab *WorkspaceTab, action string) error {
@@ -971,25 +982,30 @@ func (a *App) reconciledSessionPathForTab(tab *WorkspaceTab) string {
 		return ""
 	}
 	path, _ := a.reconcileTabWithPinnedSessionMeta(tab)
-	if path == "" && tab.Ctrl != nil {
-		path = tab.Ctrl.SessionPath()
+	if ctrl := a.controllerForTab(tab); path == "" && ctrl != nil {
+		path = ctrl.SessionPath()
 	}
 	return path
 }
 
 func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
-	if tab == nil || tab.Ctrl == nil || tab.ReadOnly {
+	if tab == nil {
 		return nil
 	}
 	tab.reconcileMu.Lock()
 	defer tab.reconcileMu.Unlock()
-	if tab.Ctrl == nil || tab.ReadOnly {
-		return nil
-	}
-	if tab.hasActiveRuntimeWork() {
-		return nil
-	}
+
+	a.mu.RLock()
+	current := a.tabs[tab.ID]
 	ctrl := tab.Ctrl
+	readOnly := tab.ReadOnly
+	a.mu.RUnlock()
+	if current != tab || ctrl == nil || readOnly {
+		return nil
+	}
+	if controllerHasActiveRuntimeWork(ctrl) {
+		return nil
+	}
 	path, hasBinding := a.reconcileTabWithPinnedSessionMeta(tab)
 	desiredRoot := strings.TrimSpace(tab.WorkspaceRoot)
 	ctrlRoot, rootOK := safeControllerWorkspaceRoot(ctrl)
@@ -1031,6 +1047,7 @@ func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
 	ctrl.Close()
 
 	a.mu.Lock()
+	var hostKey string
 	if current := a.tabs[tab.ID]; current == tab {
 		tab.Ctrl = nil
 		tab.Ready = false
@@ -1039,10 +1056,13 @@ func (a *App) ensureTabControllerWorkspace(tab *WorkspaceTab) error {
 		if tab.sink == nil {
 			tab.sink = &tabEventSink{tabID: tab.ID, app: a, ctx: a.ctx}
 		}
-		a.releaseTabSharedHost(tab)
+		hostKey = takeTabSharedHostKey(tab)
 		a.saveTabsLocked()
 	}
 	a.mu.Unlock()
+	if hostKey != "" {
+		a.releaseSharedHost(hostKey)
+	}
 
 	a.buildTabController(tab)
 	if tab.Ctrl == nil {
@@ -1285,7 +1305,7 @@ func (a *App) Compact() error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return nil
 	}
@@ -1317,7 +1337,7 @@ func (a *App) NewSession() error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -1430,7 +1450,7 @@ func (a *App) ClearSession() error {
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	ctrl = tab.Ctrl
+	ctrl = a.controllerForTab(tab)
 	if ctrl == nil {
 		return workspaceNotReadyErr(tab)
 	}
@@ -1453,6 +1473,12 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	if tab == nil || oldCtrl == nil {
 		return fmt.Errorf("workspace is still starting")
 	}
+	// This path destroys the old session's files (removeDesktopSessionArtifacts);
+	// serialize with DeleteSession/TrashTopic/workspace removal so they never
+	// trash or restore the same files mid-clear.
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
+
 	a.reconciledSessionPathForTab(tab)
 	oldPath := oldCtrl.SessionPath()
 	oldSink := tab.sink
@@ -2114,30 +2140,40 @@ func (a *App) DeleteSession(path string) error {
 	if err := validateSessionTrashTarget(dir, sessionPath, key); err != nil {
 		return err
 	}
-	removed, fallback := a.removeSessionRuntimeBindings(dir, sessionPath)
-	if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
-		a.closeRemovedSessionRuntimes(removed)
+	var fallback fallbackRuntimeTarget
+	if err := func() error {
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
+
+		removed, nextFallback := a.removeSessionRuntimeBindings(dir, sessionPath)
+		fallback = nextFallback
+		if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
+			a.closeRemovedSessionRuntimes(removed)
+			return err
+		}
+		closedRemoved := map[control.SessionAPI]bool{}
+		destroys := a.destroyHandlesForSession(dir, sessionPath, removed)
+		teardownTimedOut := waitDestroyHandles(destroys)
+		a.closeRemovedSessionRuntimesForSessionAfterDestroy(removed, dir, sessionPath, closedRemoved)
+		if teardownTimedOut {
+			if err := agent.MarkCleanupPending(sessionPath, "delete"); err != nil {
+				a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
+				return err
+			}
+			go delayedDesktopSessionTrash(dir, sessionPath, key, destroys)
+		} else {
+			err = trashSessionArtifacts(dir, sessionPath, key)
+			finishDestroyHandles(destroys)
+			if err != nil {
+				a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
+				return err
+			}
+		}
+		a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
+		return nil
+	}(); err != nil {
 		return err
 	}
-	closedRemoved := map[control.SessionAPI]bool{}
-	destroys := a.destroyHandlesForSession(dir, sessionPath, removed)
-	teardownTimedOut := waitDestroyHandles(destroys)
-	a.closeRemovedSessionRuntimesForSessionAfterDestroy(removed, dir, sessionPath, closedRemoved)
-	if teardownTimedOut {
-		if err := agent.MarkCleanupPending(sessionPath, "delete"); err != nil {
-			a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
-			return err
-		}
-		go delayedDesktopSessionTrash(dir, sessionPath, key, destroys)
-	} else {
-		err = trashSessionArtifacts(dir, sessionPath, key)
-		finishDestroyHandles(destroys)
-		if err != nil {
-			a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
-			return err
-		}
-	}
-	a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
 	if err := botruntime.ForgetAutoSessionMappingsForPath(sessionPath); err != nil {
 		slog.Warn("desktop: failed to clear auto bot session mapping", "err", err)
 	}
@@ -2581,6 +2617,10 @@ func (a *App) RestoreSession(path string) error {
 	if err != nil {
 		return err
 	}
+	// The destroying/open checks and the trash-entry move must not interleave
+	// with DeleteSession/TrashTopic trashing the same entry.
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
 	target := filepath.Join(dir, key)
 	if a.sessionDestroying(dir, target) {
 		return fmt.Errorf("session cleanup is still in progress: %s", key)
@@ -2838,7 +2878,7 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 		return err
 	}
 	if oldPath := a.reconciledSessionPathForTab(tab); oldPath != "" {
-		if err := saveTabSessionMeta(tab, oldPath); err != nil {
+		if err := a.saveTabSessionMeta(tab, oldPath); err != nil {
 			return fmt.Errorf("save current session metadata before switching sessions: %w", err)
 		}
 	}
@@ -3442,67 +3482,125 @@ func (a *App) RemoveWorkspace(dir string) error {
 	}
 	dir = normalizeProjectRoot(dir)
 
-	var closeTabs []*WorkspaceTab
-	var closeDetached []*WorkspaceTab
 	var fallback *WorkspaceTab
-	a.mu.Lock()
-	for _, tab := range a.tabs {
-		if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-			a.mu.Unlock()
-			return fmt.Errorf("workspace has running sessions; stop them before removing")
-		}
-	}
-	for _, tab := range a.detachedSessions {
-		if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
-			a.mu.Unlock()
-			return fmt.Errorf("workspace has running sessions; stop them before removing")
-		}
-	}
-	for id, tab := range a.tabs {
-		if !tabInWorkspace(tab, dir) {
-			continue
-		}
-		if err := snapshotTabDirect(tab); err != nil {
-			a.mu.Unlock()
-			slog.Warn("desktop: snapshot before removing workspace failed", "tab", id, "workspace", dir, "err", err)
-			return fmt.Errorf("save current session before removing workspace: %w", err)
-		}
-		a.markTabRemovedLocked(tab)
-		closeTabs = append(closeTabs, tab)
-		delete(a.tabs, id)
-		a.removeTabOrderLocked(id)
-		if a.activeTabID == id {
-			a.activeTabID = ""
-		}
-	}
-	for key, tab := range a.detachedSessions {
-		if !tabInWorkspace(tab, dir) {
-			continue
-		}
-		closeDetached = append(closeDetached, tab)
-		delete(a.detachedSessions, key)
-	}
-	if len(a.tabs) == 0 {
-		fallback = a.createTabEntry("global", globalTabWorkspaceRoot(), "")
-		fallback.TopicTitle = "Global"
-		fallback.sink = &tabEventSink{tabID: fallback.ID, app: a, ctx: a.ctx}
-		a.tabs[fallback.ID] = fallback
-		a.tabOrder = append(a.tabOrder, fallback.ID)
-		a.activeTabID = fallback.ID
-	} else if a.activeTabID == "" {
-		if ordered := a.orderedTabIDsLocked(); len(ordered) > 0 {
-			a.activeTabID = ordered[0]
-		}
-	}
-	a.saveTabsLocked()
-	a.mu.Unlock()
+	// sessionRemovalMu covers every step that can still touch this workspace's
+	// session files: snapshotting, unlinking the tab/runtime bindings, and
+	// closing the unlinked runtimes (quiescing autosave). Once a runtime is
+	// unlinked from a.tabs/detachedSessions it is invisible to
+	// DeleteSession/TrashTopic/RestoreSession, so it must stop writing before
+	// the lock is released. Project bookkeeping, the fallback controller build,
+	// and notifications run after release.
+	if err := func() error {
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
 
-	for _, tab := range closeTabs {
-		a.closeTabRuntime(tab)
+		type workspaceTabCandidate struct {
+			id  string
+			tab *WorkspaceTab
+		}
+
+		var closeTabs []*WorkspaceTab
+		var closeDetached []*WorkspaceTab
+		a.mu.Lock()
+		for _, tab := range a.tabs {
+			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
+				a.mu.Unlock()
+				return fmt.Errorf("workspace has running sessions; stop them before removing")
+			}
+		}
+		for _, tab := range a.detachedSessions {
+			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
+				a.mu.Unlock()
+				return fmt.Errorf("workspace has running sessions; stop them before removing")
+			}
+		}
+		candidates := make([]workspaceTabCandidate, 0)
+		for id, tab := range a.tabs {
+			if !tabInWorkspace(tab, dir) {
+				continue
+			}
+			candidates = append(candidates, workspaceTabCandidate{id: id, tab: tab})
+		}
+		a.mu.Unlock()
+
+		snapshotted := make(map[string]*WorkspaceTab, len(candidates))
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			snapshotted[id] = tab
+			if err := a.snapshotTab(tab); err != nil {
+				slog.Warn("desktop: snapshot before removing workspace failed", "tab", id, "workspace", dir, "err", err)
+				return fmt.Errorf("save current session before removing workspace: %w", err)
+			}
+		}
+
+		a.mu.Lock()
+		for _, tab := range a.tabs {
+			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
+				a.mu.Unlock()
+				return fmt.Errorf("workspace has running sessions; stop them before removing")
+			}
+		}
+		for _, tab := range a.detachedSessions {
+			if tabInWorkspace(tab, dir) && tab.hasActiveRuntimeWork() {
+				a.mu.Unlock()
+				return fmt.Errorf("workspace has running sessions; stop them before removing")
+			}
+		}
+		for id, tab := range a.tabs {
+			if tabInWorkspace(tab, dir) && snapshotted[id] != tab {
+				a.mu.Unlock()
+				return fmt.Errorf("workspace tabs changed while removing; retry")
+			}
+		}
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			if tab == nil || a.tabs[id] != tab || !tabInWorkspace(tab, dir) {
+				continue
+			}
+			a.markTabRemovedLocked(tab)
+			closeTabs = append(closeTabs, tab)
+			delete(a.tabs, id)
+			a.removeTabOrderLocked(id)
+			if a.activeTabID == id {
+				a.activeTabID = ""
+			}
+		}
+		for key, tab := range a.detachedSessions {
+			if !tabInWorkspace(tab, dir) {
+				continue
+			}
+			closeDetached = append(closeDetached, tab)
+			delete(a.detachedSessions, key)
+		}
+		if len(a.tabs) == 0 {
+			fallback = a.createTabEntry("global", globalTabWorkspaceRoot(), "")
+			fallback.TopicTitle = "Global"
+			fallback.sink = &tabEventSink{tabID: fallback.ID, app: a, ctx: a.ctx}
+			a.tabs[fallback.ID] = fallback
+			a.tabOrder = append(a.tabOrder, fallback.ID)
+			a.activeTabID = fallback.ID
+		} else if a.activeTabID == "" {
+			if ordered := a.orderedTabIDsLocked(); len(ordered) > 0 {
+				a.activeTabID = ordered[0]
+			}
+		}
+		a.saveTabsLocked()
+		a.mu.Unlock()
+
+		for _, tab := range closeTabs {
+			a.closeTabRuntime(tab)
+		}
+		for _, tab := range closeDetached {
+			a.closeTabRuntime(tab)
+		}
+		return nil
+	}(); err != nil {
+		return err
 	}
-	for _, tab := range closeDetached {
-		a.closeTabRuntime(tab)
-	}
+
+	// The fallback tab is already linked into a.tabs; its controller build is
+	// asynchronous and does not touch removed session files, so it does not
+	// need the removal lock.
 	if fallback != nil {
 		a.startTabControllerBuild(fallback)
 	}
@@ -6205,7 +6303,11 @@ func (a *App) SetMCPServerTier(name, tier string) error {
 }
 
 func (a *App) desktopMCPServerForEdit(name string) (config.PluginEntry, bool, error) {
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only lookup of the entry to edit; loads credentials because callers
+	// hand the entry to ConnectMCPServer, which resolves env-based secrets.
+	// The actual config write goes through saveDesktopMCPServer under the
+	// config edit lock.
+	cfg, _, err := a.loadDesktopUserConfigForViewWithCredentials()
 	if err != nil {
 		return config.PluginEntry{}, false, err
 	}
@@ -6225,31 +6327,44 @@ func (a *App) saveDesktopMCPServer(entry config.PluginEntry) error {
 		_, err := config.UpsertMCPJSONPlugin(projectMCPJSONPathForRoot(a.activeWorkspaceRoot()), entry)
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
+	// Lock only the user-config load-modify-save; the project-override cleanup
+	// below writes the project config, which this lock does not cover.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := cfg.UpsertPlugin(entry); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
-	if err := cfg.UpsertPlugin(entry); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
-		return err
-	}
-	_, err = a.removeProjectMCPOverride(entry.Name)
+	_, err := a.removeProjectMCPOverride(entry.Name)
 	return err
 }
 
 func (a *App) removeDesktopMCPServer(name string) (bool, error) {
 	removed := false
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return false, err
-	}
-	if cfg.RemovePlugin(name) {
-		removed = true
-		if err := cfg.SaveTo(path); err != nil {
-			return false, err
+	// Lock only the user-config load-modify-save; the project-scope removals
+	// below write project files, which this lock does not cover.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
 		}
+		if cfg.RemovePlugin(name) {
+			removed = true
+			return cfg.SaveTo(path)
+		}
+		return nil
+	}(); err != nil {
+		return false, err
 	}
 	projectRemoved, err := a.removeProjectMCPOverride(name)
 	if err != nil {
@@ -6292,7 +6407,9 @@ func (a *App) desktopMCPServerOwnedByProjectMCPJSON(name string) bool {
 	if strings.TrimSpace(name) == "" {
 		return false
 	}
-	cfg, _, err := a.loadDesktopUserConfigForEdit()
+	// Read-only ownership check: only looks for the name in the user config's
+	// plugin list, so no credentials and no config edit lock are needed.
+	cfg, _, err := a.loadDesktopUserConfigForView()
 	if err == nil {
 		if _, ok := findPluginEntry(cfg.Plugins, name); ok {
 			return false
@@ -6612,10 +6729,10 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	if prevPath == "" {
 		prevPath = strings.TrimSpace(tab.currentSessionPath())
 	}
-	if tab.Ctrl == nil && prevPath != "" {
+	if a.controllerForTab(tab) == nil && prevPath != "" {
 		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
 	}
-	if controllerHasActiveRuntimeWork(tab.Ctrl) {
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError("model")
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
@@ -6625,12 +6742,12 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	if prevPath == "" {
 		prevPath = strings.TrimSpace(tab.currentSessionPath())
 	}
-	if tab.Ctrl == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
 		prevPath = a.reconciledSessionPathForTab(tab)
 		if prevPath == "" {
 			prevPath = strings.TrimSpace(tab.currentSessionPath())
 		}
-		if controllerHasActiveRuntimeWork(tab.Ctrl) {
+		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 			return rebuildControllerActiveWorkError("model")
 		}
 	}
@@ -6657,7 +6774,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	}
 
 	var carried []provider.Message
-	oldCtrl := tab.Ctrl
+	oldCtrl := a.controllerForTab(tab)
 	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
@@ -6703,17 +6820,26 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		return userFacingSessionLeaseError("model", err)
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	if oldCtrl != nil {
-		oldCtrl.Close()
-	}
-	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current != tab {
+		// The tab was closed/replaced while we built the new controller off-lock;
+		// adopting it now would leak the runtime onto an orphaned tab and pin the
+		// session lease forever.
+		a.mu.Unlock()
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		return fmt.Errorf("tab %q changed while switching model; retry", tab.ID)
+	}
 	tab.Ctrl = newCtrl
 	tab.model = name
 	tab.effort = cloneStringPtr(effortOverride)
 	tab.Label = newCtrl.Label()
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	if oldCtrl != nil {
+		oldCtrl.Close()
+	}
+	a.persistTabSessionPath(tab, path)
 	return nil
 }
 
@@ -6757,7 +6883,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		}
 		return fmt.Errorf("tab %q not found", tabID)
 	}
-	ctrl := tab.Ctrl
+	ctrl := a.controllerForTab(tab)
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return rebuildControllerActiveWorkError("effort")
 	}
@@ -6775,15 +6901,15 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		return err
 	}
 	var carried []provider.Message
-	if tab.Ctrl != nil {
+	if oldCtrl := a.controllerForTab(tab); oldCtrl != nil {
 		if prevPath == "" {
-			prevPath = tab.Ctrl.SessionPath()
+			prevPath = oldCtrl.SessionPath()
 		}
 		if err := a.snapshotTabForAction(tab, "changing effort"); err != nil {
 			return err
 		}
-		carried = tab.Ctrl.History()
-		tab.Ctrl.Close()
+		carried = oldCtrl.History()
+		oldCtrl.Close()
 	}
 	sharedHost := a.lookupSharedHost(tab.SharedHostKey)
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
@@ -6815,8 +6941,13 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		return err
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current != tab {
+		a.mu.Unlock()
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		return fmt.Errorf("tab %q changed while switching effort; retry", tab.ID)
+	}
 	tab.Ctrl = newCtrl
 	tab.model = modelRef
 	tab.effort = &effort
@@ -6825,6 +6956,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.Ready = true
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	a.persistTabSessionPath(tab, path)
 	return nil
 }
 
@@ -6844,7 +6976,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if mode == currentTabTokenMode(tab) {
 		return nil
 	}
-	ctrl := tab.Ctrl
+	ctrl := a.controllerForTab(tab)
 	if controllerHasActiveRuntimeWork(ctrl) {
 		return rebuildControllerActiveWorkError("token mode")
 	}
@@ -6861,7 +6993,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	}
 
 	var carried []provider.Message
-	oldCtrl := tab.Ctrl
+	oldCtrl := a.controllerForTab(tab)
 	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
@@ -6899,11 +7031,13 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		return err
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
-	if oldCtrl != nil {
-		oldCtrl.Close()
-	}
-	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
+	if current := a.tabs[tab.ID]; current != tab {
+		a.mu.Unlock()
+		newCtrl.Close()
+		tab.releaseSessionLease()
+		return fmt.Errorf("tab %q changed while switching token mode; retry", tab.ID)
+	}
 	tab.Ctrl = newCtrl
 	tab.model = modelRef
 	tab.tokenMode = mode
@@ -6912,6 +7046,10 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	tab.Ready = true
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	if oldCtrl != nil {
+		oldCtrl.Close()
+	}
+	a.persistTabSessionPath(tab, path)
 	return nil
 }
 
@@ -7644,7 +7782,7 @@ func (a *App) AttachDropped(path string) (DroppedItem, error) {
 				return err
 			}
 			if tab != nil {
-				ctrl = tab.Ctrl
+				ctrl = a.controllerForTab(tab)
 			}
 			if ctrl == nil {
 				return fmt.Errorf("workspace is not ready")

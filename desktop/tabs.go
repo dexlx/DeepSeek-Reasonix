@@ -1736,7 +1736,14 @@ func blankTabSessionPathHasNoContent(tab *WorkspaceTab) bool {
 	if strings.TrimSpace(tab.SessionPath) == "" {
 		return true
 	}
-	path, ok := pinnedTabSessionPath(tabSessionDir(tab), tab.SessionPath)
+	return sessionPathHasNoContent(tabSessionDir(tab), tab.SessionPath)
+}
+
+func sessionPathHasNoContent(sessionDir, sessionPath string) bool {
+	if strings.TrimSpace(sessionPath) == "" {
+		return true
+	}
+	path, ok := pinnedTabSessionPath(sessionDir, sessionPath)
 	if !ok {
 		return false
 	}
@@ -1918,6 +1925,9 @@ func (a *App) ReorderTabs(tabIDs []string) error {
 // background work, the controller is detached so closing a view does not destroy
 // the session runtime.
 func (a *App) CloseTab(tabID string) error {
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
+
 	a.mu.Lock()
 	tab, ok := a.tabs[tabID]
 	if !ok {
@@ -1928,19 +1938,32 @@ func (a *App) CloseTab(tabID string) error {
 		a.mu.Unlock()
 		return fmt.Errorf("cannot close the last tab")
 	}
-	// Snapshot the session state before removing the tab from a.tabs.
-	// This closes a race window with DeleteSession: if Snapshot runs
-	// after delete(a.tabs, tabID), a concurrent DeleteSession can delete
-	// the session files, and the deferred Snapshot recreates them.
-	if err := snapshotTabDirect(tab); err != nil {
-		a.mu.Unlock()
+	a.mu.Unlock()
+
+	// Snapshot while the tab binding is still present, but outside a.mu because
+	// snapshot recovery can re-enter App and acquire a.mu. sessionRemovalMu keeps
+	// DeleteSession/topic/workspace removal from trashing the same files while
+	// this save is in flight.
+	if err := a.snapshotTab(tab); err != nil {
 		slog.Warn("desktop: snapshot before closing tab failed", "tab", tabID, "err", err)
 		return fmt.Errorf("save current session before closing tab: %w", err)
 	}
-	if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
-		a.mu.Unlock()
+	if err := a.saveTabSessionMetaForCurrentSession(tab); err != nil {
 		slog.Warn("desktop: session metadata before closing tab failed", "tab", tabID, "err", err)
 		return fmt.Errorf("save current session metadata before closing tab: %w", err)
+	}
+
+	a.mu.Lock()
+	if current := a.tabs[tabID]; current != tab {
+		a.mu.Unlock()
+		if current == nil {
+			return fmt.Errorf("tab %q not found", tabID)
+		}
+		return fmt.Errorf("tab %q changed while closing", tabID)
+	}
+	if len(a.tabs) <= 1 {
+		a.mu.Unlock()
+		return fmt.Errorf("cannot close the last tab")
 	}
 	if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
 		a.markTabRemovedLocked(tab)
@@ -2001,42 +2024,90 @@ func (a *App) CloseTab(tabID string) error {
 }
 
 func (a *App) keepOnlyVisibleTab(tabID string) (TabMeta, error) {
-	a.mu.Lock()
-	active := a.tabs[tabID]
-	if active == nil {
-		a.mu.Unlock()
-		return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
+	type pruneCandidate struct {
+		id  string
+		tab *WorkspaceTab
 	}
-	a.activeTabID = tabID
-	removed := make([]*WorkspaceTab, 0, len(a.tabs)-1)
-	for id, tab := range a.tabs {
-		if id == tabID {
-			continue
-		}
-		if err := snapshotTabDirect(tab); err != nil {
-			a.mu.Unlock()
-			slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
-		}
-		if err := saveTabSessionMetaForCurrentSession(tab); err != nil {
-			a.mu.Unlock()
-			slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
-			return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
-		}
-		if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
-			a.markTabRemovedLocked(tab)
-		}
-		removed = append(removed, tab)
-		delete(a.tabs, id)
-		a.removeTabOrderLocked(id)
-	}
-	a.tabOrder = []string{tabID}
-	a.saveTabsLocked()
-	meta := a.tabMeta(active, true)
-	a.mu.Unlock()
 
-	for _, tab := range removed {
-		a.removeVisibleTabRuntime(tab)
+	// sessionRemovalMu covers snapshotting, pruning the hidden bindings, and
+	// closing the removed runtimes (a detached runtime must finish its
+	// in-flight autosave before DeleteSession can see the files). The
+	// project-tree event stays outside so a listener can never re-enter a
+	// removal path while the lock is held.
+	meta, err := func() (TabMeta, error) {
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
+
+		a.mu.Lock()
+		active := a.tabs[tabID]
+		if active == nil {
+			a.mu.Unlock()
+			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
+		}
+		candidates := make([]pruneCandidate, 0, len(a.tabs)-1)
+		for id, tab := range a.tabs {
+			if id == tabID {
+				continue
+			}
+			candidates = append(candidates, pruneCandidate{id: id, tab: tab})
+		}
+		a.mu.Unlock()
+
+		// Keep tab bindings in a.tabs while saving so DeleteSession still sees
+		// them, but do not hold a.mu: Snapshot can run recovery callbacks that
+		// re-enter App and need the same lock.
+		snapshotted := make(map[string]*WorkspaceTab, len(candidates))
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			snapshotted[id] = tab
+			if err := a.snapshotTab(tab); err != nil {
+				slog.Warn("desktop: snapshot before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session before switching tabs: %w", err)
+			}
+			if err := a.saveTabSessionMetaForCurrentSession(tab); err != nil {
+				slog.Warn("desktop: session metadata before pruning hidden tab failed", "tab", id, "err", err)
+				return TabMeta{}, fmt.Errorf("save current session metadata before switching tabs: %w", err)
+			}
+		}
+
+		a.mu.Lock()
+		active = a.tabs[tabID]
+		if active == nil {
+			a.mu.Unlock()
+			return TabMeta{}, fmt.Errorf("tab %q not found", tabID)
+		}
+		for id, tab := range a.tabs {
+			if id != tabID && snapshotted[id] != tab {
+				a.mu.Unlock()
+				return TabMeta{}, fmt.Errorf("visible tabs changed while switching; retry")
+			}
+		}
+		a.activeTabID = tabID
+		removed := make([]*WorkspaceTab, 0, len(candidates))
+		for _, candidate := range candidates {
+			id, tab := candidate.id, candidate.tab
+			if tab == nil || a.tabs[id] != tab {
+				continue
+			}
+			if tab.Ctrl == nil || !tab.hasActiveRuntimeWork() {
+				a.markTabRemovedLocked(tab)
+			}
+			removed = append(removed, tab)
+			delete(a.tabs, id)
+			a.removeTabOrderLocked(id)
+		}
+		a.tabOrder = []string{tabID}
+		a.saveTabsLocked()
+		meta := a.tabMeta(active, true)
+		a.mu.Unlock()
+
+		for _, tab := range removed {
+			a.removeVisibleTabRuntime(tab)
+		}
+		return meta, nil
+	}()
+	if err != nil {
+		return TabMeta{}, err
 	}
 	a.emitProjectTreeChanged()
 	return enrichTabMeta(meta), nil
@@ -2369,15 +2440,21 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	if err != nil {
 		a.mu.Lock()
 		if tab.removed || a.tabs[tab.ID] != tab {
-			a.releaseTabSharedHost(tab)
+			hostKey := takeTabSharedHostKey(tab)
 			a.mu.Unlock()
+			if hostKey != "" {
+				a.releaseSharedHost(hostKey)
+			}
 			return
 		}
 		tab.StartupErr = err.Error()
 		tab.Ready = true
-		a.releaseTabSharedHost(tab)
+		hostKey := takeTabSharedHostKey(tab)
 		tab.releaseSessionLease()
 		a.mu.Unlock()
+		if hostKey != "" {
+			a.releaseSharedHost(hostKey)
+		}
 		a.emitReady(wailsCtx, tab.ID)
 		return
 	}
@@ -2439,17 +2516,23 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			if err := tab.ensureSessionLease(path); err != nil {
 				a.mu.Lock()
 				if tab.removed || a.tabs[tab.ID] != tab {
+					hostKey := takeTabSharedHostKey(tab)
 					a.mu.Unlock()
 					ctrl.Close()
-					a.releaseTabSharedHost(tab)
+					if hostKey != "" {
+						a.releaseSharedHost(hostKey)
+					}
 					return
 				}
 				tab.StartupErr = err.Error()
 				tab.Ready = true
-				a.releaseTabSharedHost(tab)
+				hostKey := takeTabSharedHostKey(tab)
 				tab.releaseSessionLease()
 				a.mu.Unlock()
 				ctrl.Close()
+				if hostKey != "" {
+					a.releaseSharedHost(hostKey)
+				}
 				a.emitReady(wailsCtx, tab.ID)
 				return
 			}
@@ -4285,27 +4368,47 @@ func (a *App) tabSessionRecoveryMeta(tab *WorkspaceTab) func(control.SessionReco
 		if tab == nil {
 			return agent.BranchMeta{Name: agent.RecoveryBranchDefaultName}
 		}
+		// This runs on the snapshot-recovery path, which can fire from the
+		// controller's autosave goroutine; snapshot the tab fields under a.mu so
+		// we don't read them mid-mutation. Recovery callbacks never hold a.mu, so
+		// taking it here can't deadlock. Controller reads happen off-lock.
+		a.mu.RLock()
+		ctrl := tab.Ctrl
 		scope := strings.TrimSpace(tab.Scope)
+		workspaceRoot := strings.TrimSpace(tab.WorkspaceRoot)
+		topicTitle := tab.TopicTitle
+		model := strings.TrimSpace(tab.model)
+		tokenMode := persistedTabTokenMode(boot.NormalizeTokenMode(tab.tokenMode))
+		mode := normalizeTabMode(tab.mode)
+		toolApprovalMode := normalizeToolApprovalMode(tab.toolApprovalMode)
+		goal := strings.TrimSpace(tab.goal)
+		a.mu.RUnlock()
+		if ctrl != nil {
+			mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
+			toolApprovalMode = normalizeToolApprovalMode(ctrl.ToolApprovalMode())
+			if g := strings.TrimSpace(ctrl.Goal()); g != "" && ctrl.GoalStatus() == control.GoalStatusRunning {
+				goal = g
+			} else {
+				goal = ""
+			}
+		}
 		if scope != "project" {
 			scope = "global"
 		}
-		workspaceRoot := strings.TrimSpace(tab.WorkspaceRoot)
 		if scope == "global" {
 			workspaceRoot = ""
 		}
-		topicID := newTopicID()
-		topicTitle := recoveryTopicTitle(tab.TopicTitle)
 		return agent.BranchMeta{
 			Name:             agent.RecoveryBranchDefaultName,
 			Scope:            scope,
 			WorkspaceRoot:    workspaceRoot,
-			TopicID:          topicID,
-			TopicTitle:       topicTitle,
-			Model:            strings.TrimSpace(tab.model),
-			TokenMode:        persistedTabTokenMode(currentTabTokenMode(tab)),
-			Mode:             persistedTabMode(currentTabMode(tab)),
-			ToolApprovalMode: persistedToolApprovalMode(currentTabToolApprovalMode(tab)),
-			Goal:             persistedTabGoal(tab),
+			TopicID:          newTopicID(),
+			TopicTitle:       recoveryTopicTitle(topicTitle),
+			Model:            model,
+			TokenMode:        tokenMode,
+			Mode:             persistedTabMode(mode),
+			ToolApprovalMode: persistedToolApprovalMode(toolApprovalMode),
+			Goal:             goal,
 		}
 	}
 }
@@ -5372,46 +5475,53 @@ func (a *App) TrashTopic(topicID string) error {
 		return fmt.Errorf("topicID is required")
 	}
 
-	targets, err := a.topicTrashTargets(topicID)
-	if err != nil {
-		return err
-	}
-	removed, fallback := a.removeTopicRuntimeBindings(topicID)
-	if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
-		a.closeRemovedSessionRuntimes(removed)
-		return err
-	}
-	destroyBegun := false
-	closedRemoved := map[control.SessionAPI]bool{}
-	defer func() {
-		if destroyBegun {
-			a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
-			return
-		}
-		a.closeRemovedSessionRuntimes(removed)
-	}()
+	var fallback fallbackRuntimeTarget
+	if err := func() error {
+		a.sessionRemovalMu.Lock()
+		defer a.sessionRemovalMu.Unlock()
 
-	for _, target := range targets {
-		destroys := a.destroyHandlesForSession(target.dir, target.sessionPath, removed)
-		if len(destroys) > 0 {
-			destroyBegun = true
+		targets, err := a.topicTrashTargets(topicID)
+		if err != nil {
+			return err
 		}
-		teardownTimedOut := waitDestroyHandles(destroys)
-		a.closeRemovedSessionRuntimesForSessionAfterDestroy(removed, target.dir, target.sessionPath, closedRemoved)
-		if teardownTimedOut {
-			if err := agent.MarkCleanupPending(target.sessionPath, "delete"); err != nil {
-				return err
+		removed, nextFallback := a.removeTopicRuntimeBindings(topicID)
+		fallback = nextFallback
+		if err := a.prepareRemovedSessionRuntimes(removed); err != nil {
+			a.closeRemovedSessionRuntimes(removed)
+			return err
+		}
+		destroyBegun := false
+		closedRemoved := map[control.SessionAPI]bool{}
+		defer func() {
+			if destroyBegun {
+				a.closeRemainingRemovedSessionRuntimesAfterDestroy(removed, closedRemoved)
+				return
 			}
-			go delayedDesktopSessionTrash(target.dir, target.sessionPath, target.key, destroys)
-		} else {
-			err := trashSessionArtifacts(target.dir, target.sessionPath, target.key)
-			finishDestroyHandles(destroys)
-			if err != nil {
-				return err
+			a.closeRemovedSessionRuntimes(removed)
+		}()
+
+		for _, target := range targets {
+			destroys := a.destroyHandlesForSession(target.dir, target.sessionPath, removed)
+			if len(destroys) > 0 {
+				destroyBegun = true
+			}
+			teardownTimedOut := waitDestroyHandles(destroys)
+			a.closeRemovedSessionRuntimesForSessionAfterDestroy(removed, target.dir, target.sessionPath, closedRemoved)
+			if teardownTimedOut {
+				if err := agent.MarkCleanupPending(target.sessionPath, "delete"); err != nil {
+					return err
+				}
+				go delayedDesktopSessionTrash(target.dir, target.sessionPath, target.key, destroys)
+			} else {
+				err := trashSessionArtifacts(target.dir, target.sessionPath, target.key)
+				finishDestroyHandles(destroys)
+				if err != nil {
+					return err
+				}
 			}
 		}
-	}
-	if err := a.DeleteTopic(topicID); err != nil {
+		return a.DeleteTopic(topicID)
+	}(); err != nil {
 		return err
 	}
 	if fallback.needs {
@@ -6253,17 +6363,160 @@ func pinnedTabSessionPath(dir, sessionPath string) (string, bool) {
 	return path, true
 }
 
-func saveTabSessionMeta(tab *WorkspaceTab, path string) error {
+// saveTabSessionMeta persists the tab's scope/topic/mode fields into the
+// session's branch-meta sidecar at path. Tab fields are snapshotted under a.mu
+// (controller reads happen off-lock) so a concurrent tab mutation can't tear
+// the persisted record.
+func (a *App) saveTabSessionMeta(tab *WorkspaceTab, path string) error {
 	if tab == nil || strings.TrimSpace(path) == "" {
 		return nil
 	}
-	m, err := agent.EnsureBranchMeta(path)
+	a.mu.RLock()
+	ctrl := tab.Ctrl
+	snap := tabSessionMetaSnapshot{
+		path:             path,
+		scope:            tab.Scope,
+		workspaceRoot:    tab.WorkspaceRoot,
+		topicID:          tab.TopicID,
+		topicTitle:       tab.TopicTitle,
+		tokenMode:        boot.NormalizeTokenMode(tab.tokenMode),
+		mode:             normalizeTabMode(tab.mode),
+		toolApprovalMode: normalizeToolApprovalMode(tab.toolApprovalMode),
+		goal:             strings.TrimSpace(tab.goal),
+	}
+	a.mu.RUnlock()
+	if ctrl != nil {
+		snap.mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
+		snap.toolApprovalMode = normalizeToolApprovalMode(ctrl.ToolApprovalMode())
+		if goal := strings.TrimSpace(ctrl.Goal()); goal != "" && ctrl.GoalStatus() == control.GoalStatusRunning {
+			snap.goal = goal
+		} else {
+			snap.goal = ""
+		}
+	}
+	return saveTabSessionMetaSnapshot(snap)
+}
+
+type tabSessionMetaSnapshot struct {
+	path             string
+	scope            string
+	workspaceRoot    string
+	topicID          string
+	topicTitle       string
+	tokenMode        string
+	mode             string
+	toolApprovalMode string
+	goal             string
+}
+
+func (a *App) saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) error {
+	snap, ok := a.tabSessionMetaSnapshotForCurrentSession(tab)
+	if !ok {
+		return nil
+	}
+	return saveTabSessionMetaSnapshot(snap)
+}
+
+func (a *App) tabSessionMetaSnapshotForCurrentSession(tab *WorkspaceTab) (tabSessionMetaSnapshot, bool) {
+	if tab == nil {
+		return tabSessionMetaSnapshot{}, false
+	}
+	a.mu.RLock()
+	if tab.ID != "" && a.tabs[tab.ID] != tab {
+		a.mu.RUnlock()
+		return tabSessionMetaSnapshot{}, false
+	}
+	readOnly := tab.ReadOnly
+	ctrl := tab.Ctrl
+	storedPath := strings.TrimSpace(tab.SessionPath)
+	scope := tab.Scope
+	workspaceRoot := tab.WorkspaceRoot
+	topicID := tab.TopicID
+	topicTitle := tab.TopicTitle
+	tokenMode := boot.NormalizeTokenMode(tab.tokenMode)
+	mode := normalizeTabMode(tab.mode)
+	toolApprovalMode := normalizeToolApprovalMode(tab.toolApprovalMode)
+	goal := strings.TrimSpace(tab.goal)
+	a.mu.RUnlock()
+	if readOnly {
+		return tabSessionMetaSnapshot{}, false
+	}
+
+	ctrlPath := ""
+	ctrlDir := ""
+	activeWork := false
+	if ctrl != nil {
+		ctrlPath = strings.TrimSpace(ctrl.SessionPath())
+		if dir, ok := safeControllerSessionDir(ctrl); ok {
+			ctrlDir = strings.TrimSpace(dir)
+		}
+		status := ctrl.RuntimeStatus()
+		activeWork = status.Running || status.PendingPrompt || status.BackgroundJobs > 0
+		mode = tabModeFromAxes(ctrl.PlanMode(), ctrl.AutoApproveTools())
+		toolApprovalMode = normalizeToolApprovalMode(ctrl.ToolApprovalMode())
+		if ctrl.GoalStatus() == control.GoalStatusRunning {
+			goal = strings.TrimSpace(ctrl.Goal())
+		} else {
+			goal = ""
+		}
+	}
+
+	currentPath := ctrlPath
+	if currentPath == "" {
+		currentPath = storedPath
+	}
+	if currentPath == "" {
+		return tabSessionMetaSnapshot{}, false
+	}
+
+	sessionDir := desktopSessionDir("")
+	if workspaceRoot != "" {
+		sessionDir = desktopSessionDir(workspaceRoot)
+	} else if ctrlDir != "" {
+		sessionDir = ctrlDir
+	}
+	runtimeDir := sessionDir
+	if ctrlDir != "" {
+		if _, _, err := validateSessionPath(ctrlDir, currentPath); err == nil {
+			runtimeDir = ctrlDir
+		}
+	}
+	if topicID == "" && !activeWork && storedPath != "" && sessionPathHasNoContent(sessionDir, storedPath) {
+		return tabSessionMetaSnapshot{}, false
+	}
+	path := tabSessionMetaPathForSession(runtimeDir, sessionDir, currentPath)
+	if path == "" {
+		return tabSessionMetaSnapshot{}, false
+	}
+	return tabSessionMetaSnapshot{
+		path:             path,
+		scope:            scope,
+		workspaceRoot:    workspaceRoot,
+		topicID:          topicID,
+		topicTitle:       topicTitle,
+		tokenMode:        tokenMode,
+		mode:             mode,
+		toolApprovalMode: toolApprovalMode,
+		goal:             goal,
+	}, true
+}
+
+func saveTabSessionMetaSnapshot(snap tabSessionMetaSnapshot) error {
+	if strings.TrimSpace(snap.path) == "" {
+		return nil
+	}
+	// Read-modify-write on the branch-meta sidecar: hold the per-path meta lock
+	// so agent-side writers (autosave UpdateSessionMeta, in-flight markers)
+	// can't interleave and drop fields.
+	unlock := agent.LockSessionMetaPath(snap.path)
+	defer unlock()
+	m, err := agent.EnsureBranchMeta(snap.path)
 	if err != nil {
 		return err
 	}
-	scope := tab.Scope
-	workspaceRoot := tab.WorkspaceRoot
-	if ownerScope, ownerRoot, _, ok := legacyMigrationTargetForDir(filepath.Dir(path)); ok {
+	scope := snap.scope
+	workspaceRoot := snap.workspaceRoot
+	if ownerScope, ownerRoot, _, ok := legacyMigrationTargetForDir(filepath.Dir(snap.path)); ok {
 		if ownerScope == "project" {
 			scope = ownerScope
 			workspaceRoot = ownerRoot
@@ -6277,51 +6530,34 @@ func saveTabSessionMeta(tab *WorkspaceTab, path string) error {
 	}
 	m.Scope = scope
 	m.WorkspaceRoot = workspaceRoot
-	m.TopicID = tab.TopicID
-	m.TopicTitle = tab.TopicTitle
-	m.TokenMode = persistedTabTokenMode(currentTabTokenMode(tab))
-	m.Mode = persistedTabMode(currentTabMode(tab))
-	m.ToolApprovalMode = persistedToolApprovalMode(currentTabToolApprovalMode(tab))
-	m.Goal = persistedTabGoal(tab)
-	if err := agent.SaveBranchMetaPreserveUpdated(path, m); err != nil {
+	m.TopicID = snap.topicID
+	m.TopicTitle = snap.topicTitle
+	m.TokenMode = persistedTabTokenMode(snap.tokenMode)
+	m.Mode = persistedTabMode(snap.mode)
+	m.ToolApprovalMode = persistedToolApprovalMode(snap.toolApprovalMode)
+	m.Goal = strings.TrimSpace(snap.goal)
+	if err := agent.SaveBranchMetaPreserveUpdated(snap.path, m); err != nil {
 		return err
 	}
-	invalidateTopicSessionIndexForPath(path)
+	invalidateTopicSessionIndexForPath(snap.path)
 	return nil
 }
 
-func tabSessionMetaPathForCurrentSession(tab *WorkspaceTab) string {
-	if tab == nil {
+func tabSessionMetaPathForSession(runtimeDir, sessionDir, sessionPath string) string {
+	sessionPath = strings.TrimSpace(sessionPath)
+	if sessionPath == "" {
 		return ""
 	}
-	path := strings.TrimSpace(tab.currentSessionPath())
-	if path == "" {
-		return ""
-	}
-	for _, dir := range []string{tabRuntimeSessionDir(tab), tabSessionDir(tab)} {
-		if resolved, ok := pinnedTabSessionPath(dir, path); ok {
+	for _, dir := range []string{runtimeDir, sessionDir} {
+		if resolved, ok := pinnedTabSessionPath(dir, sessionPath); ok {
 			return resolved
 		}
 	}
-	path = canonicalTabSessionPath(path)
+	path := canonicalTabSessionPath(sessionPath)
 	if filepath.IsAbs(path) {
 		return path
 	}
 	return ""
-}
-
-func saveTabSessionMetaForCurrentSession(tab *WorkspaceTab) error {
-	if tab == nil || tab.ReadOnly {
-		return nil
-	}
-	if _, discard := transientBlankSessionArtifactPath(tab); discard {
-		return nil
-	}
-	path := tabSessionMetaPathForCurrentSession(tab)
-	if path == "" {
-		return nil
-	}
-	return saveTabSessionMeta(tab, path)
 }
 
 type tabSessionProfile struct {
@@ -6446,7 +6682,7 @@ func (a *App) persistTabSessionPath(tab *WorkspaceTab, path string) {
 	if reconciled, ok := a.reconcileTabWithSessionPath(tab, path); ok {
 		path = canonicalTabSessionPath(reconciled)
 	}
-	_ = saveTabSessionMeta(tab, path)
+	_ = a.saveTabSessionMeta(tab, path)
 	a.rememberTabSessionPath(tab, path)
 }
 
