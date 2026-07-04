@@ -4791,7 +4791,7 @@ func (a *App) MetaForTab(tabID string) Meta {
 		WorkspaceRoot:     cwd,
 		WorkspaceName:     tabWorkspaceName(tab, cwd),
 		WorkspacePath:     cwd,
-		GitBranch:         workspaceGitBranch(cwd),
+		GitBranch:         workspaceGitBranchForMeta(cwd),
 		ImageInputEnabled: a.imageInputEnabledForTab(tabID),
 		AutoApproveTools:  autoApproveTools,
 		Bypass:            autoApproveTools,

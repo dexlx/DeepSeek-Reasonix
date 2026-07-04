@@ -1206,7 +1206,7 @@ type TabMeta struct {
 
 func enrichTabMeta(meta TabMeta) TabMeta {
 	if meta.Active {
-		meta.GitBranch = workspaceGitBranch(meta.WorkspaceRoot)
+		meta.GitBranch = workspaceGitBranchForMeta(meta.WorkspaceRoot)
 	}
 	return meta
 }
@@ -1214,7 +1214,7 @@ func enrichTabMeta(meta TabMeta) TabMeta {
 func enrichTabMetas(metas []TabMeta) []TabMeta {
 	for i := range metas {
 		if metas[i].Active {
-			metas[i].GitBranch = workspaceGitBranch(metas[i].WorkspaceRoot)
+			metas[i].GitBranch = workspaceGitBranchForMeta(metas[i].WorkspaceRoot)
 		}
 	}
 	return metas
