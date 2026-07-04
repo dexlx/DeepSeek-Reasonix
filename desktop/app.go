@@ -6556,6 +6556,36 @@ func rebuildControllerActiveWorkError(setting string) error {
 	return fmt.Errorf("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing %s", setting)
 }
 
+type sessionLeaseBusyError struct {
+	setting string
+	err     error
+}
+
+func (e *sessionLeaseBusyError) Error() string {
+	setting := strings.TrimSpace(e.setting)
+	if setting == "" {
+		setting = "this setting"
+	}
+	return fmt.Sprintf("this session is already open in another Reasonix window or still running in the background; close the other window or open a copy before changing %s", setting)
+}
+
+func (e *sessionLeaseBusyError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.err
+}
+
+func userFacingSessionLeaseError(setting string, err error) error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(err, agent.ErrSessionLeaseHeld) {
+		return &sessionLeaseBusyError{setting: setting, err: err}
+	}
+	return err
+}
+
 // SetModel switches the active model and carries the current conversation into the
 // new model's session, so the chat continues seamlessly and subsequent turns use
 // the new model. No-op if name is already active or the controller is down.
@@ -6574,13 +6604,35 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	if name == tab.model {
 		return nil
 	}
+	prevPath := a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	if tab.Ctrl == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+		prevPath = a.reconciledSessionPathForTab(tab)
+		if prevPath == "" {
+			prevPath = strings.TrimSpace(tab.currentSessionPath())
+		}
+	}
 	if controllerHasActiveRuntimeWork(tab.Ctrl) {
 		return rebuildControllerActiveWorkError("model")
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	prevPath := a.reconciledSessionPathForTab(tab)
+	prevPath = a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	if tab.Ctrl == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+		prevPath = a.reconciledSessionPathForTab(tab)
+		if prevPath == "" {
+			prevPath = strings.TrimSpace(tab.currentSessionPath())
+		}
+		if controllerHasActiveRuntimeWork(tab.Ctrl) {
+			return rebuildControllerActiveWorkError("model")
+		}
+	}
 	cfg, err := config.LoadForRoot(tab.WorkspaceRoot)
 	if err != nil {
 		return err
@@ -6604,15 +6656,18 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	}
 
 	var carried []provider.Message
-	if tab.Ctrl != nil {
+	oldCtrl := tab.Ctrl
+	if oldCtrl != nil {
 		if prevPath == "" {
-			prevPath = tab.Ctrl.SessionPath()
+			prevPath = oldCtrl.SessionPath()
+		}
+		if err := tab.ensureSessionLease(prevPath); err != nil {
+			return userFacingSessionLeaseError("model", err)
 		}
 		if err := a.snapshotTabForAction(tab, "changing model"); err != nil {
 			return err
 		}
-		carried = tab.Ctrl.History()
-		tab.Ctrl.Close()
+		carried = oldCtrl.History()
 	}
 
 	// Preserve the shared plugin host across controller rebuilds — the tab
@@ -6633,7 +6688,6 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
-		tab.releaseSessionLease()
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
@@ -6645,10 +6699,12 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
 	if err := tab.ensureSessionLease(path); err != nil {
 		newCtrl.Close()
-		tab.releaseSessionLease()
-		return err
+		return userFacingSessionLeaseError("model", err)
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
+	if oldCtrl != nil {
+		oldCtrl.Close()
+	}
 	a.persistTabSessionPath(tab, path)
 	a.mu.Lock()
 	tab.Ctrl = newCtrl
