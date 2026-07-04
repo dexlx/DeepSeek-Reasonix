@@ -6,7 +6,14 @@ import "sync"
 // file. LoadForEdit+SaveTo is not atomic: two concurrent editors each load,
 // mutate their own copy, and save — the second save silently drops the first
 // writer's fields (e.g. bot auto-session mappings vs. a settings-page save).
-// Cross-process writers still race; every in-process editor must take this.
+// Cross-process writers still race. Every runtime in-process editor takes this
+// lock around its load→mutate→save cycle: bot mapping/pairing persistence,
+// desktop settings and MCP writers, serve effort switches, controller skill
+// toggles, and the CLI TUI / `reasonix config` write paths. Two writers stay
+// unlocked on purpose: the single-threaded `reasonix setup` wizard (an
+// interactive whole-file write with no concurrent editors in that process)
+// and the one-shot legacy-migration saves inside desktop's read-only config
+// loads (tray/view paths), which only fire on first launch.
 var userEditMu sync.Mutex
 
 // LockUserConfigEdits acquires the process-wide user-config edit lock and

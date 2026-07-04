@@ -208,12 +208,21 @@ func (s *Server) switchEffort(ctx context.Context, level string) error {
 	if editPath == "" {
 		return fmt.Errorf("no config file found")
 	}
-	edit := config.LoadForEdit(editPath)
-	if err := applyEffortEdit(edit, entry, effort); err != nil {
+	// Lock only the load-modify-save cycle; switchModel below rebuilds the
+	// controller and must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		edit := config.LoadForEdit(editPath)
+		if err := applyEffortEdit(edit, entry, effort); err != nil {
+			return err
+		}
+		if err := edit.SaveTo(editPath); err != nil {
+			return fmt.Errorf("save config: %w", err)
+		}
+		return nil
+	}(); err != nil {
 		return err
-	}
-	if err := edit.SaveTo(editPath); err != nil {
-		return fmt.Errorf("save config: %w", err)
 	}
 	return s.switchModel(ctx, entry.Name+"/"+entry.Model)
 }

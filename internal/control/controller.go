@@ -3220,6 +3220,11 @@ func (c *Controller) SetSkillEnabled(name string, enabled bool) error {
 	if !found {
 		return fmt.Errorf("unknown skill: %s", name)
 	}
+	// Serialize the load-modify-save against other in-process user-config
+	// editors so concurrent writers (bot mapping persistence, desktop
+	// settings) don't drop this toggle or lose their own fields.
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
 	cfg := config.LoadForEdit(config.UserConfigPath())
 	if err := cfg.SetSkillEnabled(name, enabled); err != nil {
 		return err

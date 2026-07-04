@@ -1617,14 +1617,25 @@ func (a *App) SetAutoPlan(mode string) error {
 	if err := a.ensureLiveControllersRuntimeMutationAllowed("auto-plan"); err != nil {
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetAutoPlan(mode); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	var cfg *config.Config
+	// Lock only the load-modify-save cycle; the live-controller fan-out and the
+	// optional rebuild below are slow and must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		loaded, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := loaded.SetAutoPlan(mode); err != nil {
+			return err
+		}
+		if err := loaded.SaveTo(path); err != nil {
+			return err
+		}
+		cfg = loaded
+		return nil
+	}(); err != nil {
 		return err
 	}
 	a.applyAutoPlanToLiveControllers(cfg.Agent.AutoPlan)
@@ -1644,14 +1655,20 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 
 // SetMemoryCompilerEnabled toggles the Memory v5 execution compiler.
 func (a *App) SetMemoryCompilerEnabled(enabled bool) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetMemoryCompilerEnabled(enabled); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	// Lock only the load-modify-save cycle; the live-controller fan-out below
+	// must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := cfg.SetMemoryCompilerEnabled(enabled); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 	a.applyMemoryCompilerToLiveControllers(enabled)
@@ -2085,7 +2102,10 @@ func retargetProviderReferences(c *config.Config, name, fallbackRef string) {
 }
 
 func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	// This first load is a read-only planning copy (fallback ref + affected-tab
+	// scan). The saved edit below reloads under the config edit lock so the
+	// slow snapshot work in between cannot widen the read-modify-write window.
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
 	}
@@ -2128,9 +2148,20 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			}
 		}
 	}
-	retargetProviderReferences(cfg, name, fallbackRef)
-	removeProviderAccess(cfg, name)
-	if err := cfg.SaveTo(path); err != nil {
+	// Reload-modify-save under the config edit lock: the pre-save snapshots
+	// above are slow and must not hold the lock, so mutate a fresh copy here
+	// instead of the stale planning copy loaded before them.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		fresh, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		retargetProviderReferences(fresh, name, fallbackRef)
+		removeProviderAccess(fresh, name)
+		return fresh.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 	if len(affected) == 0 {
@@ -2177,7 +2208,9 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 	if name == "" {
 		return fmt.Errorf("remove provider: empty provider name")
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
+	// Read-only planning copy; the saved edit below reloads under the config
+	// edit lock (see removeBuiltInProviderAccessAndRetargetTabs).
+	cfg, _, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
 	}
@@ -2221,11 +2254,21 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			}
 		}
 	}
-	if err := cfg.RemoveProvider(name); err != nil {
-		return err
-	}
-	removeProviderAccess(cfg, name)
-	if err := cfg.SaveTo(path); err != nil {
+	// Reload-modify-save under the config edit lock; the snapshots above ran
+	// off-lock against the stale planning copy.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		fresh, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := fresh.RemoveProvider(name); err != nil {
+			return err
+		}
+		removeProviderAccess(fresh, name)
+		return fresh.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
 
@@ -2296,6 +2339,10 @@ func (a *App) ensureProviderAccessForKey(apiKeyEnv string) error {
 	if apiKeyEnv == "" {
 		return nil
 	}
+	// Pure load-modify-save on the user config; the caller (SetProviderKey)
+	// rebuilds after we return, outside the config edit lock.
+	unlock := config.LockUserConfigEdits()
+	defer unlock()
 	cfg, path, err := a.loadDesktopUserConfigForEdit()
 	if err != nil {
 		return err
@@ -2700,14 +2747,25 @@ func (a *App) SetReasoningLanguage(lang string) error {
 	if err := a.ensureLiveControllersRuntimeMutationAllowed("reasoning language"); err != nil {
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return err
-	}
-	if err := cfg.SetReasoningLanguage(lang); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
+	var cfg *config.Config
+	// Lock only the load-modify-save cycle; the live-controller fan-out below
+	// must not hold the config edit lock.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		loaded, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := loaded.SetReasoningLanguage(lang); err != nil {
+			return err
+		}
+		if err := loaded.SaveTo(path); err != nil {
+			return err
+		}
+		cfg = loaded
+		return nil
+	}(); err != nil {
 		return err
 	}
 	a.applyReasoningLanguageToLiveControllers(cfg.ReasoningLanguage())

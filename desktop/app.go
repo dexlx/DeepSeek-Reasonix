@@ -6323,31 +6323,44 @@ func (a *App) saveDesktopMCPServer(entry config.PluginEntry) error {
 		_, err := config.UpsertMCPJSONPlugin(projectMCPJSONPathForRoot(a.activeWorkspaceRoot()), entry)
 		return err
 	}
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
+	// Lock only the user-config load-modify-save; the project-override cleanup
+	// below writes the project config, which this lock does not cover.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
+		}
+		if err := cfg.UpsertPlugin(entry); err != nil {
+			return err
+		}
+		return cfg.SaveTo(path)
+	}(); err != nil {
 		return err
 	}
-	if err := cfg.UpsertPlugin(entry); err != nil {
-		return err
-	}
-	if err := cfg.SaveTo(path); err != nil {
-		return err
-	}
-	_, err = a.removeProjectMCPOverride(entry.Name)
+	_, err := a.removeProjectMCPOverride(entry.Name)
 	return err
 }
 
 func (a *App) removeDesktopMCPServer(name string) (bool, error) {
 	removed := false
-	cfg, path, err := a.loadDesktopUserConfigForEdit()
-	if err != nil {
-		return false, err
-	}
-	if cfg.RemovePlugin(name) {
-		removed = true
-		if err := cfg.SaveTo(path); err != nil {
-			return false, err
+	// Lock only the user-config load-modify-save; the project-scope removals
+	// below write project files, which this lock does not cover.
+	if err := func() error {
+		unlock := config.LockUserConfigEdits()
+		defer unlock()
+		cfg, path, err := a.loadDesktopUserConfigForEdit()
+		if err != nil {
+			return err
 		}
+		if cfg.RemovePlugin(name) {
+			removed = true
+			return cfg.SaveTo(path)
+		}
+		return nil
+	}(); err != nil {
+		return false, err
 	}
 	projectRemoved, err := a.removeProjectMCPOverride(name)
 	if err != nil {
