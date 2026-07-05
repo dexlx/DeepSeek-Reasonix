@@ -1605,6 +1605,9 @@ func (a *App) rebuildSettingLocked(setting string) error {
 	tab.Label = ctrl.Label()
 	tab.StartupErr = ""
 	tab.Ready = true
+	// Supersede any in-flight startup build: it would otherwise finish later,
+	// pass its generation check, and overwrite the controller just installed.
+	a.supersedeTabBuildLocked(tab)
 	a.saveTabsLocked()
 	a.mu.Unlock()
 	a.clearDeferredRebuild(tab.ID)

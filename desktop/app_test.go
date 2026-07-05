@@ -1781,6 +1781,78 @@ func TestSetProviderKeyLeaseHeldKeepsCurrentController(t *testing.T) {
 	}
 }
 
+func TestSetProviderKeyRebuildSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "startup-build-in-flight.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	app.readyHook = func() {}
+	// Model the async startup build still being in flight: no controller yet,
+	// a live build generation, and a cancellable build context.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	const startupGeneration = 1
+	tab := &WorkspaceTab{
+		ID:              "tab_key_rebuild",
+		Scope:           "global",
+		SessionPath:     sessionPath,
+		model:           "old/old-model",
+		buildGeneration: startupGeneration,
+		buildCancel:     buildCancel,
+		disabledMCP:     map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	if _, err := app.SetProviderKey("OLD_MODEL_KEY", "sk-new"); err != nil {
+		t.Fatalf("SetProviderKey: %v", err)
+	}
+	if tab.Ctrl == nil {
+		t.Fatal("provider-key rebuild did not install a controller")
+	}
+	defer tab.Ctrl.Close()
+
+	app.mu.Lock()
+	superseded := app.tabBuildSupersededLocked(tab, startupGeneration)
+	app.mu.Unlock()
+	if !superseded {
+		t.Fatal("in-flight startup build was not superseded; finishing it would overwrite the provider-key controller")
+	}
+	select {
+	case <-buildCtx.Done():
+	default:
+		t.Fatal("in-flight startup build context was not cancelled by the provider-key rebuild")
+	}
+	if tab.buildCancel != nil {
+		t.Fatal("build cancel was not cleared by the provider-key rebuild")
+	}
+}
+
 func TestSaveProviderWithKeyLeaseHeldPersistsCustomProvider(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
