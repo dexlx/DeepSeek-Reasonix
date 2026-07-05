@@ -2950,25 +2950,47 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	// controller can be double-closed.
 	a.runtimeRebuildMu.Lock()
 	defer a.runtimeRebuildMu.Unlock()
-	if sessionRuntimeKey(tab.currentSessionPath()) == sessionRuntimeKey(sessionPath) {
+
+	// Validate the tab, compare session keys, invalidate any in-flight async
+	// build, and snapshot the controller in ONE a.mu critical section.
+	// runtimeRebuildMu does not cover startTabControllerBuild's goroutine, so
+	// observing ctrl == nil and bumping the generation later would leave a
+	// window where the async build passes its swap-time generation check,
+	// installs its controller after the observation, and the loaded build
+	// below silently overwrites it — leaking the runtime and its shared-host
+	// reference. Bump-before-snapshot makes the snapshot authoritative: after
+	// the bump the async build can only fall into its superseded branches,
+	// which release exactly what it acquired (abandonSupersededBuild).
+	a.mu.Lock()
+	if tab.removed || a.tabs[tab.ID] != tab {
+		a.mu.Unlock()
+		return fmt.Errorf("tab is not ready")
+	}
+	currentPath := ""
+	if tab.Ctrl != nil {
+		currentPath = strings.TrimSpace(tab.Ctrl.SessionPath())
+	}
+	if currentPath == "" {
+		currentPath = strings.TrimSpace(tab.SessionPath)
+	}
+	if sessionRuntimeKey(currentPath) == sessionRuntimeKey(sessionPath) {
+		// Same session: leave any in-flight build alone — resuming the
+		// session a build is already binding must stay a no-op.
+		a.mu.Unlock()
 		return nil
 	}
+	tab.buildGeneration++
+	if tab.buildCancel != nil {
+		tab.buildCancel()
+		tab.buildCancel = nil
+	}
+	ctrl := tab.Ctrl
+	a.mu.Unlock()
+
 	profile := loadTabSessionProfile(sessionPath)
 
-	a.mu.RLock()
-	ctrl := tab.Ctrl
-	a.mu.RUnlock()
 	if ctrl == nil {
 		a.mu.Lock()
-		// Invalidate any in-flight startTabControllerBuild for this tab: its
-		// buildCtx is cancelled and its generation goes stale, so it can no
-		// longer swap a controller in after we retarget the session (a second
-		// swap would leak whichever controller lost).
-		tab.buildGeneration++
-		if tab.buildCancel != nil {
-			tab.buildCancel()
-			tab.buildCancel = nil
-		}
 		tab.SessionPath = sessionPath
 		applyTabSessionProfile(tab, profile)
 		tab.Ready = false
@@ -3008,13 +3030,8 @@ func (a *App) rebindTabToLoadedSessionPath(tab *WorkspaceTab, sessionPath string
 	}
 
 	a.mu.Lock()
-	// Same invalidation as the ctrl==nil branch: a stale async build must not
-	// swap over the rebound session.
-	tab.buildGeneration++
-	if tab.buildCancel != nil {
-		tab.buildCancel()
-		tab.buildCancel = nil
-	}
+	// The generation was already bumped (and any async build cancelled) in
+	// the validation section above; only retarget the tab here.
 	tab.Ctrl = nil
 	tab.SessionPath = sessionPath
 	applyTabSessionProfile(tab, profile)

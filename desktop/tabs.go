@@ -2775,6 +2775,15 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			// superseded, only a lease still carrying this key may be
 			// released (see abandonSupersededBuild).
 			acquiredLeaseKey = sessionRuntimeKey(path)
+			// Re-check ownership right after the (potentially slow) lease
+			// bind: a rebind that superseded this build while ensure was in
+			// flight has already retargeted the tab, and continuing into
+			// Resume/persistTabSessionPath would write the stale session
+			// path back onto the rebound tab.
+			if a.tabBuildSuperseded(tab, buildGeneration) {
+				a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
+				return
+			}
 			if resumeSession != nil {
 				ctrl.Resume(sessionWithFreshSystemPrompt(resumeSession, systemPromptFrom(ctrl.History())), path)
 			} else {
