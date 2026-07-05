@@ -730,6 +730,33 @@ api_key_env = "WORKSPACE_ONLY_KEY"
 	}
 }
 
+func TestMigrateLegacyCredentialsSkipsKeyringWhenIsolated(t *testing.T) {
+	home := t.TempDir()
+	isolated := filepath.Join(home, "isolated-home")
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	t.Setenv("AppData", filepath.Join(home, "AppData"))
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("REASONIX_HOME", isolated)
+	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
+
+	old := legacyKeyringCredentialValueLookup
+	legacyKeyringCredentialValueLookup = func(key string) (string, bool) {
+		if key == "DEEPSEEK_API_KEY" {
+			return "legacy-keyring-value", true
+		}
+		return "", false
+	}
+	t.Cleanup(func() { legacyKeyringCredentialValueLookup = old })
+
+	if err := MigrateLegacyCredentialsForRoot("."); err != nil {
+		t.Fatalf("MigrateLegacyCredentialsForRoot: %v", err)
+	}
+	if _, err := os.Stat(UserCredentialsPath()); !os.IsNotExist(err) {
+		t.Fatalf("isolated runtime imported legacy credentials to %s; stat err=%v", UserCredentialsPath(), err)
+	}
+}
+
 func TestMigrateLegacyCredentialsDoesNotReimportClearedKey(t *testing.T) {
 	_, dest, _ := legacyHome(t)
 	legacy := legacyUserConfigPath()
