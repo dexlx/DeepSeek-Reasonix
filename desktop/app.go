@@ -1662,6 +1662,10 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		tab.Label = newCtrl.Label()
 		tab.Ready = true
 		tab.StartupErr = ""
+		// Supersede any in-flight startup build: the session it was resuming
+		// was just destroyed, and finishing later would pass the generation
+		// check and overwrite this controller.
+		a.supersedeTabBuildLocked(tab)
 		a.saveTabsLocked()
 	}
 	a.mu.Unlock()

@@ -2375,6 +2375,10 @@ func (a *App) removeBuiltInProviderAccessAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		// Supersede any in-flight startup build: it was planned against the
+		// removed provider and would otherwise finish later, pass its
+		// generation check, and reinstall a controller for it.
+		a.supersedeTabBuildLocked(tab)
 		tab.model = fallbackRef
 		tab.Label = fallbackRef
 		tab.StartupErr = ""
@@ -2490,6 +2494,10 @@ func (a *App) deleteProviderAndRetargetTabs(name string) error {
 			continue
 		}
 		tab.Ctrl = nil
+		// Supersede any in-flight startup build: it was planned against the
+		// removed provider and would otherwise finish later, pass its
+		// generation check, and reinstall a controller for it.
+		a.supersedeTabBuildLocked(tab)
 		tab.model = fallbackRef
 		tab.Label = fallbackRef
 		tab.StartupErr = ""

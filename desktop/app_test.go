@@ -1837,20 +1837,7 @@ func TestSetProviderKeyRebuildSupersedesInFlightStartupBuild(t *testing.T) {
 	}
 	defer tab.Ctrl.Close()
 
-	app.mu.Lock()
-	superseded := app.tabBuildSupersededLocked(tab, startupGeneration)
-	app.mu.Unlock()
-	if !superseded {
-		t.Fatal("in-flight startup build was not superseded; finishing it would overwrite the provider-key controller")
-	}
-	select {
-	case <-buildCtx.Done():
-	default:
-		t.Fatal("in-flight startup build context was not cancelled by the provider-key rebuild")
-	}
-	if tab.buildCancel != nil {
-		t.Fatal("build cancel was not cleared by the provider-key rebuild")
-	}
+	assertTabBuildSuperseded(t, app, tab, startupGeneration, buildCtx)
 }
 
 func TestSaveProviderWithKeyLeaseHeldPersistsCustomProvider(t *testing.T) {
@@ -3627,6 +3614,166 @@ func TestDeleteProviderMigratesConfigAndOpenTabs(t *testing.T) {
 	if tab.Ctrl != nil {
 		t.Fatal("tab controller should be closed and cleared when retargeted without a running app context")
 	}
+}
+
+// assertTabBuildSuperseded checks that the startup build registered before the
+// mutation (generation) can no longer install its controller and that its
+// build context was cancelled.
+func assertTabBuildSuperseded(t *testing.T, app *App, tab *WorkspaceTab, generation uint64, buildCtx context.Context) {
+	t.Helper()
+	app.mu.Lock()
+	superseded := app.tabBuildSupersededLocked(tab, generation)
+	app.mu.Unlock()
+	if !superseded {
+		t.Fatal("in-flight startup build was not superseded; finishing it would reinstall a stale controller")
+	}
+	select {
+	case <-buildCtx.Done():
+	default:
+		t.Fatal("in-flight startup build context was not cancelled")
+	}
+	if tab.buildCancel != nil {
+		t.Fatal("build cancel was not cleared")
+	}
+}
+
+func TestDeleteProviderSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-b/model-b1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-a", Kind: "openai", BaseURL: "https://a.example.com", Model: "model-a1", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	cfg.Desktop.ProviderAccess = []string{"prov-a", "prov-b"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	// Model the async startup build still being in flight for the affected
+	// tab: no controller yet, a live generation, a cancellable build context.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_a",
+		Scope:           "global",
+		model:           "prov-a/model-a1",
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.DeleteProvider("prov-a"); err != nil {
+		t.Fatalf("DeleteProvider: %v", err)
+	}
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
+	if tab.model != "prov-b/model-b1" {
+		t.Fatalf("tab model after delete = %q, want prov-b/model-b1", tab.model)
+	}
+}
+
+func TestRemoveBuiltInProviderAccessSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-b/model-b1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "deepseek", Kind: "openai", BaseURL: "https://api.deepseek.com", Model: "deepseek-chat", APIKeyEnv: "REASONIX_TEST_KEY"},
+		{Name: "prov-b", Kind: "openai", BaseURL: "https://b.example.com", Model: "model-b1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	cfg.Desktop.ProviderAccess = []string{"deepseek", "prov-b"}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	app := NewApp()
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_ds",
+		Scope:           "global",
+		model:           "deepseek/deepseek-chat",
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	if err := app.RemoveProviderAccess("deepseek"); err != nil {
+		t.Fatalf("RemoveProviderAccess: %v", err)
+	}
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
+	if tab.model != "prov-b/model-b1" {
+		t.Fatalf("tab model after access removal = %q, want prov-b/model-b1", tab.model)
+	}
+}
+
+func TestClearActiveSessionRuntimeSupersedesInFlightStartupBuild(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{{
+		Name:      "old",
+		Kind:      "openai",
+		BaseURL:   "https://example.invalid/v1",
+		Model:     "old-model",
+		APIKeyEnv: "OLD_MODEL_KEY",
+	}}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	sessionPath := filepath.Join(dir, "clear-runtime-in-flight.jsonl")
+	if err := os.WriteFile(sessionPath, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+
+	oldSession := agent.NewSession("old system prompt")
+	oldExec := agent.New(nil, nil, oldSession, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: oldExec, SessionDir: dir, SessionPath: sessionPath, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	// A runtime is attached while an older async build is still in flight
+	// (e.g. attached via topic activation); destroying the session must
+	// invalidate that build so it cannot resurrect the destroyed session.
+	buildCtx, buildCancel := context.WithCancel(context.Background())
+	tab := &WorkspaceTab{
+		ID:              "tab_clear",
+		Scope:           "global",
+		SessionPath:     sessionPath,
+		model:           "old/old-model",
+		Ready:           true,
+		Ctrl:            oldCtrl,
+		buildGeneration: 1,
+		buildCancel:     buildCancel,
+		disabledMCP:     map[string]ServerView{},
+	}
+	tab.sink = &tabEventSink{tabID: tab.ID, app: app}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(tab.releaseSessionLease)
+
+	if err := app.clearActiveSessionRuntime(tab, oldCtrl); err != nil {
+		t.Fatalf("clearActiveSessionRuntime: %v", err)
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("clear did not install a fresh controller (ctrl=%v)", tab.Ctrl)
+	}
+	defer tab.Ctrl.Close()
+	assertTabBuildSuperseded(t, app, tab, 1, buildCtx)
 }
 
 func TestDeleteProviderRejectsRunningAffectedTab(t *testing.T) {
