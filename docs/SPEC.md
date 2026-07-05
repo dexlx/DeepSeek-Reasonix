@@ -654,12 +654,21 @@ The native Windows helper delegates the low-level isolation to
 `github.com/SivanCola/windows-sandbox`: AppContainer for read-only commands and
 a low-integrity token for writable commands, with temporary ACL grants for
 writable roots and tool executables, a per-command temp root instead of mutating
-the global Temp directory, temporary deny ACEs for `forbid_read`, best-effort
-restoration from pre-run DACL snapshots for touched directories, and a
-kill-on-close Job Object. Read-only AppContainer commands omit network
-capabilities when networking is disabled; writable Windows commands fail closed
-when `network = false` because the low-integrity token does not provide a
-reliable per-process network block without elevated firewall/WFP setup.
+the global Temp directory, temporary deny ACEs for `forbid_read` (files and
+directories), best-effort restoration from pre-run DACL snapshots for touched
+directories, and a kill-on-close Job Object. Because the sandbox works by
+temporarily mutating shared-path ACLs and integrity labels, concurrent commands
+against the same root are serialized with a per-root lock, and residue from a
+force-killed command (a lingering low-integrity label or `forbid_read` deny ACE)
+is swept by the next run so a crash cannot durably lower a workspace's integrity
+or lock the user out of a `forbid_read` path. A writable command runs under a
+low-integrity token, so beyond the configured roots it retains write access to
+the narrow set of locations Windows leaves writable to any low-integrity process
+(e.g. `AppData\LocalLow`); the workspace boundary and `forbid_read` denials are
+unaffected. Read-only AppContainer commands omit network capabilities when
+networking is disabled; writable Windows commands fail closed when
+`network = false` because the low-integrity token does not provide a reliable
+per-process network block without elevated firewall/WFP setup.
 When no OS sandbox is available, `bash = "enforce"` refuses bash execution
 instead of running unconfined. Install the platform sandbox backend
 (bubblewrap/`bwrap` on Linux, `sandbox-exec` on macOS) or set

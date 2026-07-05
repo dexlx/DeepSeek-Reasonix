@@ -397,8 +397,12 @@ OS 沙盒生效时也不能读取配置的 `forbid_read` roots，`[sandbox] netw
 原生 Windows helper 把底层隔离委托给 `github.com/SivanCola/windows-sandbox`：
 只读命令使用 AppContainer，可写命令使用 low-integrity token；它会临时授予
 workspace、每次命令专用 temp root 和目标可执行文件的访问权，对 `forbid_read`
-临时添加 deny ACE，修改前记录被触碰目录的 DACL，命令结束后尽力恢复。
-只读 AppContainer 命令在关闭网络时不给 network capability；可写 Windows 命令遇到
+（文件和目录皆可）临时添加 deny ACE，修改前记录被触碰目录的 DACL，命令结束后尽力恢复。
+作用于同一 workspace 的并发命令会被串行化，避免各自的 ACL 修改互相破坏；被强杀命令
+残留的 low-integrity 标签或 `forbid_read` deny ACE 会由下一次运行清理。由于可写命令跑在
+low-integrity token 下，除配置的 root 外它仍能写入 Windows 对任何 low-integrity 进程开放的
+少数位置（例如 `%USERPROFILE%\AppData\LocalLow`），但 workspace 边界与 `forbid_read`
+拒绝依然有效。只读 AppContainer 命令在关闭网络时不给 network capability；可写 Windows 命令遇到
 `[sandbox] network = false` 时会 fail closed。没有可用 OS 沙盒时，`bash = "enforce"` 会拒绝 bash 执行，不会无沙盒运行
 （越界询问与可选的 Windows elevated 加固见
 [`SPEC.md` §9](./SPEC.md#9-roadmap-not-in-current-scope)）。

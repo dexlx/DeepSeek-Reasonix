@@ -487,10 +487,17 @@ The native Windows helper delegates the low-level isolation to
 `github.com/SivanCola/windows-sandbox`, which uses AppContainer for read-only
 commands and a low-integrity token for writable commands, temporarily grants
 access to the workspace, a per-command temp root, and the target executable,
-applies deny ACEs for `forbid_read`, snapshots touched DACLs before editing
-them, and restores those snapshots best-effort after the command exits.
-Read-only AppContainer commands omit network capabilities when networking is
-disabled; writable Windows commands fail closed when
+applies deny ACEs for `forbid_read` (files as well as directories), snapshots
+touched DACLs before editing them, and restores those snapshots best-effort
+after the command exits. Concurrent commands touching the same workspace are
+serialized so their ACL edits cannot corrupt each other, and residue from a
+force-killed command (a lingering low-integrity label or `forbid_read` deny) is
+cleaned up by the next run. Because a writable command runs under a
+low-integrity token, it can still write the few locations Windows leaves
+writable to any low-integrity process (for example `%USERPROFILE%\AppData\LocalLow`)
+in addition to the configured roots; the workspace boundary and `forbid_read`
+denials still hold. Read-only AppContainer commands omit network capabilities
+when networking is disabled; writable Windows commands fail closed when
 `[sandbox] network = false`.
 When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend
