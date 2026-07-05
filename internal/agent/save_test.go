@@ -926,6 +926,58 @@ func TestReconcileSessionSidecarsRenamesOverlongSessionFiles(t *testing.T) {
 	}
 }
 
+// TestReconcileOverlongRenameStillReparentsWhenSidecarMigrationFails pins the
+// point-of-no-return contract: once the transcript rename lands, the mapping
+// must be committed — children re-parented, error surfaced as a warning —
+// because the old name is gone and no later run can reconstruct it.
+func TestReconcileOverlongRenameStillReparentsWhenSidecarMigrationFails(t *testing.T) {
+	dir := t.TempDir()
+	longID := strings.Repeat("m", 240)
+	oldPath := filepath.Join(dir, longID+".jsonl")
+	content := `{"role":"user","content":"hello"}` + "\n"
+	if err := os.WriteFile(oldPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBranchMeta(oldPath, BranchMeta{Name: "keep", ParentID: "root"}); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+	childPath := filepath.Join(dir, "child.jsonl")
+	if err := os.WriteFile(childPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBranchMeta(childPath, BranchMeta{Name: "child", ParentID: longID}); err != nil {
+		t.Fatalf("SaveBranchMeta child: %v", err)
+	}
+
+	newID := recoveryParentStem(longID)
+	newPath := filepath.Join(dir, newID+".jsonl")
+	// Sabotage the meta migration: its destination path is a directory.
+	if err := os.Mkdir(newPath+".meta", 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileSessionSidecars(dir); err == nil {
+		t.Fatal("expected the sabotaged meta migration to surface an error")
+	}
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("renamed transcript missing after partial failure: %v", err)
+	}
+	if _, err := os.Stat(oldPath); !os.IsNotExist(err) {
+		t.Fatalf("old transcript still present (err=%v)", err)
+	}
+	childMeta, ok, err := LoadBranchMeta(childPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta child ok=%v err=%v", ok, err)
+	}
+	if childMeta.ParentID != newID {
+		t.Fatalf("child ParentID = %q, want %q despite sidecar failure", childMeta.ParentID, newID)
+	}
+	// The old meta stays behind as the durable copy of the un-migrated fields.
+	if _, err := os.Stat(oldPath + ".meta"); err != nil {
+		t.Fatalf("old meta lost though its migration failed: %v", err)
+	}
+}
+
 // TestListSessionsOrdersByMTime makes sure the picker shows the most
 // recently used conversation first — that's what users reach for when they
 // hit `reasonix --continue`.

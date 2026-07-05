@@ -1078,8 +1078,10 @@ func reconcileOverlongSessionFilenames(dir string) error {
 		newID, err := renameOverlongSession(oldPath)
 		if err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", oldPath, err))
-			continue
 		}
+		// A non-empty newID means the transcript rename landed even if some
+		// sidecar migration failed; record it so children still re-parent —
+		// this run is the only one that knows the old-to-new mapping.
 		if newID != "" {
 			renamed[BranchID(oldPath)] = newID
 		}
@@ -1132,31 +1134,38 @@ func renameOverlongSession(oldPath string) (string, error) {
 		}
 		lockFile = lock
 	}
-	renameErr := func() error {
-		if err := os.Rename(oldPath, newPath); err != nil {
-			return err
+	if err := os.Rename(oldPath, newPath); err != nil {
+		// Nothing moved: the old transcript is intact and the next
+		// reconciliation can retry, so its lock file stays in place too.
+		if lockFile != nil {
+			lockFile.Unlock()
 		}
-		return migrateSessionSidecars(oldPath, newPath, newID)
-	}()
+		return "", err
+	}
+	// The transcript is committed under its new name from here on. Sidecar
+	// migration and lock cleanup failures are reported, but the new ID is
+	// still returned so the caller re-parents children: the old name is gone,
+	// and a later run would have no way to reconstruct this mapping.
+	var errs []error
+	if err := migrateSessionSidecars(oldPath, newPath, newID); err != nil {
+		errs = append(errs, err)
+	}
 	// Retire the old disposable lease sidecars: any holder was ruled out
 	// above, and nothing keeps these files open, so a plain remove is safe.
 	if sessionLeaseSidecarFits(oldPath) {
 		for _, stale := range []string{oldPath + ".lease.lock", oldPath + ".lease.json"} {
-			if err := os.Remove(stale); err != nil && !os.IsNotExist(err) && renameErr == nil {
-				renameErr = err
+			if err := os.Remove(stale); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
 			}
 		}
 	}
 	// The old .lock goes atomically with the release of the lock we hold on it.
 	if lockFile != nil {
-		if err := lockFile.RemoveAndUnlock(); err != nil && renameErr == nil {
-			renameErr = err
+		if err := lockFile.RemoveAndUnlock(); err != nil {
+			errs = append(errs, err)
 		}
 	}
-	if renameErr != nil {
-		return "", renameErr
-	}
-	return newID, nil
+	return newID, errors.Join(errs...)
 }
 
 // migrateSessionSidecars moves the user-state sidecars of a renamed session:
