@@ -171,6 +171,9 @@ func MigrateLegacyIfNeededForRoot(root string) (*MigrationResult, error) {
 }
 
 func MigrateLegacyCredentialsForRoot(root string) error {
+	if IsolatedHomeDir() != "" {
+		return nil
+	}
 	return migrateLegacyCredentialsIfNeededForRoot(root)
 }
 

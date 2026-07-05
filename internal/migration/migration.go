@@ -81,6 +81,11 @@ func RunLegacyRescue(sink event.Sink) Result {
 		sink.Emit(event.Event{Kind: event.Notice, Level: level, Text: text})
 	}
 	result := Result{}
+	if config.IsolatedHomeDir() != "" {
+		emit(event.LevelInfo, "migration rescue: REASONIX_HOME is set; implicit legacy migration is skipped")
+		emit(event.LevelInfo, result.Summary())
+		return result
+	}
 	emit(event.LevelInfo, "migration rescue: checking legacy config and credentials")
 	migrated, err := config.MigrateLegacyIfNeeded()
 	result.Config = migrated
