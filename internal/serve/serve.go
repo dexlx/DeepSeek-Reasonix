@@ -10,6 +10,7 @@ import (
 	"crypto/sha256"
 	_ "embed"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net/http"
@@ -48,6 +49,11 @@ type Server struct {
 	titlePrice      *provider.Pricing
 	titles          *titleCache
 	auth            *authGate // nil when auth is disabled
+	// leases guards the active session file against other runtimes (a desktop
+	// window, another CLI). Wired by the serve CLI command with the keeper that
+	// already holds the startup session's lease; nil (tests, embedded use)
+	// disables lease gating.
+	leases *control.SessionLeaseKeeper
 }
 
 // New builds a Server. bc must be the controller's event sink.
@@ -69,6 +75,30 @@ func (s *Server) ctl() control.SessionAPI {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return s.ctrl
+}
+
+// SetSessionLeases hands the server the session-lease keeper that guards its
+// active session file. The write-binding endpoints (/resume, /new, /fork and
+// model switches that rotate the path) then move the lease along with the
+// active session and refuse to bind a session held by another runtime.
+// Call it before serving; a nil keeper leaves lease gating off.
+func (s *Server) SetSessionLeases(k *control.SessionLeaseKeeper) {
+	s.leases = k
+}
+
+// rebindSessionLease moves the server's session lease to path. A nil keeper
+// gates nothing (tests, embedded use).
+func (s *Server) rebindSessionLease(path string) error {
+	if s.leases == nil {
+		return nil
+	}
+	return s.leases.Rebind(path)
+}
+
+// sessionInUseError renders a lease refusal for HTTP clients using the shared
+// CLI wording, without the session file path.
+func sessionInUseError(err error) string {
+	return control.SessionInUseMessage(err) + "; " + control.SessionLeaseCloseHint
 }
 
 // AuthToken returns the pre-shared token when in token mode, or "" otherwise.
@@ -163,6 +193,15 @@ func (s *Server) switchModel(ctx context.Context, ref string) error {
 	}
 	s.ctrl = newCtrl
 	s.mu.Unlock()
+
+	// A carried conversation keeps its file (newPath == prevPath) and the lease
+	// with it; only a previously file-less session gets a fresh path here, and
+	// the lease follows it (fresh path — failure is theoretical).
+	if newPath != prevPath {
+		if err := s.rebindSessionLease(newPath); err != nil {
+			slog.Warn("serve: session lease after model switch", "err", err)
+		}
+	}
 
 	// Off-lock: tear down the old controller. Close can block up to 15s.
 	cur.Close()
@@ -511,6 +550,11 @@ func (s *Server) newSession(w http.ResponseWriter, _ *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// Fresh path — the lease follows it; failure is theoretical but not silent.
+	if err := s.rebindSessionLease(s.ctl().SessionPath()); err != nil {
+		http.Error(w, sessionInUseError(err), http.StatusConflict)
+		return
+	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -695,6 +739,11 @@ func (s *Server) fork(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
+	// The controller switched to the fork (a fresh path); the lease follows it.
+	if err := s.rebindSessionLease(s.ctl().SessionPath()); err != nil {
+		http.Error(w, sessionInUseError(err), http.StatusConflict)
+		return
+	}
 	writeJSON(w, map[string]string{"path": path})
 }
 
@@ -841,12 +890,26 @@ func (s *Server) resume(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "session is pending cleanup", http.StatusBadRequest)
 		return
 	}
-	// Snapshot the current session before switching away.
+	// Snapshot the current session before switching away — while this process
+	// still holds its lease.
 	if err := s.ctl().Snapshot(); err != nil {
 		slog.Warn("serve: snapshot before resume", "err", err)
 	}
+	// Refuse to bind a session another runtime is writing (a desktop window,
+	// another CLI); on success the lease now guards the resume target.
+	if err := s.rebindSessionLease(realPath); err != nil {
+		if errors.Is(err, agent.ErrSessionLeaseHeld) {
+			http.Error(w, sessionInUseError(err), http.StatusConflict)
+		} else {
+			http.Error(w, "session lease: "+err.Error(), http.StatusInternalServerError)
+		}
+		return
+	}
 	loaded, err := agent.LoadSession(realPath)
 	if err != nil {
+		// The lease already moved to the target; re-point it at the session the
+		// controller still owns (best-effort).
+		_ = s.rebindSessionLease(s.ctl().SessionPath())
 		http.Error(w, "load session: "+err.Error(), http.StatusBadRequest)
 		return
 	}
