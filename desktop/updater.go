@@ -214,6 +214,9 @@ type cachedUpdate struct {
 var updateCacheBaseDir = defaultUpdateCacheBaseDir
 
 func defaultUpdateCacheBaseDir() (string, error) {
+	if cd := config.CacheDir(); cd != "" {
+		return filepath.Join(cd, "updates"), nil
+	}
 	base, err := os.UserCacheDir()
 	if err != nil {
 		base = os.TempDir()

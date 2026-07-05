@@ -92,6 +92,9 @@ func MigrateLegacyIfNeeded() (*MigrationResult, error) {
 }
 
 func MigrateLegacyIfNeededForRoot(root string) (*MigrationResult, error) {
+	if IsolatedHomeDir() != "" {
+		return nil, nil
+	}
 	credErr := migrateLegacyCredentialsIfNeededForRoot(root)
 	dest := userConfigPath()
 	if dest == "" {

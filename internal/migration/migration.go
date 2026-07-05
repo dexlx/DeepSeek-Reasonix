@@ -166,6 +166,9 @@ func RunLegacySessionImportFrom(sourceRoot string, sink event.Sink) Result {
 // MigrateLegacyMemorySources imports older memory stores during normal boot.
 // It stays quiet unless files were actually copied.
 func MigrateLegacyMemorySources(sink event.Sink) []MemoryImport {
+	if config.IsolatedHomeDir() != "" {
+		return nil
+	}
 	sink = event.Sync(sink)
 	return migrateLegacyMemorySources(sink, false).imports
 }
@@ -174,6 +177,9 @@ func MigrateLegacyMemorySources(sink event.Sink) []MemoryImport {
 // It preserves the historical boot-time behavior: notify only when something was
 // imported, and otherwise stay quiet.
 func MigrateLegacySessionSources(sink event.Sink) []SessionImport {
+	if config.IsolatedHomeDir() != "" {
+		return nil
+	}
 	sink = event.Sync(sink)
 	return migrateLegacySessionSources(sink, false).imports
 }
