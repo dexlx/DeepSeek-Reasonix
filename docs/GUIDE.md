@@ -16,6 +16,7 @@
 - [Serve web frontend](#serve-web-frontend)
 - [Configuration paths](./CONFIG_PATHS.md)
 - [Reasoning language](./REASONING_LANGUAGE.md)
+- [Task contracts and pause policy](./TASK_CONTRACT.md)
 - [Custom OpenAI-compatible providers](#custom-openai-compatible-providers)
 - [Desktop hooks](#desktop-hooks)
 - [Keyboard shortcuts](#keyboard-shortcuts)
@@ -661,6 +662,13 @@ enables the AutoResearch strategy instead of requiring a separate
 skill in Settings -> Skills or the slash menu. If an ordinary chat prompt has a
 very strong long-horizon signal, the host also upgrades it into the equivalent
 of `/goal --research <original prompt>`.
+
+For complex work, write the objective as a
+[task contract](./TASK_CONTRACT.md): Context, Request, Output format,
+Constraints, and Pause policy. Goal mode treats those sections as the boundary
+for autonomous work. It keeps going with sensible defaults unless the next step
+requires an irreversible or externally visible operation, a scope change, or
+information only the user can provide.
 
 AutoResearch is enabled for goals with strong signals such as "keep
 researching", "long-running", "thoroughly", "debug until the root cause is

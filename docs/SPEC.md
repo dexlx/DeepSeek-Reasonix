@@ -362,7 +362,17 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   model reports completion, repeats the same blocked state three times, the user
   stops it, or the safety continuation limit is reached. Blocked-state matching
   is normalized for casing, whitespace, and punctuation so minor wording drift
-  does not reset the audit; restarting a goal begins a fresh blocked audit.
+  does not reset the audit; restarting a goal begins a fresh blocked audit. A
+  goal is treated as a task contract: if the objective includes Context,
+  Request, Output format, Constraints, or Pause policy sections, those sections
+  define the autonomous work boundary. When they are absent, the model infers a
+  lightweight contract from the conversation and workspace. The injected goal
+  block tells the model to pause only for irreversible or externally visible
+  operations, scope changes, or information only the user can provide; ordinary
+  uncertainty should be handled with sensible defaults and reported as an
+  assumption. Completion requires the concrete request, output format,
+  constraints, and relevant verification expectations to be satisfied or
+  explicitly reported as unverified.
   Goals that look like long-horizon research, debugging, optimization, or
   implementation work automatically add an AutoResearch protocol to the same
   transient active-goal user block. AutoResearch is a Goal strategy, not a

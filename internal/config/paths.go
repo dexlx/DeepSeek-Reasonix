@@ -275,7 +275,7 @@ func ReasonixHomeDir() string { return reasonixHomeDir() }
 // the user saved through setup or settings. "" when Reasonix home can't be
 // resolved.
 func UserCredentialsPath() string {
-	dir := userSupportDir()
+	dir := reasonixHomeDir()
 	if dir == "" {
 		return ""
 	}
