@@ -6710,6 +6710,50 @@ func userFacingSessionLeaseError(setting string, err error) error {
 	return err
 }
 
+func (a *App) ensureTabSessionLeaseForRebuild(tab *WorkspaceTab, path, setting string) error {
+	if err := tab.ensureSessionLease(path); err != nil {
+		if a.canReclaimCurrentProcessSessionLease(tab, path, err) {
+			if lease, reclaimErr := agent.TryReclaimCurrentProcessSessionLease(path); reclaimErr == nil {
+				tab.releaseSessionLease()
+				tab.sessionLease = lease
+				return nil
+			} else {
+				err = reclaimErr
+			}
+		}
+		return userFacingSessionLeaseError(setting, err)
+	}
+	return nil
+}
+
+func (a *App) canReclaimCurrentProcessSessionLease(tab *WorkspaceTab, path string, err error) bool {
+	key := sessionRuntimeKey(path)
+	if tab == nil || key == "" || !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		return false
+	}
+	var leaseErr *agent.SessionLeaseError
+	if !errors.As(err, &leaseErr) || leaseErr == nil || leaseErr.Info == nil {
+		return false
+	}
+	if leaseErr.Info.PID != os.Getpid() || leaseErr.Info.WriterID != agent.SessionWriterID() {
+		return false
+	}
+	a.mu.RLock()
+	defer a.mu.RUnlock()
+	for _, candidate := range a.runtimeTabsLocked() {
+		if candidate == nil || candidate == tab {
+			continue
+		}
+		if candidate.sessionLease != nil && sessionRuntimeKey(candidate.sessionLease.Path()) == key {
+			return false
+		}
+		if candidate.Ctrl != nil && sessionRuntimeKey(candidate.currentSessionPath()) == key {
+			return false
+		}
+	}
+	return true
+}
+
 // SetModel switches the active model and carries the current conversation into the
 // new model's session, so the chat continues seamlessly and subsequent turns use
 // the new model. No-op if name is already active or the controller is down.
@@ -6782,8 +6826,8 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
 		}
-		if err := tab.ensureSessionLease(prevPath); err != nil {
-			return userFacingSessionLeaseError("model", err)
+		if err := a.ensureTabSessionLeaseForRebuild(tab, prevPath, "model"); err != nil {
+			return err
 		}
 		if err := a.snapshotTabForAction(tab, "changing model"); err != nil {
 			return err
@@ -6818,9 +6862,9 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	newCtrl.SetGoal(tab.goal)
 
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if err := tab.ensureSessionLease(path); err != nil {
+	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "model"); err != nil {
 		newCtrl.Close()
-		return userFacingSessionLeaseError("model", err)
+		return err
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
 	a.mu.Lock()
@@ -6886,14 +6930,34 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		}
 		return fmt.Errorf("tab %q not found", tabID)
 	}
-	ctrl := a.controllerForTab(tab)
-	if controllerHasActiveRuntimeWork(ctrl) {
+	prevPath := a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	// Recomputing prevPath after this attach would be a dead store: it is
+	// unconditionally derived again after ensureTabControllerWorkspace below.
+	if a.controllerForTab(tab) == nil && prevPath != "" {
+		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
+	}
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError("effort")
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	prevPath := a.reconciledSessionPathForTab(tab)
+	prevPath = a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+		prevPath = a.reconciledSessionPathForTab(tab)
+		if prevPath == "" {
+			prevPath = strings.TrimSpace(tab.currentSessionPath())
+		}
+		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
+			return rebuildControllerActiveWorkError("effort")
+		}
+	}
 	entry, err := a.currentProviderEntryForTab(tabID)
 	if err != nil {
 		return err
@@ -6904,15 +6968,18 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		return err
 	}
 	var carried []provider.Message
-	if oldCtrl := a.controllerForTab(tab); oldCtrl != nil {
+	oldCtrl := a.controllerForTab(tab)
+	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
+		}
+		if err := a.ensureTabSessionLeaseForRebuild(tab, prevPath, "effort"); err != nil {
+			return err
 		}
 		if err := a.snapshotTabForAction(tab, "changing effort"); err != nil {
 			return err
 		}
 		carried = oldCtrl.History()
-		oldCtrl.Close()
 	}
 	sharedHost := a.lookupSharedHost(tab.SharedHostKey)
 	newCtrl, err := boot.Build(a.bootContext(), boot.Options{
@@ -6929,7 +6996,6 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		OnSessionRecovered:       a.handleTabSessionRecovered(tab),
 	})
 	if err != nil {
-		tab.releaseSessionLease()
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
@@ -6938,9 +7004,8 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
 	newCtrl.SetGoal(tab.goal)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if err := tab.ensureSessionLease(path); err != nil {
+	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "effort"); err != nil {
 		newCtrl.Close()
-		tab.releaseSessionLease()
 		return err
 	}
 	resumeWithFreshSystemPrompt(newCtrl, carried, path)
@@ -6959,6 +7024,9 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.Ready = true
 	a.saveTabsLocked()
 	a.mu.Unlock()
+	if oldCtrl != nil {
+		oldCtrl.Close()
+	}
 	a.persistTabSessionPath(tab, path)
 	return nil
 }
@@ -6979,14 +7047,34 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if mode == currentTabTokenMode(tab) {
 		return nil
 	}
-	ctrl := a.controllerForTab(tab)
-	if controllerHasActiveRuntimeWork(ctrl) {
+	prevPath := a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	// Recomputing prevPath after this attach would be a dead store: it is
+	// unconditionally derived again after ensureTabControllerWorkspace below.
+	if a.controllerForTab(tab) == nil && prevPath != "" {
+		a.attachExistingSessionRuntime(tab, prevPath, a.ctx)
+	}
+	if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
 		return rebuildControllerActiveWorkError("token mode")
 	}
 	if err := a.ensureTabControllerWorkspace(tab); err != nil {
 		return err
 	}
-	prevPath := a.reconciledSessionPathForTab(tab)
+	prevPath = a.reconciledSessionPathForTab(tab)
+	if prevPath == "" {
+		prevPath = strings.TrimSpace(tab.currentSessionPath())
+	}
+	if a.controllerForTab(tab) == nil && prevPath != "" && a.attachExistingSessionRuntime(tab, prevPath, a.ctx) {
+		prevPath = a.reconciledSessionPathForTab(tab)
+		if prevPath == "" {
+			prevPath = strings.TrimSpace(tab.currentSessionPath())
+		}
+		if controllerHasActiveRuntimeWork(a.controllerForTab(tab)) {
+			return rebuildControllerActiveWorkError("token mode")
+		}
+	}
 	modelRef, fallback, err := a.resolvedModelForTab(tab)
 	if err != nil {
 		return err
@@ -7000,6 +7088,9 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	if oldCtrl != nil {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
+		}
+		if err := a.ensureTabSessionLeaseForRebuild(tab, prevPath, "token mode"); err != nil {
+			return err
 		}
 		if err := a.snapshotTabForAction(tab, "changing token mode"); err != nil {
 			return err
@@ -7029,7 +7120,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	applyTabToolApprovalModeToController(newCtrl, tab.toolApprovalMode)
 	newCtrl.SetGoal(tab.goal)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
-	if err := tab.ensureSessionLease(path); err != nil {
+	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "token mode"); err != nil {
 		newCtrl.Close()
 		return err
 	}
