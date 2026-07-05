@@ -3782,12 +3782,8 @@ func workspaceName(path string) string {
 	return name
 }
 
-func tabWorkspaceName(tab *WorkspaceTab, cwd string) string {
-	return tabWorkspaceNameForScope(tab.Scope, cwd)
-}
-
-// tabWorkspaceNameForScope is the snapshot form: callers that already copied
-// tab.Scope under a.mu pass it directly instead of re-reading the tab.
+// tabWorkspaceNameForScope resolves the display name for a tab's workspace.
+// Callers pass tab.Scope copied under a.mu instead of re-reading the tab.
 func tabWorkspaceNameForScope(scope, cwd string) string {
 	if scope == "global" {
 		return globalProjectTitle()

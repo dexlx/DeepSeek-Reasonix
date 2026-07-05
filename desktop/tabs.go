@@ -340,6 +340,27 @@ func (t *WorkspaceTab) sessionLeaseRuntimeKey() string {
 	return sessionRuntimeKey(t.sessionLease.Path())
 }
 
+// releaseSessionLeaseForKey releases the tab's lease only when it is bound to
+// key. Superseded builds clean up with this instead of releaseSessionLease:
+// on a removed tab the keys match and the lease is released as before, but
+// when a session rebind superseded the build, the rebind's replacement build
+// holds a lease for a *different* session key (rebind early-returns on equal
+// keys), and releasing that here would strip the live session's protection.
+func (t *WorkspaceTab) releaseSessionLeaseForKey(key string) {
+	if t == nil || key == "" {
+		return
+	}
+	t.sessionLeaseMu.Lock()
+	lease := t.sessionLease
+	if lease == nil || sessionRuntimeKey(lease.Path()) != key {
+		t.sessionLeaseMu.Unlock()
+		return
+	}
+	t.sessionLease = nil
+	t.sessionLeaseMu.Unlock()
+	lease.Release()
+}
+
 func detachedRuntimeTabID(key string) string {
 	sum := sha256.Sum256([]byte(key))
 	return "detached_" + hex.EncodeToString(sum[:8])
@@ -2347,15 +2368,6 @@ func (a *App) markTabRemovedLocked(tab *WorkspaceTab) {
 	}
 }
 
-func (a *App) tabRemovedForBuild(tab *WorkspaceTab) bool {
-	if tab == nil {
-		return true
-	}
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	return tab.removed || a.tabs[tab.ID] != tab
-}
-
 // tabBuildSupersededLocked reports whether an in-flight build lost ownership
 // of its tab: the tab was removed/replaced, or a session rebind bumped
 // buildGeneration to invalidate it. Generation 0 marks the synchronous
@@ -2375,6 +2387,25 @@ func (a *App) tabBuildSuperseded(tab *WorkspaceTab, generation uint64) bool {
 	a.mu.RLock()
 	defer a.mu.RUnlock()
 	return a.tabBuildSupersededLocked(tab, generation)
+}
+
+// abandonSupersededBuild cleans up after a build that lost tab ownership
+// mid-flight (removed tab, or a session rebind bumped the generation). It
+// releases only what THIS build acquired — its controller, its own
+// shared-host reference (rootKey), and the session lease bound to its own
+// path (leaseKey) — and never reads or clears the tab's SharedHostKey or
+// lease outright: on a live rebound tab the replacement build may already
+// have published its own key and lease there, and taking those would leak
+// the new runtime's host reference (or close a host still in use) and strip
+// the new session's lease. Callers must not hold a.mu.
+func (a *App) abandonSupersededBuild(tab *WorkspaceTab, ctrl control.SessionAPI, rootKey, leaseKey string) {
+	if ctrl != nil {
+		ctrl.Close()
+	}
+	if rootKey != "" {
+		a.releaseSharedHost(rootKey)
+	}
+	tab.releaseSessionLeaseForKey(leaseKey)
 }
 
 func (a *App) clearTabBuildCancel(tab *WorkspaceTab, generation uint64, cancel context.CancelFunc, keepContext bool) {
@@ -2640,11 +2671,8 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	if err != nil {
 		a.mu.Lock()
 		if a.tabBuildSupersededLocked(tab, buildGeneration) {
-			hostKey := takeTabSharedHostKey(tab)
 			a.mu.Unlock()
-			if hostKey != "" {
-				a.releaseSharedHost(hostKey)
-			}
+			a.abandonSupersededBuild(tab, nil, rootKey, "")
 			return
 		}
 		tab.StartupErr = err.Error()
@@ -2659,8 +2687,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 		return
 	}
 	if a.tabBuildSuperseded(tab, buildGeneration) {
-		ctrl.Close()
-		a.releaseTabSharedHost(tab)
+		a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 		return
 	}
 
@@ -2670,6 +2697,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	applyTabToolApprovalModeToController(ctrl, buildToolApprovalMode)
 	ctrl.SetGoal(buildGoal)
 
+	acquiredLeaseKey := ""
 	if dir := ctrl.SessionDir(); dir != "" {
 		migratedTopics := migrateLegacySessionsIntoGlobalTopics(dir)
 		if len(migratedTopics) > 0 {
@@ -2727,12 +2755,8 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 			if err := tab.ensureSessionLease(path); err != nil {
 				a.mu.Lock()
 				if a.tabBuildSupersededLocked(tab, buildGeneration) {
-					hostKey := takeTabSharedHostKey(tab)
 					a.mu.Unlock()
-					ctrl.Close()
-					if hostKey != "" {
-						a.releaseSharedHost(hostKey)
-					}
+					a.abandonSupersededBuild(tab, ctrl, rootKey, "")
 					return
 				}
 				tab.StartupErr = err.Error()
@@ -2747,6 +2771,10 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 				a.emitReady(wailsCtx, tab.ID)
 				return
 			}
+			// Remember which lease THIS build bound: if the build is later
+			// superseded, only a lease still carrying this key may be
+			// released (see abandonSupersededBuild).
+			acquiredLeaseKey = sessionRuntimeKey(path)
 			if resumeSession != nil {
 				ctrl.Resume(sessionWithFreshSystemPrompt(resumeSession, systemPromptFrom(ctrl.History())), path)
 			} else {
@@ -2778,9 +2806,7 @@ func (a *App) buildTabControllerWithContext(tab *WorkspaceTab, loadedSession loa
 	a.mu.Lock()
 	if a.tabBuildSupersededLocked(tab, buildGeneration) {
 		a.mu.Unlock()
-		ctrl.Close()
-		a.releaseTabSharedHost(tab)
-		tab.releaseSessionLease()
+		a.abandonSupersededBuild(tab, ctrl, rootKey, acquiredLeaseKey)
 		return
 	}
 	tab.Ctrl = ctrl

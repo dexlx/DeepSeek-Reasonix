@@ -185,6 +185,98 @@ func TestTabBuildSupersededByRebindGeneration(t *testing.T) {
 	}
 }
 
+// TestReleaseSessionLeaseForKeyOnlyMatchesOwnKey: superseded builds may only
+// release the lease bound to their own path; a mismatched key (the rebind's
+// replacement session) must be left untouched.
+func TestReleaseSessionLeaseForKeyOnlyMatchesOwnKey(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	pathA := filepath.Join(dir, "lease-key-a.jsonl")
+	pathB := filepath.Join(dir, "lease-key-b.jsonl")
+	tab := &WorkspaceTab{ID: "tab"}
+	t.Cleanup(tab.releaseSessionLease)
+	if err := tab.ensureSessionLease(pathB); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+
+	tab.releaseSessionLeaseForKey(sessionRuntimeKey(pathA))
+	if _, err := agent.TryAcquireSessionLease(sessionRuntimeKey(pathB)); err == nil {
+		t.Fatal("mismatched key released the tab's live lease")
+	}
+
+	tab.releaseSessionLeaseForKey(sessionRuntimeKey(pathB))
+	lease, err := agent.TryAcquireSessionLease(sessionRuntimeKey(pathB))
+	if err != nil {
+		t.Fatalf("matching key did not release the lease: %v", err)
+	}
+	lease.Release()
+}
+
+// TestAbandonSupersededBuildPreservesNewBuildOwnership reproduces the rebind
+// interleaving from the #5968 review: a stale async build cleans up after a
+// rebind's replacement build already published its own SharedHostKey and
+// session lease on the same live tab. The stale build must drop only its own
+// host reference and lease, never the tab's.
+func TestAbandonSupersededBuildPreservesNewBuildOwnership(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	oldPath := filepath.Join(dir, "superseded-old.jsonl")
+	newPath := filepath.Join(dir, "superseded-new.jsonl")
+	newKey := sessionRuntimeKey(newPath)
+
+	app := &App{tabs: map[string]*WorkspaceTab{}}
+	// The stale build and the replacement build each hold one reference on
+	// the same workspace-root host (the common same-root rebind).
+	app.acquireSharedHost("root")
+	app.acquireSharedHost("root")
+
+	tab := &WorkspaceTab{ID: "tab", SharedHostKey: "root"}
+	app.tabs["tab"] = tab
+	t.Cleanup(tab.releaseSessionLease)
+	if err := tab.ensureSessionLease(newPath); err != nil {
+		t.Fatalf("ensureSessionLease(new): %v", err)
+	}
+
+	// Stale build abandons with ITS key material: the old lease path and the
+	// root key it acquired.
+	app.abandonSupersededBuild(tab, nil, "root", sessionRuntimeKey(oldPath))
+
+	app.mu.RLock()
+	hostKey := tab.SharedHostKey
+	app.mu.RUnlock()
+	if hostKey != "root" {
+		t.Fatalf("stale build cleared the tab's SharedHostKey: %q", hostKey)
+	}
+	app.sharedHostsMu.Lock()
+	entry := app.sharedHosts["root"]
+	refs := 0
+	if entry != nil {
+		refs = entry.refs
+	}
+	app.sharedHostsMu.Unlock()
+	if refs != 1 {
+		t.Fatalf("shared host refs = %d after stale-build cleanup, want 1 (the live build's reference)", refs)
+	}
+	if got := tab.sessionLeaseRuntimeKey(); got != newKey {
+		t.Fatalf("stale build released the replacement build's lease: key = %q, want %q", got, newKey)
+	}
+
+	// Removal shape: the abandoned build's own key still on the tab is the
+	// last reference and must be released.
+	app.abandonSupersededBuild(tab, nil, "", newKey)
+	lease, err := agent.TryAcquireSessionLease(newKey)
+	if err != nil {
+		t.Fatalf("matching-key abandon did not release the lease: %v", err)
+	}
+	lease.Release()
+}
+
 // TestMetaForTabConcurrentWithBuildSwap polls MetaForTab (the frontend's boot
 // probe) while a fake build goroutine flips Ready/Label/StartupErr/model under
 // a.mu — the write pattern of buildTabControllerWithContext. Run with -race.
