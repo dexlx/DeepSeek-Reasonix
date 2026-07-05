@@ -52,6 +52,7 @@ type WorkspaceTab struct {
 	Ready           bool               // true once boot.Build completes
 	StartupErr      string             // build error, surfaced to the frontend
 	sessionLease    *agent.SessionLease
+	sessionLeaseMu  sync.Mutex
 	sink            *tabEventSink      // routes events with this tab's ID
 	buildCancel     context.CancelFunc // cancels in-flight boot for tabs removed before Ready
 	buildGeneration uint64             // identifies the current in-flight build
@@ -244,6 +245,8 @@ func sessionRuntimeKey(path string) string {
 	return canonicalTabSessionPath(path)
 }
 
+var sessionLeaseAcquireHookForTest func()
+
 func (t *WorkspaceTab) ensureSessionLease(path string) error {
 	if t == nil || t.ReadOnly {
 		return nil
@@ -252,24 +255,39 @@ func (t *WorkspaceTab) ensureSessionLease(path string) error {
 	if key == "" {
 		return nil
 	}
+	t.sessionLeaseMu.Lock()
 	if t.sessionLease != nil && sessionRuntimeKey(t.sessionLease.Path()) == key {
+		t.sessionLeaseMu.Unlock()
 		return nil
 	}
 	lease, err := agent.TryAcquireSessionLease(key)
 	if err != nil {
+		t.sessionLeaseMu.Unlock()
 		return err
 	}
-	t.releaseSessionLease()
+	if hook := sessionLeaseAcquireHookForTest; hook != nil {
+		hook()
+	}
+	old := t.sessionLease
 	t.sessionLease = lease
+	t.sessionLeaseMu.Unlock()
+	if old != nil {
+		old.Release()
+	}
 	return nil
 }
 
 func (t *WorkspaceTab) releaseSessionLease() {
-	if t == nil || t.sessionLease == nil {
+	if t == nil {
 		return
 	}
-	t.sessionLease.Release()
+	t.sessionLeaseMu.Lock()
+	lease := t.sessionLease
 	t.sessionLease = nil
+	t.sessionLeaseMu.Unlock()
+	if lease != nil {
+		lease.Release()
+	}
 }
 
 func detachedRuntimeTabID(key string) string {

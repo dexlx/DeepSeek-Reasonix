@@ -2717,6 +2717,106 @@ func TestSetModelForTabReusesCurrentSessionLease(t *testing.T) {
 	}
 }
 
+func TestSetModelForTabWaitsForConcurrentBlankSessionLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+	setDesktopTestCredential(t, "NEW_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old", "new"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+		{Name: "new", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "new-model", APIKeyEnv: "NEW_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := desktopSessionDir(globalTabWorkspaceRoot())
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := filepath.Join(dir, "blank-model-switch-race.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write blank session: %v", err)
+	}
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:            "tab_blank_race",
+		Scope:         "global",
+		WorkspaceRoot: globalTabWorkspaceRoot(),
+		SessionPath:   path,
+		Ready:         true,
+		model:         "old/old-model",
+		sink:          &tabEventSink{tabID: "tab_blank_race", app: app},
+		disabledMCP:   map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	acquired := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var once sync.Once
+	sessionLeaseAcquireHookForTest = func() {
+		once.Do(func() {
+			close(acquired)
+			<-releaseHook
+		})
+	}
+	t.Cleanup(func() { sessionLeaseAcquireHookForTest = nil })
+
+	buildErr := make(chan error, 1)
+	go func() {
+		buildErr <- tab.ensureSessionLease(path)
+	}()
+
+	select {
+	case <-acquired:
+	case err := <-buildErr:
+		t.Fatalf("background lease acquire returned before hook: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("background lease acquire did not start")
+	}
+
+	switchErr := make(chan error, 1)
+	go func() {
+		switchErr <- app.SetModelForTab(tab.ID, "new/new-model")
+	}()
+
+	select {
+	case err := <-switchErr:
+		t.Fatalf("SetModelForTab returned before concurrent lease was bound: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseHook)
+	if err := <-buildErr; err != nil {
+		t.Fatalf("background ensureSessionLease: %v", err)
+	}
+	if err := <-switchErr; err != nil {
+		t.Fatalf("SetModelForTab: %v", err)
+	}
+	if tab.Ctrl == nil {
+		t.Fatal("model switch did not build a controller")
+	}
+	if got := tab.model; got != "new/new-model" {
+		t.Fatalf("tab model = %q, want new/new-model", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(path) {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), path)
+	}
+}
+
 func TestSetModelForTabLeaseHeldKeepsCurrentController(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")

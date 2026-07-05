@@ -401,6 +401,60 @@ func TestClearTabBuildCancelCancelsAbandonedBuildContext(t *testing.T) {
 	}
 }
 
+func TestEnsureSessionLeaseSerializesConcurrentSameTabAcquire(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	path := filepath.Join(dir, "same-tab-concurrent-lease.jsonl")
+	tab := &WorkspaceTab{ID: "tab"}
+	t.Cleanup(tab.releaseSessionLease)
+
+	acquired := make(chan struct{})
+	releaseHook := make(chan struct{})
+	var once sync.Once
+	sessionLeaseAcquireHookForTest = func() {
+		once.Do(func() {
+			close(acquired)
+			<-releaseHook
+		})
+	}
+	t.Cleanup(func() { sessionLeaseAcquireHookForTest = nil })
+
+	firstErr := make(chan error, 1)
+	go func() {
+		firstErr <- tab.ensureSessionLease(path)
+	}()
+
+	select {
+	case <-acquired:
+	case err := <-firstErr:
+		t.Fatalf("first ensureSessionLease returned before hook: %v", err)
+	case <-time.After(2 * time.Second):
+		t.Fatal("first ensureSessionLease did not acquire lease")
+	}
+
+	secondErr := make(chan error, 1)
+	go func() {
+		secondErr <- tab.ensureSessionLease(path)
+	}()
+
+	select {
+	case err := <-secondErr:
+		t.Fatalf("second ensureSessionLease returned while first acquire was unbound: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseHook)
+	if err := <-firstErr; err != nil {
+		t.Fatalf("first ensureSessionLease: %v", err)
+	}
+	if err := <-secondErr; err != nil {
+		t.Fatalf("second ensureSessionLease should reuse the tab lease: %v", err)
+	}
+}
+
 func TestAttachExistingSessionRuntimeSkipsRemovedTab(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := config.SessionDir()
