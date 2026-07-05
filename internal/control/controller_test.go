@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -859,6 +860,174 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	}
 	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
 		t.Fatalf("nested recovery branches after owned recovery compaction = %v err=%v, want none", matches, err)
+	}
+}
+
+// TestSnapshotConflictAdoptionResetsRewriteBaseline guards the baseline
+// handoff on the adopt path: adopting a newer on-disk transcript installs a
+// freshly loaded session, and the replaced session's rewrite version must not
+// leak onto it. A leaked (higher) baseline would make the adopted session's
+// own compactions look already persisted, so the next autosave would take the
+// snapshot path, conflict, and fork a spurious recovery branch.
+func TestSnapshotConflictAdoptionResetsRewriteBaseline(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	base := agent.NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+	stale, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession stale: %v", err)
+	}
+	other, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession other: %v", err)
+	}
+	other.Add(provider.Message{Role: provider.RoleAssistant, Content: "newer"})
+	if err := other.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot other: %v", err)
+	}
+
+	exec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	// Rewrites the stale controller never persisted before it noticed the
+	// newer transcript; adoption must discard this counter with the session.
+	for i := 0; i < 3; i++ {
+		stale.IncrementRewrite()
+	}
+
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot adopt: %v", err)
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path after adoption = %q, want original %q", got, path)
+	}
+	adopted := exec.Session()
+	if adopted == stale {
+		t.Fatal("expected adoption to replace the stale session")
+	}
+	readBaseline := func() int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.savedRewriteVersion
+	}
+	if got, want := readBaseline(), adopted.RewriteVersion(); got != want {
+		t.Fatalf("rewrite baseline after adoption = %d, want adopted session's %d", got, want)
+	}
+
+	// The adopted session's first compaction must persist in place.
+	msgs := adopted.Snapshot()
+	adopted.Replace([]provider.Message{
+		msgs[0],
+		{Role: provider.RoleUser, Content: "<compaction-summary>\nfirst -> newer\n</compaction-summary>"},
+	})
+	adopted.IncrementRewrite()
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("SnapshotActivity after adopted compaction: %v", err)
+	}
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after adopted compaction = %v err=%v, want none", matches, err)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession rewritten: %v", err)
+	}
+	if got := len(reloaded.Messages); got != 2 {
+		t.Fatalf("message count after adopted compaction = %d, want 2: %+v", got, reloaded.Messages)
+	}
+}
+
+// TestMarkSessionRewriteVersionPersistedGuards pins the two properties that
+// keep the persisted-rewrite baseline safe under races: it never moves
+// backwards, and a session that is no longer the executor's cannot write its
+// version onto the counter of the session that replaced it.
+func TestMarkSessionRewriteVersionPersistedGuards(t *testing.T) {
+	sess := agent.NewSession("sys")
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: t.TempDir(), Label: "test"})
+	readBaseline := func() int {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		return c.savedRewriteVersion
+	}
+
+	c.markSessionRewriteVersionPersisted(sess, 2)
+	if got := readBaseline(); got != 2 {
+		t.Fatalf("baseline after mark(2) = %d, want 2", got)
+	}
+	c.markSessionRewriteVersionPersisted(sess, 1)
+	if got := readBaseline(); got != 2 {
+		t.Fatalf("baseline lowered to %d by mark(1), want it kept at 2", got)
+	}
+	foreign := agent.NewSession("sys")
+	c.markSessionRewriteVersionPersisted(foreign, 9)
+	if got := readBaseline(); got != 2 {
+		t.Fatalf("baseline = %d after foreign-session mark, want 2", got)
+	}
+}
+
+// TestConcurrentCompactionAndAutosaveNeverBranch drives the real shape of the
+// bug: a mid-turn autosave goroutine saving while the turn goroutine compacts.
+// Whatever the interleaving, an owned single-process session must never fork a
+// recovery branch — the decision/mark pipeline in snapshot() has to capture
+// the rewrite version it actually persisted, and retry as an owned rewrite
+// when a compaction slips in between.
+func TestConcurrentCompactionAndAutosaveNeverBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "turn-0"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("initial snapshot: %v", err)
+	}
+
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				// Errors surface as recovery branches, asserted below.
+				_ = c.SnapshotActivity()
+			}
+		}
+	}()
+	for i := 1; i <= 40; i++ {
+		sess.Add(provider.Message{Role: provider.RoleUser, Content: fmt.Sprintf("turn-%d", i)})
+		if i%4 == 0 {
+			msgs := sess.Snapshot()
+			sess.Replace([]provider.Message{
+				msgs[0],
+				{Role: provider.RoleUser, Content: fmt.Sprintf("<compaction-summary>\nrounds through %d\n</compaction-summary>", i)},
+				msgs[len(msgs)-1],
+			})
+			sess.IncrementRewrite()
+		}
+	}
+	close(stop)
+	wg.Wait()
+	if err := c.SnapshotActivity(); err != nil {
+		t.Fatalf("final snapshot: %v", err)
+	}
+
+	if matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("compaction racing autosave created recovery branches: %v err=%v", matches, err)
+	}
+	reloaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession final: %v", err)
+	}
+	if got, want := len(reloaded.Messages), sess.Len(); got != want {
+		t.Fatalf("persisted %d messages, memory has %d", got, want)
 	}
 }
 

@@ -809,6 +809,123 @@ func TestReconcileSessionSidecarsKeepsLiveLocks(t *testing.T) {
 	}
 }
 
+// TestReconcileSessionSidecarsKeepsFlockOnlyLocks proves the file lock alone
+// protects a writer from cleanup: CLI-style savers hold the .lock flock while
+// writing without ever taking a session lease.
+func TestReconcileSessionSidecarsKeepsFlockOnlyLocks(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	if err := os.WriteFile(path, []byte(`{"role":"user","content":"hello"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	unlock, err := lockSessionFile(path)
+	if err != nil {
+		t.Fatalf("lockSessionFile: %v", err)
+	}
+	if err := ReconcileSessionSidecars(dir); err != nil {
+		t.Fatalf("ReconcileSessionSidecars: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); err != nil {
+		t.Fatalf(".lock removed while a lock-only writer holds it: %v", err)
+	}
+	unlock()
+	if err := ReconcileSessionSidecars(dir); err != nil {
+		t.Fatalf("ReconcileSessionSidecars after unlock: %v", err)
+	}
+	if _, err := os.Stat(path + ".lock"); !os.IsNotExist(err) {
+		t.Fatalf(".lock survived cleanup after release (err=%v)", err)
+	}
+}
+
+// TestReconcileSessionSidecarsRenamesOverlongSessionFiles covers the
+// migration for transcripts left behind by the unbounded recovery cascade
+// (#5923): names so long their lock/lease sidecars could not be created. The
+// conversation bytes must survive under a bounded name, branch meta must move
+// with its ID rewritten, and children must be re-parented onto the new ID.
+func TestReconcileSessionSidecarsRenamesOverlongSessionFiles(t *testing.T) {
+	dir := t.TempDir()
+	longID := strings.Repeat("p", 240) // 246-byte basename: .lock fits, .lease.lock does not
+	hugeID := strings.Repeat("q", 248) // 254-byte basename: no sidecar fits at all
+	oldLong := filepath.Join(dir, longID+".jsonl")
+	oldHuge := filepath.Join(dir, hugeID+".jsonl")
+	content := `{"role":"system","content":"sys"}` + "\n" + `{"role":"user","content":"hello"}` + "\n"
+	for _, p := range []string{oldLong, oldHuge} {
+		if err := os.WriteFile(p, []byte(content), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(oldLong+".lock", []byte("{}\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBranchMeta(oldLong, BranchMeta{Name: "长会话", ParentID: "root-branch"}); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+	childPath := filepath.Join(dir, "child.jsonl")
+	if err := os.WriteFile(childPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := SaveBranchMeta(childPath, BranchMeta{Name: "child", ParentID: longID}); err != nil {
+		t.Fatalf("SaveBranchMeta child: %v", err)
+	}
+
+	if err := ReconcileSessionSidecars(dir); err != nil {
+		t.Fatalf("ReconcileSessionSidecars: %v", err)
+	}
+
+	for _, gone := range []string{oldLong, oldHuge, oldLong + ".lock", oldLong + ".meta"} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("%s still present after rename (err=%v)", filepath.Base(gone), err)
+		}
+	}
+	newLongID := recoveryParentStem(longID)
+	newLong := filepath.Join(dir, newLongID+".jsonl")
+	newHuge := filepath.Join(dir, recoveryParentStem(hugeID)+".jsonl")
+	for _, p := range []string{newLong, newHuge} {
+		if base := filepath.Base(p); len(base) > maxSessionBasenameBytes {
+			t.Fatalf("renamed basename %q length %d exceeds bound %d", base, len(base), maxSessionBasenameBytes)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			t.Fatalf("read renamed transcript: %v", err)
+		}
+		if string(b) != content {
+			t.Fatalf("transcript content changed by rename: %q", b)
+		}
+	}
+	meta, ok, err := LoadBranchMeta(newLong)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta renamed ok=%v err=%v", ok, err)
+	}
+	if meta.ID != newLongID {
+		t.Fatalf("migrated meta ID = %q, want %q", meta.ID, newLongID)
+	}
+	if meta.Name != "长会话" || meta.ParentID != "root-branch" {
+		t.Fatalf("migrated meta lost fields: %+v", meta)
+	}
+	childMeta, ok, err := LoadBranchMeta(childPath)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta child ok=%v err=%v", ok, err)
+	}
+	if childMeta.ParentID != newLongID {
+		t.Fatalf("child ParentID = %q, want re-parented %q", childMeta.ParentID, newLongID)
+	}
+
+	before, err := filepath.Glob(filepath.Join(dir, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := ReconcileSessionSidecars(dir); err != nil {
+		t.Fatalf("ReconcileSessionSidecars rerun: %v", err)
+	}
+	after, err := filepath.Glob(filepath.Join(dir, "*"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(before) != len(after) {
+		t.Fatalf("rerun changed the directory: before=%d entries, after=%d", len(before), len(after))
+	}
+}
+
 // TestListSessionsOrdersByMTime makes sure the picker shows the most
 // recently used conversation first — that's what users reach for when they
 // hit `reasonix --continue`.

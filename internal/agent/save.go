@@ -28,6 +28,17 @@ const (
 	sessionLockSidecarSuffix      = ".jsonl.lock"
 	sessionLeaseLockSidecarSuffix = ".jsonl.lease.lock"
 	sessionLeaseInfoSidecarSuffix = ".jsonl.lease.json"
+	guardianSidecarSuffix         = ".guardian.jsonl"
+	// nameMaxBytes is the single-component filename limit shared by the
+	// filesystems Reasonix targets (APFS, ext4, NTFS all cap at 255).
+	nameMaxBytes = 255
+	// maxSessionBasenameBytes bounds transcript basenames that reconciliation
+	// leaves in place. Sidecars append up to ~16 bytes to the transcript name
+	// or its stem (".lease.lock", ".cleanup-pending.json", ".guardian.jsonl"),
+	// so 224 keeps every sidecar comfortably under nameMaxBytes with headroom
+	// for future suffixes. Names past this bound come from the pre-bounded
+	// recovery cascade and get renamed by reconcileOverlongSessionFilenames.
+	maxSessionBasenameBytes = 224
 )
 
 var (
@@ -895,22 +906,28 @@ func ReconcileCleanupPending(dir string, cleanup func(CleanupPendingInfo) error)
 	return errors.Join(errs...)
 }
 
-// ReconcileSessionSidecars removes stale lock and lease files left beside
-// sessions by older runtimes. It never removes .jsonl transcripts; recovered
-// conversations may contain useful user history even when their names are ugly.
+// ReconcileSessionSidecars renames transcripts whose filenames outgrew their
+// sidecars and removes stale lock and lease files left beside sessions by
+// older runtimes. It never removes .jsonl transcripts; recovered conversations
+// may contain useful user history even when their names are ugly.
 func ReconcileSessionSidecars(dir string) error {
 	dir = strings.TrimSpace(dir)
 	if dir == "" {
 		return nil
 	}
+	var errs []error
+	if err := reconcileOverlongSessionFilenames(dir); err != nil {
+		errs = append(errs, err)
+	}
+	// Re-list after the rename pass: it retires old names and their sidecars.
 	entries, err := os.ReadDir(dir)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil
+			return errors.Join(errs...)
 		}
-		return err
+		errs = append(errs, err)
+		return errors.Join(errs...)
 	}
-	var errs []error
 	for _, e := range entries {
 		if e.IsDir() {
 			continue
@@ -950,11 +967,17 @@ func removeStaleSessionLockSidecar(basePath, sidecarPath string) error {
 		}
 		return err
 	}
+	// Unlink before releasing the flock. Dropping the lock first opens a
+	// window where a concurrent saver locks this inode, the file disappears
+	// under it, and the next opener creates a fresh inode whose "exclusive"
+	// lock the first saver cannot see. Holding the lock across the unlink
+	// narrows that to openers already parked on the old inode.
+	removeErr := os.Remove(sidecarPath)
 	if unlock != nil {
 		unlock()
 	}
-	if err := os.Remove(sidecarPath); err != nil && !os.IsNotExist(err) {
-		return err
+	if removeErr != nil && !os.IsNotExist(removeErr) {
+		return removeErr
 	}
 	return nil
 }
@@ -973,12 +996,22 @@ func removeStaleSessionLeaseSidecar(basePath, sidecarPath string) error {
 			}
 			return err
 		}
+		// Same unlink-under-lock ordering as removeStaleSessionLockSidecar:
+		// while we hold the lease flock no runtime can acquire this lease, so
+		// the sidecar cannot be adopted between the check and the removal.
+		removeErr := os.Remove(sidecarPath)
 		if unlock != nil {
 			unlock()
 		}
-	} else if err != nil && !os.IsNotExist(err) {
+		if removeErr != nil && !os.IsNotExist(removeErr) {
+			return removeErr
+		}
+		return nil
+	} else if !os.IsNotExist(err) {
 		return err
 	}
+	// No lease lock file: holders keep it present (and locked) for their whole
+	// lifetime, so the leftover info sidecar has no owner to race with.
 	if err := os.Remove(sidecarPath); err != nil && !os.IsNotExist(err) {
 		return err
 	}
@@ -988,6 +1021,202 @@ func removeStaleSessionLeaseSidecar(basePath, sidecarPath string) error {
 func sessionLeaseHeldLocally(path string) bool {
 	_, ok := sessionLeaseOwners.Load(canonicalSessionSavePath(path))
 	return ok
+}
+
+// sessionLockSidecarFits reports whether basePath's .lock sidecar name stays
+// within the filesystem's per-component limit; past it, no process can hold
+// (or ever have held) the file lock, because the lock file cannot be created.
+func sessionLockSidecarFits(basePath string) bool {
+	return len(filepath.Base(basePath))+len(".lock") <= nameMaxBytes
+}
+
+// sessionLeaseSidecarFits is the lease-file analogue of sessionLockSidecarFits.
+func sessionLeaseSidecarFits(basePath string) bool {
+	return len(filepath.Base(basePath))+len(".lease.lock") <= nameMaxBytes
+}
+
+// reconcileOverlongSessionFilenames renames transcripts whose basenames grew
+// past maxSessionBasenameBytes — the leftover shape of the pre-bounded
+// recovery cascade (#5923), where lock and lease sidecars could no longer be
+// created and the session became unsaveable. The conversation bytes are kept
+// verbatim under a bounded name derived the same way new recovery branches
+// are named; branch meta moves along with its ID rewritten, and sessions
+// pointing at the old ID are re-parented so lineage survives the rename.
+func reconcileOverlongSessionFilenames(dir string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return err
+	}
+	var errs []error
+	renamed := map[string]string{} // old branch ID -> new branch ID
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, guardianSidecarSuffix) {
+			continue
+		}
+		if len(name) <= maxSessionBasenameBytes {
+			continue
+		}
+		oldPath := filepath.Join(dir, name)
+		if IsCleanupPending(oldPath) {
+			// Being deleted; renaming would orphan the cleanup marker.
+			continue
+		}
+		newID, err := renameOverlongSession(oldPath)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", oldPath, err))
+			continue
+		}
+		if newID != "" {
+			renamed[BranchID(oldPath)] = newID
+		}
+	}
+	if len(renamed) > 0 {
+		if err := reparentSessionBranches(dir, renamed); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// renameOverlongSession moves one overlong transcript to its bounded name and
+// migrates the sidecars that carry user state. It returns the new branch ID,
+// or "" when the session was skipped because a runtime may still own it.
+func renameOverlongSession(oldPath string) (string, error) {
+	oldID := BranchID(oldPath)
+	newID := recoveryParentStem(oldID)
+	if newID == oldID {
+		return "", nil
+	}
+	newPath := filepath.Join(filepath.Dir(oldPath), newID+".jsonl")
+	if _, err := os.Stat(newPath); err == nil {
+		return "", fmt.Errorf("rename target %s already exists", filepath.Base(newPath))
+	} else if !os.IsNotExist(err) {
+		return "", err
+	}
+	unlockOld := lockSessionSavePath(oldPath)
+	defer unlockOld()
+	unlockNew := lockSessionSavePath(newPath)
+	defer unlockNew()
+	if sessionLeaseHeldLocally(oldPath) {
+		return "", nil
+	}
+	// Names past the sidecar limit cannot have lease or lock holders in any
+	// process — the holder files themselves are uncreatable — so probing them
+	// would only manufacture ENAMETOOLONG errors and wrongly skip the exact
+	// sessions this pass exists to repair.
+	if sessionLeaseSidecarFits(oldPath) && SessionLeaseHeldByOtherRuntime(oldPath) {
+		return "", nil
+	}
+	var unlockFile func()
+	if sessionLockSidecarFits(oldPath) {
+		unlock, err := tryLockSessionFile(oldPath)
+		if err != nil {
+			if errors.Is(err, errSessionFileLockHeld) {
+				return "", nil
+			}
+			return "", err
+		}
+		unlockFile = unlock
+	}
+	renameErr := func() error {
+		if err := os.Rename(oldPath, newPath); err != nil {
+			return err
+		}
+		return migrateSessionSidecars(oldPath, newPath, newID)
+	}()
+	// Retire the old disposable sidecars while the file lock is still held,
+	// mirroring removeStaleSessionLockSidecar's unlink-under-lock ordering.
+	if sessionLockSidecarFits(oldPath) {
+		if err := os.Remove(oldPath + ".lock"); err != nil && !os.IsNotExist(err) && renameErr == nil {
+			renameErr = err
+		}
+	}
+	if sessionLeaseSidecarFits(oldPath) {
+		for _, stale := range []string{oldPath + ".lease.lock", oldPath + ".lease.json"} {
+			if err := os.Remove(stale); err != nil && !os.IsNotExist(err) && renameErr == nil {
+				renameErr = err
+			}
+		}
+	}
+	if unlockFile != nil {
+		unlockFile()
+	}
+	if renameErr != nil {
+		return "", renameErr
+	}
+	return newID, nil
+}
+
+// migrateSessionSidecars moves the user-state sidecars of a renamed session:
+// branch meta (with its ID rewritten to match the new filename), goal state,
+// and the checkpoint/job directories. Lock and lease files are disposable and
+// are removed by the caller instead.
+func migrateSessionSidecars(oldPath, newPath, newID string) error {
+	var errs []error
+	if len(filepath.Base(oldPath))+len(".meta") <= nameMaxBytes {
+		if meta, ok, err := LoadBranchMeta(oldPath); err != nil {
+			errs = append(errs, err)
+		} else if ok {
+			meta.ID = newID
+			if err := SaveBranchMetaPreserveUpdated(newPath, meta); err != nil {
+				errs = append(errs, err)
+			} else if err := os.Remove(BranchMetaPath(oldPath)); err != nil && !os.IsNotExist(err) {
+				errs = append(errs, err)
+			}
+		}
+	}
+	for _, pair := range [][2]string{
+		{store.SessionGoalState(oldPath), store.SessionGoalState(newPath)},
+		{store.SessionCheckpointDir(oldPath), store.SessionCheckpointDir(newPath)},
+		{store.SessionJobsDir(oldPath), store.SessionJobsDir(newPath)},
+	} {
+		// A source name past the filesystem limit cannot exist; renaming it
+		// would just manufacture ENAMETOOLONG instead of a clean not-exist.
+		if len(filepath.Base(pair[0])) > nameMaxBytes {
+			continue
+		}
+		if err := os.Rename(pair[0], pair[1]); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// reparentSessionBranches rewrites ParentID references from renamed branch IDs
+// to their bounded replacements so the branch tree stays connected.
+func reparentSessionBranches(dir string, renamed map[string]string) error {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, e := range entries {
+		name := e.Name()
+		if e.IsDir() || !strings.HasSuffix(name, ".jsonl") || strings.HasSuffix(name, guardianSidecarSuffix) {
+			continue
+		}
+		if len(name)+len(".meta") > nameMaxBytes {
+			continue
+		}
+		path := filepath.Join(dir, name)
+		unlock := lockSessionSavePath(path)
+		meta, ok, err := LoadBranchMeta(path)
+		if err == nil && ok {
+			if newParent, hit := renamed[meta.ParentID]; hit && newParent != meta.ParentID {
+				meta.ParentID = newParent
+				err = SaveBranchMetaPreserveUpdated(path, meta)
+			}
+		}
+		unlock()
+		if err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", path, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // ListSessionOrder returns every *.jsonl session under dir in the same
