@@ -269,7 +269,9 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          args=(--title "Reasonix Desktop ${{ steps.ver.outputs.version }}" --generate-notes)
+          # Repository-wide "latest" is reserved for the CLI line (see header);
+          # without this a desktop release published after the CLI one steals it.
+          args=(--title "Reasonix Desktop ${{ steps.ver.outputs.version }}" --generate-notes --latest=false)
           [ "${{ steps.ver.outputs.prerelease }}" = "true" ] && args+=(--prerelease)
           gh release create "${{ steps.ver.outputs.tag }}" dist/* "${args[@]}"
 
