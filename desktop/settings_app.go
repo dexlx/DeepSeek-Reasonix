@@ -1532,8 +1532,8 @@ func (a *App) rebuildSettingLocked(setting string) error {
 		if prevPath == "" {
 			prevPath = oldCtrl.SessionPath()
 		}
-		if err := tab.ensureSessionLease(prevPath); err != nil {
-			return userFacingSessionLeaseError(setting, err)
+		if err := a.ensureTabSessionLeaseForRebuild(tab, prevPath, setting); err != nil {
+			return err
 		}
 		if err := a.snapshotTabForAction(tab, "rebuilding settings"); err != nil {
 			return err
@@ -1583,9 +1583,9 @@ func (a *App) rebuildSettingLocked(setting string) error {
 		applyTabToolApprovalModeToController(ctrl, mode)
 	}
 	path := agent.ContinueSessionPath(prevPath, ctrl.SessionDir(), ctrl.Label())
-	if err := tab.ensureSessionLease(path); err != nil {
+	if err := a.ensureTabSessionLeaseForRebuild(tab, path, setting); err != nil {
 		ctrl.Close()
-		return userFacingSessionLeaseError(setting, err)
+		return err
 	}
 	resumeWithFreshSystemPrompt(ctrl, carried, path)
 	if oldCtrl != nil {

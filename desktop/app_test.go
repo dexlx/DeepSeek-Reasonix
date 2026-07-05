@@ -3829,6 +3829,136 @@ func TestSetTokenModeRebuildsController(t *testing.T) {
 	}
 }
 
+func TestSetTokenModeReusesCurrentSessionLease(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	session := agent.NewSession("old system prompt")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "leased-token-mode-switch.jsonl")
+	oldCtrl := control.New(control.Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "old", Sink: event.Discard})
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+	t.Cleanup(func() {
+		if tab.Ctrl != nil {
+			tab.Ctrl.Close()
+		}
+		tab.releaseSessionLease()
+	})
+
+	if err := tab.ensureSessionLease(path); err != nil {
+		t.Fatalf("ensureSessionLease: %v", err)
+	}
+	if err := app.SetTokenModeForTab(tab.ID, "economy"); err != nil {
+		t.Fatalf("SetTokenModeForTab: %v", err)
+	}
+	if tab.Ctrl == nil || tab.Ctrl == oldCtrl {
+		t.Fatalf("tab controller was not rebuilt")
+	}
+	if got := currentTabTokenMode(tab); got != "economy" {
+		t.Fatalf("token mode = %q, want economy", got)
+	}
+	if tab.sessionLease == nil || sessionRuntimeKey(tab.sessionLease.Path()) != sessionRuntimeKey(path) {
+		t.Fatalf("session lease path = %q, want %q", tab.currentSessionPath(), path)
+	}
+	history := tab.Ctrl.History()
+	if len(history) < 2 || history[1].Role != provider.RoleUser || history[1].Content != "hello" {
+		t.Fatalf("carried history = %+v, want original user message", history)
+	}
+}
+
+func TestSetTokenModeLeaseHeldKeepsCurrentController(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "OLD_MODEL_KEY", "sk-test")
+
+	cfg := config.Default()
+	cfg.DefaultModel = "old/old-model"
+	cfg.Desktop.ProviderAccess = []string{"old"}
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "old", Kind: "openai", BaseURL: "https://example.invalid/v1", Model: "old-model", APIKeyEnv: "OLD_MODEL_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "externally-leased-token-mode-switch.jsonl")
+	if err := os.WriteFile(path, nil, 0o644); err != nil {
+		t.Fatalf("write placeholder session: %v", err)
+	}
+	externalLease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("TryAcquireSessionLease: %v", err)
+	}
+	defer externalLease.Release()
+
+	session := agent.NewSession("old system prompt")
+	session.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	exec := agent.New(nil, nil, session, agent.Options{}, event.Discard)
+	oldCtrl := control.New(control.Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "old", Sink: event.Discard})
+	defer oldCtrl.Close()
+
+	app := NewApp()
+	app.ctx = context.Background()
+	tab := &WorkspaceTab{
+		ID:          "tab_a",
+		Scope:       "global",
+		Ready:       true,
+		model:       "old/old-model",
+		Ctrl:        oldCtrl,
+		sink:        &tabEventSink{tabID: "tab_a", app: app},
+		disabledMCP: map[string]ServerView{},
+	}
+	app.tabs = map[string]*WorkspaceTab{tab.ID: tab}
+	app.tabOrder = []string{tab.ID}
+	app.activeTabID = tab.ID
+
+	err = app.SetTokenModeForTab(tab.ID, "economy")
+	if !errors.Is(err, agent.ErrSessionLeaseHeld) {
+		t.Fatalf("SetTokenModeForTab err = %v, want ErrSessionLeaseHeld", err)
+	}
+	if strings.Contains(err.Error(), path) || strings.Contains(err.Error(), "held by") {
+		t.Fatalf("SetTokenModeForTab surfaced raw lease details: %v", err)
+	}
+	if tab.Ctrl != oldCtrl {
+		t.Fatalf("tab controller changed after failed switch")
+	}
+	if got := currentTabTokenMode(tab); got != "full" {
+		t.Fatalf("token mode = %q, want full", got)
+	}
+}
+
 func TestSetTokenModeMigratesStaleOfficialDeepSeekTabModel(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
@@ -4688,6 +4818,49 @@ func TestDeleteSessionValidTrashRemovesEmptyLiveStub(t *testing.T) {
 	}
 	if _, err := os.Stat(trashPath); err != nil {
 		t.Fatalf("existing trash should remain authoritative: %v", err)
+	}
+}
+
+func TestDeleteSessionValidTrashRemovesDuplicateLiveSession(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	dir := config.SessionDir()
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir session dir: %v", err)
+	}
+	path := filepath.Join(dir, "duplicate-recovery.jsonl")
+	content := []byte(`{"role":"user","content":"same recovery"}` + "\n")
+	if err := os.WriteFile(path, content, 0o644); err != nil {
+		t.Fatalf("write live session: %v", err)
+	}
+	trashPath := filepath.Join(dir, sessionTrashDir, filepath.Base(path), filepath.Base(path))
+	if err := os.MkdirAll(filepath.Dir(trashPath), 0o755); err != nil {
+		t.Fatalf("create trash dir: %v", err)
+	}
+	if err := os.WriteFile(trashPath, content, 0o644); err != nil {
+		t.Fatalf("write trash session: %v", err)
+	}
+
+	activePath := filepath.Join(dir, "active.jsonl")
+	if err := os.WriteFile(activePath, []byte(`{"role":"user","content":"active"}`+"\n"), 0o644); err != nil {
+		t.Fatalf("write active session: %v", err)
+	}
+	activeCtrl := control.New(control.Options{SessionDir: dir, SessionPath: activePath, Label: "active"})
+	defer activeCtrl.Close()
+	app := &App{
+		tabs:        map[string]*WorkspaceTab{"active": {ID: "active", Scope: "global", Ctrl: activeCtrl, Ready: true}},
+		activeTabID: "active",
+		tabOrder:    []string{"active"},
+	}
+
+	if err := app.DeleteSession(filepath.Base(path)); err != nil {
+		t.Fatalf("DeleteSession should remove duplicate live session: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("duplicate live session should be removed, stat err = %v", err)
+	}
+	if got, err := os.ReadFile(trashPath); err != nil || string(got) != string(content) {
+		t.Fatalf("existing trash should remain authoritative, got %q err=%v", string(got), err)
 	}
 }
 
