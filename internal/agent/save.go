@@ -81,6 +81,11 @@ type snapshotWriteDecision struct {
 	// a lost suffix, or nothing decodable): the safe write shape is a full
 	// rewrite that also compacts the log back to a healthy single event.
 	repairLog bool
+	// ledgerStale is set when the on-disk transcript already matches the
+	// snapshot but the meta ledger still describes older content — the
+	// aftermath of a save whose bytes landed and whose revision record then
+	// failed. The up-to-date path must heal the ledger instead of skipping it.
+	ledgerStale bool
 }
 
 type SessionSnapshotConflictKind string
@@ -215,6 +220,27 @@ func (s *Session) save(path string, mode sessionSaveMode) error {
 			// other runtime resumed on this file and turning their next
 			// legitimate save into a stale-runtime conflict. Skip the write and
 			// adopt the current on-disk revision as this session's baseline.
+			if decision.ledgerStale {
+				// ...unless the ledger never learned about this transcript: a
+				// prior save landed its bytes and then failed to record the
+				// revision. Same-content retries are exactly the "later save"
+				// that failure deferred to, and skipping here would strand the
+				// ledger on the old digest forever. Record now, reproducing
+				// the state the interrupted save would have left.
+				revision, err := recordSessionContentRevision(path, digest, decision.revision)
+				if err != nil {
+					return err
+				}
+				if probe.native {
+					if err := writeSessionEventIndex(path, msgs, digest, revision); err != nil {
+						// See the append path below: index loss must not fail a
+						// save whose transcript and revision already landed.
+						slog.Warn("session: keeping save after event index write failure", "path", path, "err", err)
+					}
+				}
+				s.markPersisted(path, digest, version, revision)
+				return nil
+			}
 			s.markPersisted(path, digest, version, decision.revision)
 			return nil
 		}
@@ -361,7 +387,7 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		}
 		return snapshotWriteDecision{}, err
 	}
-	currentRevision, _, err := sessionContentRevision(path)
+	currentRevision, currentLedgerDigest, err := sessionContentRevision(path)
 	if err != nil {
 		return snapshotWriteDecision{}, err
 	}
@@ -389,6 +415,15 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 			revision:  currentRevision,
 			upToDate:  contentUnchanged && !current.normalizedDirty && !current.eventLogDamaged,
 			repairLog: current.eventLogDamaged,
+		}
+		// A ledger digest that describes different content than the transcript
+		// on disk is the aftermath of a save whose bytes landed and whose
+		// revision record then failed (crash or fail-closed record between the
+		// two writes). Only a non-empty mismatch counts: a missing sidecar or
+		// a legacy one without a digest is a legitimate state, and stamping it
+		// here would bump revisions other runtimes still hold as baselines.
+		if decision.upToDate && currentLedgerDigest != "" && currentLedgerDigest != digestString(nextDigest) {
+			decision.ledgerStale = true
 		}
 		if exactAppend && !contentUnchanged && len(existing) < len(next) && !current.eventLogDamaged {
 			decision.appendOnly = true
@@ -695,8 +730,10 @@ func recordSessionContentRevision(path string, digest [sha256.Size]byte, baseRev
 	meta, ok, err := loadBranchMetaRetry(path)
 	if err != nil {
 		// Fail the save instead of rebuilding the ledger from a bad read: the
-		// transcript bytes already landed, so a later save (autosave retry)
-		// can bump the revision once the sidecar reads cleanly again.
+		// transcript bytes already landed, so a later save can record the
+		// revision once the sidecar reads cleanly again — a content-bearing
+		// save lands here again, and a same-content retry heals through the
+		// up-to-date ledgerStale path in save().
 		return 0, err
 	}
 	if !ok {

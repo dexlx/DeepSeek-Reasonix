@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -486,6 +487,166 @@ func TestConcurrentSnapshotSaversNeverConflict(t *testing.T) {
 	}
 	if got, want := len(loaded.Messages), adds+2; got != want {
 		t.Fatalf("final message count = %d, want %d", got, want)
+	}
+	assertNoRecoveryBranches(t, path)
+}
+
+// A save that lands its transcript bytes and then fails to record the
+// revision (fail-closed record, or a crash between the two writes) leaves the
+// ledger describing older content. The next save of the same snapshot takes
+// the up-to-date path and must heal the ledger — record the revision and
+// digest the interrupted save deferred — instead of skipping it forever.
+func TestSameContentSaveHealsStaleLedgerDigest(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	metaPath := BranchMetaPath(path)
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	staleMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read base meta: %v", err)
+	}
+
+	// Land new content, then rewind the sidecar to the pre-append ledger:
+	// the exact on-disk aftermath of an append whose revision record failed.
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+	if err := os.WriteFile(metaPath, staleMeta, 0o644); err != nil {
+		t.Fatalf("rewind meta: %v", err)
+	}
+
+	// Any runtime resuming this file now pairs the landed transcript with the
+	// stale revision — the post-crash shape.
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession on stale ledger: %v", err)
+	}
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("same-content SaveSnapshot: %v", err)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta after heal ok=%v err=%v", ok, err)
+	}
+	if meta.Revision != 2 {
+		t.Fatalf("healed revision = %d, want 2", meta.Revision)
+	}
+	digest, err := digestSessionMessages(loaded.Snapshot())
+	if err != nil {
+		t.Fatalf("digest current messages: %v", err)
+	}
+	if meta.ContentDigest != digestString(digest) {
+		t.Fatalf("healed digest = %s, want %s", meta.ContentDigest, digestString(digest))
+	}
+	assertNoRecoveryBranches(t, path)
+
+	// The healed baseline keeps working: the next append saves cleanly.
+	loaded.Add(provider.Message{Role: provider.RoleUser, Content: "two"})
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("append after heal: %v", err)
+	}
+	after, _, err := LoadBranchMeta(path)
+	if err != nil {
+		t.Fatalf("LoadBranchMeta after append: %v", err)
+	}
+	if after.Revision != 3 {
+		t.Fatalf("revision after post-heal append = %d, want 3", after.Revision)
+	}
+	assertNoRecoveryBranches(t, path)
+}
+
+// The surviving in-process saver — whose baseline never advanced because the
+// failed save returned before markPersisted — heals through the same
+// up-to-date path on its autosave retry of the identical snapshot.
+func TestSameContentRetryHealsLedgerForSurvivingSaver(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	metaPath := BranchMetaPath(path)
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	staleMeta, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read base meta: %v", err)
+	}
+	baseline := s.persistState(path)
+
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot append: %v", err)
+	}
+	// Rewind the sidecar and the in-memory baseline to the mid-save failure
+	// state: bytes landed, record failed, markPersisted never ran.
+	if err := os.WriteFile(metaPath, staleMeta, 0o644); err != nil {
+		t.Fatalf("rewind meta: %v", err)
+	}
+	s.setPersistedBaseline(path, baseline.digest, baseline.version, baseline.revision, true)
+
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("autosave retry: %v", err)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta after heal ok=%v err=%v", ok, err)
+	}
+	if meta.Revision != 2 {
+		t.Fatalf("healed revision = %d, want 2", meta.Revision)
+	}
+	assertNoRecoveryBranches(t, path)
+}
+
+// A legacy sidecar that predates content digests is not a stale ledger: the
+// up-to-date path must leave it untouched rather than bump a revision other
+// runtimes still hold as their baseline.
+func TestUpToDateSaveLeavesDigestlessLegacyMetaAlone(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	metaPath := BranchMetaPath(path)
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	// Strip the digest by editing the raw sidecar: the save helpers back-fill
+	// an empty digest from the existing meta, exactly like real legacy files
+	// acquired one only through a content-bearing save.
+	raw, err := os.ReadFile(metaPath)
+	if err != nil {
+		t.Fatalf("read meta: %v", err)
+	}
+	var fields map[string]any
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("decode meta: %v", err)
+	}
+	delete(fields, "content_digest")
+	stripped, err := json.Marshal(fields)
+	if err != nil {
+		t.Fatalf("encode meta: %v", err)
+	}
+	if err := os.WriteFile(metaPath, stripped, 0o644); err != nil {
+		t.Fatalf("write legacy meta: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession legacy meta: %v", err)
+	}
+	if err := loaded.SaveSnapshot(path); err != nil {
+		t.Fatalf("same-content SaveSnapshot: %v", err)
+	}
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	if meta.Revision != 1 {
+		t.Fatalf("legacy revision = %d, want 1 (no gratuitous bump)", meta.Revision)
+	}
+	if meta.ContentDigest != "" {
+		t.Fatalf("legacy digest = %q, want empty (untouched)", meta.ContentDigest)
 	}
 	assertNoRecoveryBranches(t, path)
 }
