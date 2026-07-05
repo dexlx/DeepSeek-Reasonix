@@ -155,7 +155,7 @@ func TestBashSandboxConfinement(t *testing.T) {
 	var timeout []time.Duration
 	if runtime.GOOS == "windows" {
 		wait := 20 * time.Second
-		t.Setenv("REASONIX_WINDOWS_SANDBOX_WAIT_MS", fmt.Sprint(wait.Milliseconds()))
+		t.Setenv("WINDOWS_SANDBOX_WAIT_MS", fmt.Sprint(wait.Milliseconds()))
 		timeout = []time.Duration{wait}
 	}
 	spec := sandbox.Spec{Mode: "enforce", WriteRoots: []string{work}, Network: true}
