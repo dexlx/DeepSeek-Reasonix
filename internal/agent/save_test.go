@@ -490,6 +490,130 @@ func TestSaveSnapshotAllowsExactAppendFromStaleRevisionBaseline(t *testing.T) {
 	}
 }
 
+func TestSaveSnapshotAllowsCompatibleSystemAppendFromStaleRevisionBaseline(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys v1")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	staleBaseline := s.persistState(path)
+
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot prefix append: %v", err)
+	}
+	prefixMeta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta prefix ok=%v err=%v", ok, err)
+	}
+
+	// A resume swapped the system prompt, then the turn appended a message —
+	// while the persistence baseline still points at the first save.
+	msgs := s.Snapshot()
+	msgs[0] = provider.Message{Role: provider.RoleSystem, Content: "sys v2"}
+	msgs = append(msgs, provider.Message{Role: provider.RoleUser, Content: "two"})
+	s.Replace(msgs)
+	s.setPersistedBaseline(path, staleBaseline.digest, staleBaseline.version, staleBaseline.revision, true)
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot compatible-system append from stale baseline: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession appended: %v", err)
+	}
+	if got := loaded.Messages[0].Content; got != "sys v2" {
+		t.Fatalf("system after compatible append = %q, want sys v2", got)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "two" {
+		t.Fatalf("tail after compatible append = %q, want two", got)
+	}
+	advancedMeta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta advanced ok=%v err=%v", ok, err)
+	}
+	if advancedMeta.Revision != prefixMeta.Revision+1 {
+		t.Fatalf("revision after compatible append = %d, want %d", advancedMeta.Revision, prefixMeta.Revision+1)
+	}
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after compatible append = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestSaveSnapshotRefusesStaleBaselineAppendOverRewoundTranscript(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot extend: %v", err)
+	}
+
+	// Another runtime rewinds the transcript below this session's baseline
+	// (e.g. a cancelled turn truncated the partial assistant reply).
+	other, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession other: %v", err)
+	}
+	other.Replace(other.Snapshot()[:2])
+	if err := other.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite rewind: %v", err)
+	}
+
+	// Appending from the stale baseline would resurrect the rewound suffix.
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "two"})
+	if err := s.SaveSnapshot(path); !errors.Is(err, ErrSessionSnapshotConflict) {
+		t.Fatalf("SaveSnapshot over rewound transcript err = %v, want ErrSessionSnapshotConflict", err)
+	}
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession after refused append: %v", err)
+	}
+	if got := len(loaded.Messages); got != 2 {
+		t.Fatalf("messages after refused append = %d, want rewound 2", got)
+	}
+}
+
+func TestSaveRewriteAllowsOwnedRewriteAfterLedgerReset(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "partial turn"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("SaveSnapshot base: %v", err)
+	}
+	// The meta sidecar (revision ledger) is lost — e.g. swept by a cleanup
+	// that deleted session-adjacent files. The transcript itself is intact.
+	if err := os.Remove(BranchMetaPath(path)); err != nil {
+		t.Fatalf("remove sidecar: %v", err)
+	}
+
+	// A cancelled turn strips the partial reply and flushes via SaveRewrite.
+	msgs := s.Snapshot()
+	s.Replace(msgs[:len(msgs)-1])
+	if err := s.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite after ledger reset: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession truncated: %v", err)
+	}
+	if got := len(loaded.Messages); got != 2 {
+		t.Fatalf("messages after owned rewrite = %d, want 2", got)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "first" {
+		t.Fatalf("tail after owned rewrite = %q, want first", got)
+	}
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after owned rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
 func TestSaveSnapshotStillPersistsNormalizedRepair(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	mal := NewSession("sys")
