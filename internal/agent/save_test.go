@@ -697,7 +697,7 @@ func TestSaveSnapshotRejectsStalePrefixAfterSystemPromptRefresh(t *testing.T) {
 	}
 }
 
-func TestSaveRewriteRejectsRevisionCASConflict(t *testing.T) {
+func TestSaveRewriteAllowsRewriteOverSameContentForeignStamp(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "session.jsonl")
 	base := NewSession("sys")
 	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
@@ -710,6 +710,9 @@ func TestSaveRewriteRejectsRevisionCASConflict(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession stale: %v", err)
 	}
+	// Another runtime healed the ledger over identical content: the revision
+	// advanced under a foreign writer id, but the recorded digest still
+	// describes the exact bytes this session loaded and owns.
 	meta, ok, err := LoadBranchMeta(path)
 	if err != nil || !ok {
 		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
@@ -724,9 +727,63 @@ func TestSaveRewriteRejectsRevisionCASConflict(t *testing.T) {
 		{Role: provider.RoleSystem, Content: "sys"},
 		{Role: provider.RoleUser, Content: "summarized first"},
 	})
+	if err := stale.SaveRewrite(path); err != nil {
+		t.Fatalf("SaveRewrite over same-content stamp: %v", err)
+	}
+
+	loaded, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "summarized first" {
+		t.Fatalf("tail after owned rewrite = %q, want summarized first", got)
+	}
+	advanced, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta advanced ok=%v err=%v", ok, err)
+	}
+	if advanced.Revision != meta.Revision+1 {
+		t.Fatalf("revision after rewrite = %d, want %d", advanced.Revision, meta.Revision+1)
+	}
+	if matches, err := filepath.Glob(filepath.Join(filepath.Dir(path), "*-recovery-*.jsonl")); err != nil || len(matches) != 0 {
+		t.Fatalf("recovery branches after owned rewrite = %v err=%v, want none", matches, err)
+	}
+}
+
+func TestSaveRewriteRejectsForeignStampForUnattributedBytes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.jsonl")
+	base := NewSession("sys")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	base.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("Save base: %v", err)
+	}
+
+	stale, err := LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession stale: %v", err)
+	}
+	// A foreign stamp whose digest disagrees with the on-disk transcript is
+	// the aftermath of a save whose bytes and record split — the transcript
+	// cannot be attributed, so the rewrite must fall to the conflict path.
+	meta, ok, err := LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	meta.Revision++
+	meta.WriterID = "other-writer"
+	meta.ContentDigest = "0000000000000000000000000000000000000000000000000000000000000000"
+	if err := SaveBranchMetaPreserveUpdated(path, meta); err != nil {
+		t.Fatalf("stamp foreign digest: %v", err)
+	}
+
+	stale.Replace([]provider.Message{
+		{Role: provider.RoleSystem, Content: "sys"},
+		{Role: provider.RoleUser, Content: "summarized first"},
+	})
 	err = stale.SaveRewrite(path)
 	if !errors.Is(err, ErrSessionSnapshotConflict) {
-		t.Fatalf("SaveRewrite revision conflict err = %v, want ErrSessionSnapshotConflict", err)
+		t.Fatalf("SaveRewrite unattributed stamp err = %v, want ErrSessionSnapshotConflict", err)
 	}
 	var conflict *SessionSnapshotConflictError
 	if !errors.As(err, &conflict) || conflict.Kind != SessionSnapshotConflictDiverged {

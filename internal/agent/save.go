@@ -440,7 +440,7 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		}
 		return decision, nil
 	}
-	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, nextVersion) {
+	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion) {
 		return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
@@ -677,7 +677,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, existingRevision int64, nextVersion uint64) bool {
+func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, existingRevision int64, existingLedgerDigest string, nextVersion uint64) bool {
 	state := s.persistState(path)
 	if !state.ok || state.version > nextVersion || !bytes.Equal(existingDigest[:], state.digest[:]) {
 		return false
@@ -689,11 +689,21 @@ func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]by
 	// A disk ledger with no recorded revision is the mirror case: recorded
 	// revisions start at 1, so revision 0 means the sidecar was deleted or
 	// rebuilt by a listing-only writer after this session's save. An absent
-	// claim cannot revoke the ownership the digest+version match proves; a
-	// foreign claim (recorded revision that differs from the baseline) still
-	// does, keeping stale controllers from force-rewinding a ledger another
-	// runtime has since stamped.
-	return !state.revisionKnown || existingRevision == 0 || state.revision == existingRevision
+	// claim cannot revoke the ownership the digest+version match proves.
+	if !state.revisionKnown || existingRevision == 0 || state.revision == existingRevision {
+		return true
+	}
+	// A foreign revision stamp whose recorded digest still describes these
+	// exact bytes (a same-content heal or no-op record by another runtime)
+	// vouches for no content of its own: the transcript is byte-for-byte what
+	// this session last persisted, so rewriting it destroys nothing of
+	// theirs — at worst the conflict moves to the stamper's next divergent
+	// save, where its in-memory history forks a recovery branch as usual.
+	// A stamp that disagrees with the on-disk transcript (or a legacy stamp
+	// with no digest) keeps revoking ownership: that is the aftermath of a
+	// save whose bytes and record split, the bytes cannot be attributed, and
+	// only the conservative conflict path preserves both sides.
+	return existingLedgerDigest == digestString(existingDigest)
 }
 
 func (s *Session) persistState(path string) sessionPersistState {
