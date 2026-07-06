@@ -141,8 +141,8 @@ const (
 	windowsBashSandboxDefaultConfigVersion = 4
 )
 
-// ApplyUserConfigUpgradesOnStartup applies one-time desktop startup migrations.
-// It intentionally runs from the desktop app startup path, not every config
+// ApplyUserConfigUpgradesOnStartup applies one-time startup migrations. It
+// intentionally runs from the desktop and CLI startup paths, not every config
 // Load(), so user edits made after the upgrade are preserved.
 func ApplyUserConfigUpgradesOnStartup(path string) (bool, error) {
 	path = strings.TrimSpace(path)
@@ -193,15 +193,14 @@ func shouldMarkWindowsBashSandboxDefaultUpgrade(fromVersion int) bool {
 	return runtimeGOOS == "windows" && fromVersion < windowsBashSandboxDefaultConfigVersion
 }
 
-func resetWindowsBashSandboxDefaultOnUpgrade(c *Config) bool {
+func resetWindowsBashSandboxDefaultOnUpgrade(c *Config) {
 	if c == nil {
-		return false
+		return
 	}
 	if strings.TrimSpace(c.Sandbox.Bash) != "enforce" {
-		return false
+		return
 	}
 	c.Sandbox.Bash = "off"
-	return true
 }
 
 func resetOfficialProviderPricingDefaults(c *Config) {
