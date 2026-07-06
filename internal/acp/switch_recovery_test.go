@@ -2,6 +2,9 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
+	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -196,5 +199,151 @@ func TestACPPersistAfterTurnMovesBookkeepingToRecoveryPath(t *testing.T) {
 	}
 	if primary := primaryRecoveryFiles(t, dir); len(primary) != 1 || primary[0] != recoveryPath {
 		t.Fatalf("recovery branches after second autosave = %v, want only %q", primary, recoveryPath)
+	}
+}
+
+// recoverACPSessionAndRestart drives an autosave recovery for session id in
+// dir, then simulates a process restart: the live session's lease is released,
+// its controller closed, and a fresh service (empty session registry, same
+// session dir) is returned alongside the original and recovery paths.
+func recoverACPSessionAndRestart(t *testing.T, dir, id string) (originalPath, recoveryPath string, restarted *service) {
+	t.Helper()
+	originalPath = transcriptPath(dir, id)
+	stale := divergedACPSession(t, originalPath)
+
+	svc := &service{
+		factory:  &configurableFactory{dir: dir},
+		sessions: map[string]*acpSession{},
+	}
+	sess := &acpSession{
+		id:         id,
+		sink:       newUpdateSink(&fakeNotifier{}, id),
+		cwd:        dir,
+		model:      "fast",
+		title:      "recovered title",
+		transcript: originalPath,
+	}
+	lease, err := agent.TryAcquireSessionLease(originalPath)
+	if err != nil {
+		t.Fatalf("acquire original session lease: %v", err)
+	}
+	sess.lease = lease
+	svc.sessions[id] = sess
+	ctrl := control.New(control.Options{
+		Executor:           agent.New(nil, nil, stale, agent.Options{}, event.Discard),
+		SessionDir:         dir,
+		SessionPath:        originalPath,
+		Label:              "fast",
+		OnSessionRecovered: svc.sessionRecoveredHandler(id),
+	})
+	sess.ctrl = ctrl
+
+	sess.persistAfterTurn("hello")
+	recoveryPath = ctrl.SessionPath()
+	assertACPSessionOnRecoveryPath(t, sess, originalPath, recoveryPath)
+
+	sess.releaseSessionLease()
+	ctrl.Close()
+	restarted = &service{
+		conn:     NewConn(strings.NewReader(""), io.Discard),
+		factory:  &configurableFactory{dir: dir},
+		sessions: map[string]*acpSession{},
+	}
+	return originalPath, recoveryPath, restarted
+}
+
+// TestACPLoadAfterRestartFollowsRecoveryTranscript covers the restart half of
+// the recovery move: session/load and session/resume resolve the session id to
+// the transcript the session actually lives in. Without the id-keyed redirect,
+// a restart reopened the pre-recovery file and the user's recovered work
+// silently vanished from ACP's view.
+func TestACPLoadAfterRestartFollowsRecoveryTranscript(t *testing.T) {
+	dir := t.TempDir()
+	id := "sess-restart"
+	originalPath, recoveryPath, svc := recoverACPSessionAndRestart(t, dir, id)
+
+	if _, err := svc.openExistingSession(context.Background(), "session/load", id, dir, nil, false); err != nil {
+		t.Fatalf("openExistingSession after restart: %v", err)
+	}
+	loaded := svc.session(id)
+	if loaded == nil {
+		t.Fatal("session not registered after load")
+	}
+	t.Cleanup(func() {
+		loaded.releaseSessionLease()
+		loaded.ctrl.Close()
+	})
+	assertACPSessionOnRecoveryPath(t, loaded, originalPath, recoveryPath)
+	if got := loaded.ctrl.SessionPath(); got != recoveryPath {
+		t.Fatalf("loaded controller session path = %q, want recovery path %q", got, recoveryPath)
+	}
+	// The test factory's controller has no executor, so prove the content via
+	// the transcript ACP now points at: it must hold the recovered local line,
+	// not the pre-recovery disk line.
+	resumed, err := agent.LoadSession(loaded.transcript)
+	if err != nil {
+		t.Fatalf("load resolved transcript: %v", err)
+	}
+	msgs := resumed.Snapshot()
+	if len(msgs) == 0 {
+		t.Fatal("resolved transcript is empty")
+	}
+	if got := msgs[len(msgs)-1].Content; got != "local second" {
+		t.Fatalf("resolved transcript last message = %q, want recovered local transcript (%q)", got, "local second")
+	}
+}
+
+// TestACPDeleteAfterRestartRemovesRecoveryAndIDKeyedFiles: session/delete on a
+// non-live recovered session must remove both the recovery transcript (the
+// session's live file) and the id-keyed original, or the survivor resurfaces
+// in session/list as a ghost that can never be deleted by id.
+func TestACPDeleteAfterRestartRemovesRecoveryAndIDKeyedFiles(t *testing.T) {
+	dir := t.TempDir()
+	id := "sess-del"
+	originalPath, recoveryPath, svc := recoverACPSessionAndRestart(t, dir, id)
+
+	raw, err := json.Marshal(SessionDeleteParams{SessionID: id})
+	if err != nil {
+		t.Fatalf("marshal delete params: %v", err)
+	}
+	if _, err := svc.sessionDelete(context.Background(), raw); err != nil {
+		t.Fatalf("sessionDelete after restart: %v", err)
+	}
+	for _, path := range []string{originalPath, recoveryPath, acpMetaPath(originalPath), acpMetaPath(recoveryPath)} {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Fatalf("%s should be removed by session/delete, stat err = %v", path, err)
+		}
+	}
+	res, err := svc.sessionList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("sessionList after delete: %v", err)
+	}
+	if sessions := res.(SessionListResult).Sessions; len(sessions) != 0 {
+		t.Fatalf("session list after delete = %#v, want empty", sessions)
+	}
+}
+
+// TestACPSessionListAfterRecoveryShowsSingleActiveEntry: after a recovery the
+// id-keyed sidecar becomes a redirect, and session/list must present exactly
+// one entry for the id, backed by the active recovery transcript's metadata
+// (the live title), never the stale pre-recovery sidecar.
+func TestACPSessionListAfterRecoveryShowsSingleActiveEntry(t *testing.T) {
+	dir := t.TempDir()
+	id := "sess-list"
+	_, _, svc := recoverACPSessionAndRestart(t, dir, id)
+
+	res, err := svc.sessionList(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("sessionList after recovery: %v", err)
+	}
+	sessions := res.(SessionListResult).Sessions
+	if len(sessions) != 1 {
+		t.Fatalf("session list after recovery = %#v, want exactly one entry", sessions)
+	}
+	if sessions[0].SessionID != id {
+		t.Fatalf("session list entry id = %q, want %q", sessions[0].SessionID, id)
+	}
+	if sessions[0].Title != "recovered title" {
+		t.Fatalf("session list entry title = %q, want the active transcript's title %q", sessions[0].Title, "recovered title")
 	}
 }

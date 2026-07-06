@@ -350,6 +350,33 @@ func (s *service) sessionRecoveredHandler(id string) func(control.SessionRecover
 			old.Release()
 		}
 		_ = saveACPMeta(recoveryPath, meta)
+		// Leave a redirect on the id-keyed sidecar so restart-time lookups
+		// (session/load, session/resume, session/delete, loadMeta) resolve the
+		// id to the recovery file; without it the next process reopens the
+		// pre-recovery transcript. Always written against the id-keyed path,
+		// so resolution stays a single hop even for recovery-of-recovery.
+		if dir := s.sessionDir(); dir != "" {
+			if idPath := transcriptPath(dir, id); idPath != recoveryPath {
+				idMeta, _, err := loadACPMeta(idPath)
+				if err != nil {
+					slog.Warn("acp: load id-keyed meta for recovery redirect", "err", err)
+					idMeta = acpSessionMeta{}
+				}
+				if idMeta.SessionID == "" {
+					idMeta.SessionID = id
+				}
+				if idMeta.Cwd == "" {
+					idMeta.Cwd = meta.Cwd
+				}
+				if idMeta.CreatedAt.IsZero() {
+					idMeta.CreatedAt = meta.CreatedAt
+				}
+				idMeta.ActiveTranscript = filepath.Base(recoveryPath)
+				if err := saveACPMeta(idPath, idMeta); err != nil {
+					slog.Warn("acp: save recovery redirect", "err", err)
+				}
+			}
+		}
 		return nil
 	}
 }
@@ -549,7 +576,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 	var saved acpSessionMeta
 	persistedPath := ""
 	if dir := s.sessionDir(); dir != "" {
-		persistedPath = transcriptPath(dir, id)
+		persistedPath = resolveTranscriptPath(dir, id)
 		if agent.IsCleanupPending(persistedPath) {
 			return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
 		}
@@ -593,7 +620,7 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInternal, Message: method + ": persistence is disabled"}
 	}
-	path := transcriptPath(dir, id)
+	path := resolveTranscriptPath(dir, id)
 	if path != persistedPath && agent.IsCleanupPending(path) {
 		ctrl.Close()
 		return SessionConfigState{}, &RPCError{Code: ErrInvalidParams, Message: method + ": unknown session " + id}
@@ -652,6 +679,38 @@ func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam 
 // chat/run session files (those are addressed by a picker, not by id).
 func transcriptPath(dir, id string) string {
 	return filepath.Join(dir, id+".jsonl")
+}
+
+// resolveTranscriptPath returns the transcript file session id currently
+// lives in. That is the id-keyed path by default; after a snapshot recovery
+// moved the live session onto a recovery branch, the id-keyed sidecar carries
+// an ActiveTranscript redirect (written by sessionRecoveredHandler) that
+// load/resume/delete/meta lookups must follow, or a restart silently reopens
+// the pre-recovery transcript. The redirect is a basename, must stay inside
+// dir, and its target must exist and claim the same session id; anything else
+// falls back to the id-keyed path.
+func resolveTranscriptPath(dir, id string) string {
+	path := transcriptPath(dir, id)
+	meta, ok, err := loadACPMeta(path)
+	if err != nil || !ok {
+		return path
+	}
+	active := strings.TrimSpace(meta.ActiveTranscript)
+	if active == "" || active == filepath.Base(path) {
+		return path
+	}
+	if filepath.Base(active) != active {
+		return path
+	}
+	resolved := filepath.Join(dir, active)
+	if !sessionFileExists(resolved) {
+		return path
+	}
+	targetMeta, ok, err := loadACPMeta(resolved)
+	if err != nil || !ok || targetMeta.SessionID != id {
+		return path
+	}
+	return resolved
 }
 
 // sessionPrompt runs one turn. It flattens the prompt blocks to text and runs the
@@ -995,7 +1054,18 @@ func (s *service) sessionList(_ context.Context, raw json.RawMessage) (any, erro
 		if err != nil {
 			return nil, &RPCError{Code: ErrInternal, Message: "session/list: " + err.Error()}
 		}
+		// A recovered session has two sidecars claiming the same id: the
+		// active recovery transcript's own meta and the id-keyed redirect.
+		// Reduce to one representative per id before filtering, so the entry
+		// shown never carries the stale pre-recovery title/timestamps.
+		best := map[string]acpSessionMeta{}
 		for _, meta := range metas {
+			cur, ok := best[meta.SessionID]
+			if !ok || listMetaBeats(meta, cur) {
+				best[meta.SessionID] = meta
+			}
+		}
+		for _, meta := range best {
 			info := meta.info(nil)
 			if sessionInfoMatchesCwd(info, filterCwd) {
 				byID[info.SessionID] = info
@@ -1059,7 +1129,7 @@ func (s *service) sessionDelete(_ context.Context, raw json.RawMessage) (any, er
 	}
 	if path == "" {
 		if dir := s.sessionDir(); dir != "" {
-			path = transcriptPath(dir, p.SessionID)
+			path = resolveTranscriptPath(dir, p.SessionID)
 		}
 	}
 	if path != "" && !delayed {
@@ -1068,6 +1138,17 @@ func (s *service) sessionDelete(_ context.Context, raw json.RawMessage) (any, er
 		}
 		if destroy.Finish != nil {
 			destroy.Finish()
+		}
+	}
+	// A recovered session lives in two files: the recovery transcript (deleted
+	// above) and the id-keyed original holding the redirect. Remove the twin
+	// too, or it resurfaces in session/list as a ghost that delete-by-id can
+	// never reach again.
+	if dir := s.sessionDir(); dir != "" {
+		if idPath := transcriptPath(dir, p.SessionID); idPath != path {
+			if err := deleteSessionFiles(idPath); err != nil {
+				return nil, &RPCError{Code: ErrInternal, Message: "session/delete: " + err.Error()}
+			}
 		}
 	}
 	return SessionDeleteResult{}, nil
@@ -1250,7 +1331,7 @@ func (s *service) loadMeta(id string) (acpSessionMeta, bool) {
 	if dir == "" {
 		return acpSessionMeta{}, false
 	}
-	meta, ok, err := loadACPMeta(transcriptPath(dir, id))
+	meta, ok, err := loadACPMeta(resolveTranscriptPath(dir, id))
 	if err != nil {
 		return acpSessionMeta{}, false
 	}
@@ -1440,6 +1521,12 @@ type acpSessionMeta struct {
 	Title          string    `json:"title,omitempty"`
 	CreatedAt      time.Time `json:"createdAt"`
 	UpdatedAt      time.Time `json:"updatedAt"`
+	// ActiveTranscript, when set on the id-keyed sidecar, is the basename of
+	// the transcript this session currently lives in: a snapshot recovery
+	// moved the live session onto a recovery branch and left this redirect
+	// behind so restart-time lookups (resolveTranscriptPath) follow the
+	// session instead of reopening the pre-recovery file.
+	ActiveTranscript string `json:"activeTranscript,omitempty"`
 }
 
 func (m acpSessionMeta) info(extra map[string]any) SessionInfo {
@@ -1603,6 +1690,19 @@ func sessionIDFromTranscript(path string) string {
 		base = strings.TrimSuffix(base, ext)
 	}
 	return base
+}
+
+// listMetaBeats reports whether a should represent its session id in
+// session/list over b. A meta without an ActiveTranscript redirect is the
+// session's live transcript and always beats a redirect sidecar; between two
+// of the same kind the later UpdatedAt wins.
+func listMetaBeats(a, b acpSessionMeta) bool {
+	aRedirect := strings.TrimSpace(a.ActiveTranscript) != ""
+	bRedirect := strings.TrimSpace(b.ActiveTranscript) != ""
+	if aRedirect != bRedirect {
+		return !aRedirect
+	}
+	return a.UpdatedAt.After(b.UpdatedAt)
 }
 
 func sessionInfoMatchesCwd(info SessionInfo, filter string) bool {
