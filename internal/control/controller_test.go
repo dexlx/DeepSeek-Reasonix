@@ -1634,6 +1634,39 @@ func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T)
 	}
 }
 
+func TestNewSessionRefusesWhileTurnRunning(t *testing.T) {
+	dir := t.TempDir()
+	sess := agent.NewSession("sys")
+	sess.Add(provider.Message{Role: provider.RoleUser, Content: "old context"})
+	exec := agent.New(nil, nil, sess, agent.Options{}, event.Discard)
+	path := filepath.Join(dir, "session.jsonl")
+	c := New(Options{Executor: exec, SystemPrompt: "sys", SessionDir: dir, SessionPath: path, Label: "test"})
+
+	c.mu.Lock()
+	c.running = true
+	c.mu.Unlock()
+
+	if err := c.NewSession(); err == nil {
+		t.Fatal("NewSession while running = nil error, want refusal")
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path = %q, want unrotated %q", got, path)
+	}
+	if snap := exec.Session().Snapshot(); len(snap) != 2 {
+		t.Fatalf("running session was reset out from under the turn: %+v", snap)
+	}
+
+	c.mu.Lock()
+	c.running = false
+	c.mu.Unlock()
+	if err := c.NewSession(); err != nil {
+		t.Fatalf("NewSession after the turn stopped: %v", err)
+	}
+	if c.SessionPath() == path {
+		t.Fatal("session path did not rotate once the turn stopped")
+	}
+}
+
 func TestNewSessionQueuesSessionStartHookContext(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)

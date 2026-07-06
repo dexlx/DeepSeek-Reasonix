@@ -2049,6 +2049,16 @@ func (c *Controller) NewSession() error {
 	if c.executor == nil {
 		return nil
 	}
+	// Same contract as ClearSession: rotating mid-turn swaps the session out
+	// from under the run loop's direct session reads and races the turn-end
+	// snapshot onto the fresh path. Submit ("/new") and the bot gateway call
+	// this asynchronously, so the guard is load-bearing, not defensive.
+	c.mu.Lock()
+	running := c.running
+	c.mu.Unlock()
+	if running {
+		return fmt.Errorf("cannot start a new session while a turn is running")
+	}
 	if err := c.Snapshot(); err != nil {
 		return err
 	}
