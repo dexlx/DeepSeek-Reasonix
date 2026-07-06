@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -60,15 +61,38 @@ func marshalMessages(t *testing.T, msgs []provider.Message) []byte {
 	return b
 }
 
-// TestRebindKeepsRequestPrefixBytes is the desktop-level byte-stability guard
-// for the provider prefix cache: after the desktop's rebind path (load the
-// persisted transcript, swap in the freshly composed system prompt via
-// sessionWithFreshSystemPrompt, Resume on a new controller — the shape of
-// tabs.go's build/restore), the next request's leading messages must be
-// byte-identical to the request sent before the rebind. Any drift here means
-// every rebind cold-starts the conversation's provider cache at 10x miss
+// copySessionFiles clones a saved transcript (checkpoint anchor, event log,
+// meta sidecar) to an independent path, so a rebind can load the state saved
+// at that moment while the original controller keeps running and autosaving.
+func copySessionFiles(t *testing.T, from, to string) {
+	t.Helper()
+	copied := false
+	for _, suffix := range []string{"", ".events.jsonl", ".meta"} {
+		b, err := os.ReadFile(from + suffix)
+		if err != nil {
+			continue
+		}
+		if err := os.WriteFile(to+suffix, b, 0o644); err != nil {
+			t.Fatalf("copy session file %s: %v", suffix, err)
+		}
+		copied = true
+	}
+	if !copied {
+		t.Fatalf("no session files found at %s", from)
+	}
+}
+
+// TestRebindReproducesRequestBytes is the desktop-level byte-stability guard
+// for the provider prefix cache. It builds the strongest comparison available:
+// from ONE saved transcript, run the same follow-up turn twice — once on the
+// original controller (no rebind, the provider-cache-warm baseline) and once
+// after the desktop rebind path (agent.LoadSession + sessionWithFreshSystemPrompt
+// + Resume on a freshly built controller, the shape of tabs.go's restore). The
+// two requests must be byte-identical END TO END — system prompt, prior user
+// AND assistant turns, and the composed follow-up. Any divergence means a
+// desktop rebuild cold-starts the conversation's provider cache at 10x miss
 // pricing (#2945, #5614).
-func TestRebindKeepsRequestPrefixBytes(t *testing.T) {
+func TestRebindReproducesRequestBytes(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := t.TempDir()
 	path := filepath.Join(dir, "session.jsonl")
@@ -81,43 +105,56 @@ func TestRebindKeepsRequestPrefixBytes(t *testing.T) {
 	if err := ctrl.RunTurn(context.Background(), "first question"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
-	before := prov.lastRequestMessages(t)
-	beforeBytes := marshalMessages(t, before)
 	if err := ctrl.Snapshot(); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
+	// Freeze the after-turn-one transcript on an independent path: the
+	// baseline turn below autosaves onto the original path, and the rebind
+	// must load the state as saved at this moment.
+	rebindPath := filepath.Join(dir, "rebind.jsonl")
+	copySessionFiles(t, path, rebindPath)
 
-	// Desktop rebind: a NEW controller composes its (identical) system prompt,
-	// the persisted transcript is loaded, the fresh prompt is swapped in, and
-	// the controller resumes the session — tabs.go's restore shape.
+	// Baseline: the follow-up turn on the ORIGINAL controller — the exact
+	// request an uninterrupted (cache-warm) session would send.
+	if err := ctrl.RunTurn(context.Background(), "second question"); err != nil {
+		t.Fatalf("baseline second turn: %v", err)
+	}
+	baseline := prov.lastRequestMessages(t)
+	baselineBytes := marshalMessages(t, baseline)
+	if len(baseline) < 4 {
+		t.Fatalf("baseline request has %d messages, want system + first exchange + follow-up", len(baseline))
+	}
+
+	// Rebind from the transcript saved after turn one: a NEW controller
+	// composes its (identical) system prompt, the persisted transcript is
+	// loaded, the fresh prompt is swapped in, and the controller resumes —
+	// then sends the same follow-up.
 	prov2 := &capturingProvider{}
 	exec2 := agent.New(prov2, tool.NewRegistry(), agent.NewSession(systemPrompt), agent.Options{}, event.Discard)
-	ctrl2 := control.New(control.Options{Runner: exec2, Executor: exec2, SystemPrompt: systemPrompt, SessionDir: dir, SessionPath: path, Label: "test", Sink: event.Discard})
-	loaded, err := agent.LoadSession(path)
+	ctrl2 := control.New(control.Options{Runner: exec2, Executor: exec2, SystemPrompt: systemPrompt, SessionDir: dir, SessionPath: rebindPath, Label: "test", Sink: event.Discard})
+	loaded, err := agent.LoadSession(rebindPath)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	ctrl2.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl2.History())), path)
+	ctrl2.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl2.History())), rebindPath)
 
 	if err := ctrl2.RunTurn(context.Background(), "second question"); err != nil {
-		t.Fatalf("post-rebind turn: %v", err)
+		t.Fatalf("post-rebind second turn: %v", err)
 	}
-	after := prov2.lastRequestMessages(t)
-	if len(after) <= len(before) {
-		t.Fatalf("post-rebind request has %d messages, want more than the %d sent before rebind", len(after), len(before))
-	}
-	prefixBytes := marshalMessages(t, after[:len(before)])
-	if string(prefixBytes) != string(beforeBytes) {
-		t.Fatalf("rebind changed the request prefix bytes — the provider prefix cache is invalidated:\nbefore: %s\nafter:  %s", beforeBytes, prefixBytes)
+	rebound := prov2.lastRequestMessages(t)
+	reboundBytes := marshalMessages(t, rebound)
+	if string(reboundBytes) != string(baselineBytes) {
+		t.Fatalf("rebind changed the request bytes — the provider prefix cache is invalidated:\nbaseline: %s\nrebound:  %s", baselineBytes, reboundBytes)
 	}
 }
 
 // TestRebindWithDriftedPromptBreaksRequestPrefix pins the failure mode the
 // guard above protects against: when the freshly composed prompt differs from
 // the one the transcript was recorded with, the swap rewrites the first
-// message and the request prefix diverges. If a future change moves the swap
-// policy to keep the persisted prompt for resumed conversations, this test
-// should be updated to assert the prefix survives instead.
+// message and the request diverges from the no-rebind baseline. If a future
+// change moves the swap policy to keep the persisted prompt for resumed
+// conversations, this test should be updated to assert the bytes survive
+// instead.
 func TestRebindWithDriftedPromptBreaksRequestPrefix(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := t.TempDir()
@@ -129,28 +166,33 @@ func TestRebindWithDriftedPromptBreaksRequestPrefix(t *testing.T) {
 	if err := ctrl.RunTurn(context.Background(), "first question"); err != nil {
 		t.Fatalf("first turn: %v", err)
 	}
-	before := prov.lastRequestMessages(t)
-	beforeBytes := marshalMessages(t, before)
 	if err := ctrl.Snapshot(); err != nil {
 		t.Fatalf("Snapshot: %v", err)
 	}
+	rebindPath := filepath.Join(dir, "rebind.jsonl")
+	copySessionFiles(t, path, rebindPath)
+	if err := ctrl.RunTurn(context.Background(), "second question"); err != nil {
+		t.Fatalf("baseline second turn: %v", err)
+	}
+	baseline := prov.lastRequestMessages(t)
+	baselineBytes := marshalMessages(t, baseline)
 
 	prov2 := &capturingProvider{}
 	exec2 := agent.New(prov2, tool.NewRegistry(), agent.NewSession("SYSPROMPT v2 drifted"), agent.Options{}, event.Discard)
-	ctrl2 := control.New(control.Options{Runner: exec2, Executor: exec2, SystemPrompt: "SYSPROMPT v2 drifted", SessionDir: dir, SessionPath: path, Label: "test", Sink: event.Discard})
-	loaded, err := agent.LoadSession(path)
+	ctrl2 := control.New(control.Options{Runner: exec2, Executor: exec2, SystemPrompt: "SYSPROMPT v2 drifted", SessionDir: dir, SessionPath: rebindPath, Label: "test", Sink: event.Discard})
+	loaded, err := agent.LoadSession(rebindPath)
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	ctrl2.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl2.History())), path)
+	ctrl2.Resume(sessionWithFreshSystemPrompt(loaded, systemPromptFrom(ctrl2.History())), rebindPath)
 	if err := ctrl2.RunTurn(context.Background(), "second question"); err != nil {
 		t.Fatalf("post-rebind turn: %v", err)
 	}
-	after := prov2.lastRequestMessages(t)
-	if len(after) <= len(before) {
-		t.Fatalf("post-rebind request has %d messages, want more than %d", len(after), len(before))
+	rebound := prov2.lastRequestMessages(t)
+	if string(marshalMessages(t, rebound)) == string(baselineBytes) {
+		t.Fatal("drifted prompt unexpectedly reproduced the baseline request — the swap policy changed; update these guards")
 	}
-	if string(marshalMessages(t, after[:len(before)])) == string(beforeBytes) {
-		t.Fatal("drifted prompt unexpectedly kept the request prefix — the swap policy changed; update these guards")
+	if len(rebound) == 0 || rebound[0].Content == baseline[0].Content {
+		t.Fatalf("drift should surface in the leading system message; got %q", rebound[0].Content)
 	}
 }
