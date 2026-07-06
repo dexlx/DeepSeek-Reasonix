@@ -402,6 +402,7 @@ func (a *App) startup(ctx context.Context) {
 	a.goSafe("sendStartupPing", a.sendStartupPing)
 	a.goSafe("flushMetrics", a.flushMetrics)
 	a.goSafe("flushPendingCrash", a.flushPendingCrash)
+	a.startRecoveryGC()
 }
 
 func (a *App) beforeClose(ctx context.Context) bool {
