@@ -558,7 +558,7 @@ func (a *App) restoreOrBuildTabs() {
 	_, _ = config.MigrateLegacyIfNeeded()
 	f := loadTabsFile()
 	_, _ = recoverLegacyProjectSidebarRoots(f)
-	_, _ = config.ResetOfficialProviderPricingOnUpgrade(config.UserConfigPath())
+	_, _ = config.ApplyUserConfigUpgradesOnStartup(config.UserConfigPath())
 	_, _ = config.MigrateMCPToUserConfigOnUpgrade(desktopMCPMigrationRoots(f))
 
 	// Load i18n from the first available config.
