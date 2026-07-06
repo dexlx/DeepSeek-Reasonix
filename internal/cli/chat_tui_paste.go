@@ -241,7 +241,14 @@ func pastedImagePath(src string) (string, bool) {
 		return "", false
 	}
 	if !quoted && strings.ContainsAny(src, " \t\r\n") {
-		return "", false
+		if hasUnescapedPathWhitespace(src) {
+			return "", false
+		}
+		unescaped, ok := unescapeShellPath(src)
+		if !ok {
+			return "", false
+		}
+		src = unescaped
 	}
 	lower := strings.ToLower(src)
 	if strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://") {
@@ -261,6 +268,51 @@ func pastedImagePath(src string) (string, bool) {
 		}
 	}
 	return filepath.Clean(src), true
+}
+
+func hasUnescapedPathWhitespace(s string) bool {
+	escaped := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if escaped {
+			escaped = false
+			continue
+		}
+		if ch == '\\' {
+			escaped = true
+			continue
+		}
+		if ch == ' ' || ch == '\t' || ch == '\r' || ch == '\n' {
+			return true
+		}
+	}
+	return false
+}
+
+func unescapeShellPath(s string) (string, bool) {
+	var b strings.Builder
+	b.Grow(len(s))
+	changed := false
+	for i := 0; i < len(s); i++ {
+		ch := s[i]
+		if ch == '\\' && i+1 < len(s) && shellEscapedPathByte(s[i+1]) {
+			b.WriteByte(s[i+1])
+			i++
+			changed = true
+			continue
+		}
+		b.WriteByte(ch)
+	}
+	return b.String(), changed
+}
+
+func shellEscapedPathByte(ch byte) bool {
+	switch ch {
+	case ' ', '\t', '\r', '\n', '\\', '\'', '"', '(', ')', '[', ']', '{', '}', '&', ';', '!', '$', '`', '*', '?', '|', '<', '>', '#':
+		return true
+	default:
+		return false
+	}
 }
 
 // pastedFileRef turns a dragged/pasted non-image file path into an @reference so
