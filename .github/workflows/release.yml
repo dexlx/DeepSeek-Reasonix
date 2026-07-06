@@ -122,3 +122,38 @@ jobs:
           done
           echo "::error::public compatibility manifest unreachable at $url"
           exit 1
+
+      # A stable CLI release must never leave the npm `latest` dist-tag behind:
+      # v1.17.5 shipped as binaries/Homebrew while npm `latest` still pointed at
+      # 0.53.2 (#5822) — every `npm update -g` user was silently downgraded to a
+      # months-old version, and nothing noticed because the npm line
+      # (release-npm.yml, `npm-vX.Y.Z` tags) is triggered independently and the
+      # stable npm tag was simply never pushed. release-npm.yml's own verify
+      # step only guards runs that happen; this guard catches the run that
+      # DIDN'T. It fails the stable CLI release when npm `latest` is older than
+      # the version being released — the fix is pushing the matching
+      # `npm-vX.Y.Z` tag (or `npm dist-tag add` for an already-published
+      # version).
+      - name: Check npm latest dist-tag freshness
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          case "$TAG" in
+            *-*)
+              echo "prerelease $TAG — npm latest does not move on prereleases; skipping"
+              exit 0
+              ;;
+          esac
+          version="${TAG#v}"
+          got="$(npm view reasonix dist-tags.latest 2>/dev/null || true)"
+          if [ -z "$got" ]; then
+            echo "::error::could not read npm dist-tags.latest"
+            exit 1
+          fi
+          newest="$(printf '%s\n%s\n' "$got" "$version" | sort -V | tail -1)"
+          if [ "$newest" != "$got" ]; then
+            echo "::error::npm 'latest' is $got but this stable release is $version — npm users running 'npm update -g' are being downgraded. Push the npm-v$version tag (or 'npm dist-tag add reasonix@$version latest')."
+            exit 1
+          fi
+          echo "npm latest -> $got (>= $version) OK"
