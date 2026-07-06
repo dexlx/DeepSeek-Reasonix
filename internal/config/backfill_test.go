@@ -518,9 +518,7 @@ func TestResetOfficialProviderPricingOnUpgradeRunsOnce(t *testing.T) {
 
 func TestApplyUserConfigUpgradesOnStartupVersion3NonWindowsNoop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	oldGOOS := runtimeGOOS
-	runtimeGOOS = "darwin"
-	defer func() { runtimeGOOS = oldGOOS }()
+	setRuntimeGOOS(t, "darwin")
 
 	c := &Config{
 		ConfigVersion: 3,
@@ -560,9 +558,7 @@ func TestApplyUserConfigUpgradesOnStartupVersion3NonWindowsNoop(t *testing.T) {
 
 func TestApplyUserConfigUpgradesOnStartupWindowsBashEnforceDefaultsOffOnce(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	oldGOOS := runtimeGOOS
-	runtimeGOOS = "windows"
-	defer func() { runtimeGOOS = oldGOOS }()
+	setRuntimeGOOS(t, "windows")
 
 	c := Default()
 	c.ConfigVersion = 3
@@ -605,9 +601,7 @@ func TestApplyUserConfigUpgradesOnStartupWindowsBashEnforceDefaultsOffOnce(t *te
 
 func TestApplyUserConfigUpgradesOnStartupWindowsBashOffOnlyMarksVersion(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "config.toml")
-	oldGOOS := runtimeGOOS
-	runtimeGOOS = "windows"
-	defer func() { runtimeGOOS = oldGOOS }()
+	setRuntimeGOOS(t, "windows")
 
 	c := Default()
 	c.ConfigVersion = 3

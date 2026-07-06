@@ -1030,7 +1030,9 @@ func RenderTOMLProjectDelta(c *Config) string {
 		if len(c.Sandbox.AllowWrite) > 0 {
 			fmt.Fprintf(&b, "allow_write = %s\n", renderStringArray(c.Sandbox.AllowWrite))
 		}
-		if strings.TrimSpace(c.Sandbox.Bash) != "" || c.BashMode() != d.BashMode() {
+		// Only an explicitly set bash mode is a project delta; an empty value
+		// inherits the platform default.
+		if strings.TrimSpace(c.Sandbox.Bash) != "" {
 			fmt.Fprintf(&b, "bash = %q\n", c.BashMode())
 		}
 		if c.Sandbox.Network != d.Sandbox.Network {

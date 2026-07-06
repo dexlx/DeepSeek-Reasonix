@@ -22,6 +22,17 @@ func isolateUserConfigHome(t *testing.T) string {
 	return home
 }
 
+// setRuntimeGOOS overrides the package-level runtimeGOOS for one test. The
+// t.Setenv call is a guard: it panics if the test also uses t.Parallel, which
+// would otherwise race on the shared global.
+func setRuntimeGOOS(t *testing.T, goos string) {
+	t.Helper()
+	t.Setenv("REASONIX_TEST_GOOS", goos)
+	old := runtimeGOOS
+	runtimeGOOS = goos
+	t.Cleanup(func() { runtimeGOOS = old })
+}
+
 func expectedDefaultReasonixHome(home string) string {
 	if runtime.GOOS == "windows" {
 		return filepath.Join(home, "AppData", "Roaming", "reasonix")
@@ -1003,9 +1014,7 @@ func TestRenderTOMLDefaultStepsCommentedOut(t *testing.T) {
 
 func TestRenderTOMLWindowsSandboxDefaultAndExplicitEnforce(t *testing.T) {
 	isolateUserConfigHome(t)
-	oldGOOS := runtimeGOOS
-	runtimeGOOS = "windows"
-	defer func() { runtimeGOOS = oldGOOS }()
+	setRuntimeGOOS(t, "windows")
 
 	defaultRendered := RenderTOMLForScope(Default(), RenderScopeUser)
 	if !strings.Contains(defaultRendered, `bash    = "off"`) {
