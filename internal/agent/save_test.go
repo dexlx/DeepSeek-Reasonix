@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reasonix/internal/provider"
+	"reasonix/internal/store"
 )
 
 // touch sets a file's mtime to t. Used by the listing-order test so it
@@ -2009,4 +2010,60 @@ func readSessionEventsForTest(t *testing.T, path string) []sessionEventRecord {
 		out = append(out, rec)
 	}
 	return out
+}
+
+// TestReconcileOverlongMigratesDiagnosticSidecars pins two halves of one fix:
+// overlong-name reconciliation must skip .events.jsonl / .conflicts.jsonl
+// sidecars instead of renaming each into a fake session with fabricated meta,
+// and the owning transcript's rename must carry those sidecars along instead
+// of orphaning them under the retired stem.
+func TestReconcileOverlongMigratesDiagnosticSidecars(t *testing.T) {
+	dir := t.TempDir()
+	// 236-byte transcript name: past the 224 reconcile bound, while its
+	// .events.jsonl (243) and .conflicts.jsonl (246) still fit under 255 —
+	// exactly the window where the old suffix filter mistook them for
+	// overlong sessions.
+	id := strings.Repeat("s", 230)
+	oldPath := filepath.Join(dir, id+".jsonl")
+	content := `{"role":"system","content":"sys"}` + "\n" + `{"role":"user","content":"hello"}` + "\n"
+	if err := os.WriteFile(oldPath, []byte(content), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.SessionEventLog(oldPath),
+		[]byte(`{"schema_version":1,"type":"replace","messages":[{"role":"user","content":"hello"}]}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(store.SessionConflictLog(oldPath),
+		[]byte(`{"outcome":"forked_recovery_branch"}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := ReconcileSessionSidecars(dir); err != nil {
+		t.Fatalf("ReconcileSessionSidecars: %v", err)
+	}
+
+	newPath := filepath.Join(dir, recoveryParentStem(id)+".jsonl")
+	if _, err := os.Stat(newPath); err != nil {
+		t.Fatalf("renamed transcript missing: %v", err)
+	}
+	if _, err := os.Stat(store.SessionEventLog(newPath)); err != nil {
+		t.Fatalf("event log not migrated with the rename: %v", err)
+	}
+	if _, err := os.Stat(store.SessionConflictLog(newPath)); err != nil {
+		t.Fatalf("conflict log not migrated with the rename: %v", err)
+	}
+	for _, gone := range []string{oldPath, store.SessionEventLog(oldPath), store.SessionConflictLog(oldPath)} {
+		if _, err := os.Stat(gone); !os.IsNotExist(err) {
+			t.Fatalf("%s still present under the retired stem (err=%v)", filepath.Base(gone), err)
+		}
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if store.IsSessionTranscriptName(e.Name()) && e.Name() != filepath.Base(newPath) {
+			t.Fatalf("reconcile fabricated an extra session from a sidecar: %s", e.Name())
+		}
+	}
 }

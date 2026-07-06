@@ -59,6 +59,14 @@ func doctorSessionCommand(args []string, version string) int {
 			}
 			outPath = args[i]
 		default:
+			if v, ok := strings.CutPrefix(arg, "--out="); ok {
+				if v == "" {
+					fmt.Fprintln(os.Stderr, "error: --out requires a path")
+					return 2
+				}
+				outPath = v
+				continue
+			}
 			if strings.HasPrefix(arg, "-") {
 				fmt.Fprintf(os.Stderr, "error: unknown doctor session flag %s\n", arg)
 				return 2
