@@ -1277,6 +1277,93 @@ func TestSnapshotConflictLogAttrsCarryRevisionLedger(t *testing.T) {
 	}
 }
 
+type noticeSink struct {
+	mu     sync.Mutex
+	events []event.Event
+}
+
+func (s *noticeSink) Emit(e event.Event) {
+	s.mu.Lock()
+	s.events = append(s.events, e)
+	s.mu.Unlock()
+}
+
+func (s *noticeSink) notices() []string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []string
+	for _, e := range s.events {
+		if e.Kind == event.Notice {
+			out = append(out, e.Text)
+		}
+	}
+	return out
+}
+
+func TestSnapshotConflictAtRecoveryDepthCapForceSavesCurrentBranch(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+	disk := agent.NewSession("sys")
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	disk.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	disk.Add(provider.Message{Role: provider.RoleUser, Content: "disk second"})
+	if err := disk.Save(path); err != nil {
+		t.Fatalf("Save disk: %v", err)
+	}
+	meta, ok, err := agent.LoadBranchMeta(path)
+	if err != nil || !ok {
+		t.Fatalf("LoadBranchMeta ok=%v err=%v", ok, err)
+	}
+	meta.Recovered = true
+	meta.RecoveryDepth = agent.SessionRecoveryMaxDepth
+	if err := agent.SaveBranchMeta(path, meta); err != nil {
+		t.Fatalf("SaveBranchMeta: %v", err)
+	}
+
+	stale := agent.NewSession("sys")
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "one"})
+	stale.Add(provider.Message{Role: provider.RoleUser, Content: "local second"})
+	exec := agent.New(nil, nil, stale, agent.Options{}, event.Discard)
+	sink := &noticeSink{}
+	c := New(Options{Executor: exec, SessionDir: dir, SessionPath: path, Label: "test", Sink: sink})
+
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if got := c.SessionPath(); got != path {
+		t.Fatalf("session path = %q, want unchanged %q (no new fork)", got, path)
+	}
+	forks, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if len(forks) != 0 {
+		t.Fatalf("depth cap still forked: %v", forks)
+	}
+	loaded, err := agent.LoadSession(path)
+	if err != nil {
+		t.Fatalf("LoadSession: %v", err)
+	}
+	if got := loaded.Messages[len(loaded.Messages)-1].Content; got != "local second" {
+		t.Fatalf("disk tail = %q, want force-saved local transcript", got)
+	}
+	notices := sink.notices()
+	if len(notices) == 0 || !strings.Contains(notices[len(notices)-1], "kept the transcript on the current recovery branch") {
+		t.Fatalf("notices = %v, want depth-cap notice", notices)
+	}
+
+	// The force save re-anchored the baseline: the next snapshot must not
+	// conflict again.
+	stale.Add(provider.Message{Role: provider.RoleAssistant, Content: "answer"})
+	if err := c.Snapshot(); err != nil {
+		t.Fatalf("follow-up Snapshot: %v", err)
+	}
+	if got := sink.notices(); len(got) != len(notices) {
+		t.Fatalf("follow-up snapshot emitted more notices: %v", got)
+	}
+}
+
 func TestNewSessionQueuesSessionStartHookContext(t *testing.T) {
 	dir := t.TempDir()
 	exec := agent.New(nil, nil, agent.NewSession("sys"), agent.Options{}, event.Discard)

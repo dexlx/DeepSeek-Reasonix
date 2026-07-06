@@ -45,9 +45,20 @@ var (
 	sessionSaveLocks            sync.Map
 	ErrSessionSnapshotConflict  = errors.New("session snapshot conflicts with newer transcript")
 	ErrSessionRecoveryNotNeeded = errors.New("session recovery not needed")
-	errSessionFileLockHeld      = errors.New("session file lock held")
-	sessionWriterID             = newSessionWriterID()
+	// ErrSessionRecoveryDepthExceeded refuses a recovery fork whose parent is
+	// already SessionRecoveryMaxDepth recovery forks deep. A chain that deep
+	// means saves keep conflicting on branches this runtime itself created;
+	// forking further multiplies session files without converging (#5993).
+	ErrSessionRecoveryDepthExceeded = errors.New("session recovery chain depth exceeded")
+	errSessionFileLockHeld          = errors.New("session file lock held")
+	sessionWriterID                 = newSessionWriterID()
 )
+
+// SessionRecoveryMaxDepth bounds nested recovery forks: a normal session may
+// fork a recovery branch (depth 1), which may itself fork twice more under
+// genuine repeated incidents; past that the caller should stop forking and
+// write onto the branch it already owns.
+const SessionRecoveryMaxDepth = 3
 
 type sessionPersistState struct {
 	path     string
@@ -519,6 +530,22 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 		}
 	}
 
+	// Refuse to deepen a runaway chain: forking FROM a branch that is already
+	// at the depth cap only multiplies recovery files (#5993 reached 8 nested
+	// levels). The caller falls back to force-writing the branch it owns.
+	parentDepth := 0
+	if parentMeta, ok, metaErr := LoadBranchMeta(originalPath); metaErr == nil && ok && parentMeta.Recovered {
+		parentDepth = parentMeta.RecoveryDepth
+		if parentDepth <= 0 {
+			// Legacy recovery meta predating RecoveryDepth.
+			parentDepth = 1
+		}
+	}
+	if parentDepth >= SessionRecoveryMaxDepth {
+		return RecoveryBranchInfo{}, fmt.Errorf("%w: %s is already %d recovery forks deep",
+			ErrSessionRecoveryDepthExceeded, originalPath, parentDepth)
+	}
+
 	recoveryPath := recoverySessionPath(originalPath, digest)
 	unlockRecovery := lockSessionSavePath(recoveryPath)
 	defer unlockRecovery()
@@ -533,7 +560,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 			return RecoveryBranchInfo{}, digestErr
 		}
 		if bytes.Equal(existingDigest[:], digest[:]) {
-			meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText)
+			meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, parentDepth+1)
 			if err != nil {
 				return RecoveryBranchInfo{}, err
 			}
@@ -562,7 +589,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	if err := writeSessionMessages(recoveryPath, msgs); err != nil {
 		return RecoveryBranchInfo{}, err
 	}
-	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText)
+	meta, err := s.saveRecoveryBranchMeta(recoveryPath, opts, preview, turns, digestText, parentDepth+1)
 	if err != nil {
 		return RecoveryBranchInfo{}, err
 	}
@@ -578,7 +605,7 @@ func (s *Session) SaveRecoveryBranch(opts RecoveryBranchOptions) (RecoveryBranch
 	return RecoveryBranchInfo{Path: recoveryPath, Digest: digestText, Meta: meta, Preview: preview, Turns: turns}, nil
 }
 
-func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions, preview string, turns int, digest string) (BranchMeta, error) {
+func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions, preview string, turns int, digest string, depth int) (BranchMeta, error) {
 	meta := opts.BranchMeta
 	meta.ID = BranchID(path)
 	if strings.TrimSpace(meta.Name) == "" {
@@ -595,6 +622,9 @@ func (s *Session) saveRecoveryBranchMeta(path string, opts RecoveryBranchOptions
 	meta.Recovered = true
 	meta.RecoveryReason = firstNonEmpty(strings.TrimSpace(opts.Reason), "session snapshot conflict")
 	meta.RecoveryDigest = digest
+	// Always stamped from the parent chain, never trusted from opts: callers
+	// copy tab/session meta wholesale and would carry a stale depth.
+	meta.RecoveryDepth = depth
 	if meta.Revision == 0 {
 		meta.Revision = 1
 	}
