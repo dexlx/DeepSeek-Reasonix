@@ -2925,6 +2925,21 @@ func (c *Controller) recoverSnapshotConflict(path string, saveErr error, forceRe
 		BranchMeta:   meta,
 	})
 	if err != nil {
+		if errors.Is(err, agent.ErrSessionRecoveryDepthExceeded) {
+			// Saves keep conflicting on recovery branches this runtime itself
+			// created; forking again multiplies session files without
+			// converging (#5993 reached 8 nested levels). This runtime is the
+			// only writer of its own recovery branches, so force-writing the
+			// transcript back onto the current branch keeps the data and
+			// stops the chain.
+			if forceErr := c.executor.Session().Save(path); forceErr != nil {
+				return "", false, fmt.Errorf("recovery chain depth exceeded; force save failed: %w", forceErr)
+			}
+			slog.Warn("controller: snapshot conflict; recovery depth cap reached, force-saved onto current branch", logAttrs...)
+			c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+				Text: "session conflicts kept recurring; kept the transcript on the current recovery branch"})
+			return path, true, nil
+		}
 		if errors.Is(err, agent.ErrSessionRecoveryNotNeeded) {
 			if c.adoptDiskSession(path) {
 				slog.Warn("controller: snapshot conflict; recovery not needed, adopted disk transcript", logAttrs...)
