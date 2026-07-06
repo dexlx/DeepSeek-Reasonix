@@ -2288,6 +2288,10 @@ func channelDisplayName(provider, domain string) string {
 // has an in-process runtime, the runtime is cancelled and removed first so
 // autosave cannot recreate or append to the deleted file later.
 func (a *App) DeleteSession(path string) error {
+	return friendlySessionFileError(a.deleteSession(path))
+}
+
+func (a *App) deleteSession(path string) error {
 	dir := a.activeSessionDir()
 	sessionPath, key, err := validateSessionPath(dir, path)
 	if err != nil {
@@ -2769,6 +2773,10 @@ func (a *App) activeSessionPath(dir string) string {
 
 // RestoreSession moves a trashed session back into the saved-session list.
 func (a *App) RestoreSession(path string) error {
+	return friendlySessionFileError(a.restoreSession(path))
+}
+
+func (a *App) restoreSession(path string) error {
 	dir, err := a.trashedSessionDir(path)
 	if err != nil {
 		return err
@@ -2827,6 +2835,10 @@ func (a *App) sessionOpen(dir, sessionPath string) bool {
 // PurgeTrashedSession permanently removes a trashed session and its title/display
 // sidecars.
 func (a *App) PurgeTrashedSession(path string) error {
+	return friendlySessionFileError(a.purgeTrashedSession(path))
+}
+
+func (a *App) purgeTrashedSession(path string) error {
 	dir, err := a.trashedSessionDir(path)
 	if err != nil {
 		return err
