@@ -41,9 +41,67 @@ func TestSessionDataGuardDeniesSessionStores(t *testing.T) {
 	} {
 		if err := g.Check(target); err == nil {
 			t.Errorf("Check(%q) = nil, want session-data denial", target)
-		} else if !strings.Contains(err.Error(), "session data") {
-			t.Errorf("Check(%q) error %q does not name session data", target, err)
+		} else if !strings.Contains(err.Error(), "Reasonix's own session/state data") {
+			t.Errorf("Check(%q) error %q does not name session/state data", target, err)
 		}
+	}
+}
+
+func TestSessionDataGuardDeniesRuntimeLedgers(t *testing.T) {
+	root, _, _ := stateRootFor(t)
+	g := NewSessionDataGuard(root, nil)
+
+	for _, target := range []string{
+		filepath.Join(root, "desktop-tabs.json"),
+		filepath.Join(root, "desktop-tabs.json.tmp"), // the fixed atomic-save sibling
+		filepath.Join(root, "desktop-projects.json"),
+		filepath.Join(root, "desktop-window.json"),
+		filepath.Join(root, "desktop-workspace"),
+		filepath.Join(root, "heartbeat-tasks.json"),
+		filepath.Join(root, "metrics-pending.json"),
+		filepath.Join(root, "crash-pending.json"),
+	} {
+		if err := g.Check(target); err == nil {
+			t.Errorf("Check(%q) = nil, want runtime-ledger denial", target)
+		}
+	}
+	// Same names below a NESTED directory are ordinary files (only
+	// state-root-direct ledgers are the app's).
+	if err := g.Check(filepath.Join(root, "backups", "desktop-tabs.json")); err != nil {
+		t.Errorf("nested copy of a ledger name should be writable: %v", err)
+	}
+}
+
+func TestSessionDataGuardCaseVariantOnFoldingSystems(t *testing.T) {
+	if !foldPaths {
+		t.Skip("case-sensitive default filesystem: a case variant is a genuinely different path")
+	}
+	root, cliSession, _ := stateRootFor(t)
+	g := NewSessionDataGuard(root, nil)
+
+	upper := filepath.Join(root, "SESSIONS", filepath.Base(cliSession))
+	if err := g.Check(upper); err == nil {
+		t.Fatalf("Check(%q) = nil; case variant reaches the same store on this filesystem and must be denied", upper)
+	}
+	mixedLedger := filepath.Join(root, "Desktop-Tabs.JSON")
+	if err := g.Check(mixedLedger); err == nil {
+		t.Fatalf("Check(%q) = nil, want case-folded ledger denial", mixedLedger)
+	}
+}
+
+func TestConfineReadCaseVariantOnFoldingSystems(t *testing.T) {
+	if !foldPaths {
+		t.Skip("case-sensitive default filesystem: a case variant is a genuinely different path")
+	}
+	forbidDir := t.TempDir()
+	secret := filepath.Join(forbidDir, "secret.txt")
+	if err := os.WriteFile(secret, []byte("classified"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	forbidRoots := realRoots([]string{forbidDir})
+	upper := filepath.Join(filepath.Dir(forbidDir), strings.ToUpper(filepath.Base(forbidDir)), "secret.txt")
+	if !confineRead(forbidRoots, upper) {
+		t.Fatalf("confineRead missed case variant %q of a forbidden root", upper)
 	}
 }
 
@@ -123,7 +181,7 @@ func TestWriteToolsRejectSessionData(t *testing.T) {
 	for _, tl := range tools {
 		for _, target := range []string{cliSession, projectSession} {
 			_, err := tl.Execute(context.Background(), argsFor(tl.Name(), target))
-			if err == nil || !strings.Contains(err.Error(), "session data") {
+			if err == nil || !strings.Contains(err.Error(), "session/state data") {
 				t.Errorf("%s on %q: err = %v, want session-data denial", tl.Name(), target, err)
 			}
 		}

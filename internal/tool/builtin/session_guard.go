@@ -58,25 +58,63 @@ func (g SessionDataGuard) Check(target string) error {
 	if !g.denies(abs) {
 		return nil
 	}
-	return fmt.Errorf("path %q is inside Reasonix's own session data (%s); the app is the only writer of these files, and edits from a chat race its saves — that surfaces as repeated save-conflict copies. "+
-		"Do not modify session files directly; report the underlying problem instead. If raw access is truly intended, add the directory to [sandbox] allow_write in reasonix.toml",
+	return fmt.Errorf("path %q is inside Reasonix's own session/state data (%s); the app is the only writer of these files, and edits from a chat race its saves — that surfaces as repeated save-conflict copies. "+
+		"Do not modify session or runtime-state files directly; report the underlying problem instead. If raw access is truly intended, add the directory to [sandbox] allow_write in reasonix.toml",
 		target, g.stateRoot)
 }
 
+// runtimeStateFile reports whether name (a state-root-direct file name, already
+// case-folded when the platform folds) is a desktop runtime ledger the app
+// rewrites wholesale while running — quit snapshots, topic-index rebuilds,
+// periodic flushes — so an agent edit vanishes the same way a session-file edit
+// does. config.toml / credentials / skills stay writable: editing those on the
+// user's request is a legitimate flow with no autonomous rewriter racing it.
+func runtimeStateFile(name string) bool {
+	if strings.HasPrefix(name, "desktop-") {
+		return true // desktop-tabs.json(+.tmp), desktop-projects.json, desktop-window.json, desktop-workspace…
+	}
+	switch name {
+	case "heartbeat-tasks.json", "metrics-pending.json", "crash-pending.json":
+		return true
+	}
+	return false
+}
+
 // denies reports whether abs (absolute, symlink-free) is inside a guarded
-// session store and not explicitly allowed.
+// session store or a runtime ledger file, and not explicitly allowed. All
+// comparisons are deny-side, so they fold case on case-insensitive platforms:
+// EvalSymlinks keeps the caller's spelling, and on default macOS/Windows
+// volumes ~/.reasonix/SESSIONS reaches the very same files (the same shape as
+// the Windows lease-key case split fixed in #6023).
 func (g SessionDataGuard) denies(abs string) bool {
-	for _, a := range g.allowRoots {
+	root := g.stateRoot
+	allow := g.allowRoots
+	if foldPaths {
+		abs = strings.ToLower(abs)
+		root = strings.ToLower(root)
+		folded := make([]string, len(allow))
+		for i, a := range allow {
+			folded[i] = strings.ToLower(a)
+		}
+		allow = folded
+	}
+	for _, a := range allow {
 		if within(a, abs) {
 			return false
 		}
 	}
-	if within(filepath.Join(g.stateRoot, "sessions"), abs) {
+	if within(filepath.Join(root, "sessions"), abs) {
 		return true
+	}
+	// State-root-direct runtime ledgers (desktop-tabs.json & friends).
+	if rel, err := filepath.Rel(root, abs); err == nil && rel != "." && !strings.Contains(rel, string(filepath.Separator)) {
+		if runtimeStateFile(rel) {
+			return true
+		}
 	}
 	// <state root>/projects/<slug>/sessions/** — every per-project store, so
 	// the slug segment is matched positionally rather than enumerated.
-	projects := filepath.Join(g.stateRoot, "projects")
+	projects := filepath.Join(root, "projects")
 	if !within(projects, abs) {
 		return false
 	}
@@ -132,11 +170,11 @@ func sessionHintNeedles(rawRoot, realRoot string, allowRoots []string) []string 
 
 	var needles []string
 	for prefix := range prefixes {
-		for _, sub := range []string{"sessions", "projects"} {
+		for _, sub := range []string{"sessions", "projects", "desktop-", "heartbeat-tasks.json", "metrics-pending.json", "crash-pending.json"} {
 			tree := filepath.Join(prefix, sub)
 			if covered := func() bool {
 				for _, a := range allowRoots {
-					if within(a, filepath.Join(realRoot, sub)) {
+					if withinFold(a, filepath.Join(realRoot, sub)) {
 						return true
 					}
 				}

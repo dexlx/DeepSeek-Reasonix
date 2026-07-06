@@ -3,6 +3,7 @@ package builtin
 import (
 	"fmt"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"time"
 
@@ -73,7 +74,9 @@ func ConfineReaders(forbidRoots []string) []tool.Tool {
 // confineRead reports whether target is inside any forbidRoot. An empty
 // forbidRoots slice is unconfined (returns false). Callers should return a
 // result that mimics the directory appearing empty, matching
-// the tmpfs semantics the bubblewrap sandbox provides.
+// the tmpfs semantics the bubblewrap sandbox provides. Deny-side, so the
+// check folds case on case-insensitive platforms (see withinFold): a
+// case-variant of a forbidden path reaches the same bytes there.
 func confineRead(forbidRoots []string, target string) bool {
 	if len(forbidRoots) == 0 {
 		return false
@@ -83,7 +86,7 @@ func confineRead(forbidRoots []string, target string) bool {
 		return false // can't resolve -> let the caller's normal error path handle it
 	}
 	for _, r := range forbidRoots {
-		if within(r, abs) {
+		if withinFold(r, abs) {
 			return true
 		}
 	}
@@ -171,4 +174,25 @@ func within(root, path string) bool {
 		return false
 	}
 	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)))
+}
+
+// foldPaths reports whether deny-side path checks on this platform must ignore
+// case: the default filesystems on Windows (NTFS) and macOS (APFS/HFS+) are
+// case-insensitive, so /X/SESSIONS and /x/sessions reach the same bytes and a
+// case-variant must not slip past a deny rule. EvalSymlinks does NOT normalize
+// case, so realPath alone cannot be relied on for this.
+var foldPaths = runtime.GOOS == "windows" || runtime.GOOS == "darwin"
+
+// withinFold is within with platform case folding, for DENY-side checks only
+// (forbid-read roots, the session-data guard). Allow-side checks (confine)
+// keep the exact within: folding an allow rule on a case-sensitive filesystem
+// would wave a genuinely different directory through, whereas folding a deny
+// rule only ever refuses more. On a case-sensitive macOS volume this can
+// refuse a legitimate same-letters-different-case path; the error text points
+// at allow_write / forbid_read config as the way out.
+func withinFold(root, path string) bool {
+	if foldPaths {
+		return within(strings.ToLower(root), strings.ToLower(path))
+	}
+	return within(root, path)
 }
