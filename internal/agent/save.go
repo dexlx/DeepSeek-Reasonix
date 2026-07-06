@@ -403,7 +403,16 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		// An unknown-revision baseline (meta sidecar unreadable at load) cannot
 		// vouch for revision equality; the digest/prefix checks above already
 		// vouch for the content, so only a known baseline arms the CAS check.
-		if baseState.ok && baseState.revisionKnown && currentRevision != baseState.revision && !contentUnchanged {
+		// Under an append-shaped write (at most a compatible leading-system
+		// swap) a stale revision is ledger drift — a reset sidecar, a
+		// same-content heal, or another runtime recording messages this
+		// snapshot already contains — unless the transcript was rewound.
+		// Locating the persisted baseline among the snapshot's prefixes and
+		// requiring the disk transcript to still reach it tells the two apart:
+		// drift keeps the baseline reachable, while a rewind cut below it and
+		// appending would resurrect the suffix another runtime removed.
+		if baseState.ok && baseState.revisionKnown && currentRevision != baseState.revision && !contentUnchanged &&
+			!appendCoversPersistedBaseline(next, existing, baseState.digest) {
 			return snapshotWriteDecision{}, snapshotConflict(path, existing, next, baseState.revision, currentRevision)
 		}
 		// A normalized-dirty load means LoadSession repaired the history on the
@@ -431,7 +440,7 @@ func (s *Session) checkSnapshotWrite(path string, next []provider.Message, nextD
 		}
 		return decision, nil
 	}
-	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, nextVersion) {
+	if allowOwnedRewrite && s.ownsPersistedState(path, existingDigest, currentRevision, currentLedgerDigest, nextVersion) {
 		return snapshotWriteDecision{revision: currentRevision, repairLog: current.eventLogDamaged}, nil
 	}
 	if messagesHavePrefix(existing, next) || messagesHavePrefixWithCompatibleSystem(existing, next) {
@@ -668,7 +677,7 @@ func firstNonEmpty(values ...string) string {
 	return ""
 }
 
-func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, existingRevision int64, nextVersion uint64) bool {
+func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]byte, existingRevision int64, existingLedgerDigest string, nextVersion uint64) bool {
 	state := s.persistState(path)
 	if !state.ok || state.version > nextVersion || !bytes.Equal(existingDigest[:], state.digest[:]) {
 		return false
@@ -677,7 +686,24 @@ func (s *Session) ownsPersistedState(path string, existingDigest [sha256.Size]by
 	// digest+version match proves it. Requiring revision equality here would
 	// make every rewrite from such a baseline a permanent conflict, because
 	// the revision can only be re-learned by a successful save.
-	return !state.revisionKnown || state.revision == existingRevision
+	// A disk ledger with no recorded revision is the mirror case: recorded
+	// revisions start at 1, so revision 0 means the sidecar was deleted or
+	// rebuilt by a listing-only writer after this session's save. An absent
+	// claim cannot revoke the ownership the digest+version match proves.
+	if !state.revisionKnown || existingRevision == 0 || state.revision == existingRevision {
+		return true
+	}
+	// A foreign revision stamp whose recorded digest still describes these
+	// exact bytes (a same-content heal or no-op record by another runtime)
+	// vouches for no content of its own: the transcript is byte-for-byte what
+	// this session last persisted, so rewriting it destroys nothing of
+	// theirs — at worst the conflict moves to the stamper's next divergent
+	// save, where its in-memory history forks a recovery branch as usual.
+	// A stamp that disagrees with the on-disk transcript (or a legacy stamp
+	// with no digest) keeps revoking ownership: that is the aftermath of a
+	// save whose bytes and record split, the bytes cannot be attributed, and
+	// only the conservative conflict path preserves both sides.
+	return existingLedgerDigest == digestString(existingDigest)
 }
 
 func (s *Session) persistState(path string) sessionPersistState {
@@ -830,6 +856,49 @@ func messagesHavePrefix(full, prefix []provider.Message) bool {
 		}
 	}
 	return true
+}
+
+// messagesPrefixDigestDepth returns the number of leading messages of msgs
+// whose storage digest equals target, or -1 when no prefix matches. The
+// digest accumulates exactly like digestAndSizeSessionMessages, so a match at
+// depth k means msgs[:k] is byte-for-byte the transcript that produced target.
+func messagesPrefixDigestDepth(msgs []provider.Message, target [sha256.Size]byte) int {
+	h := sha256.New()
+	sum := make([]byte, 0, sha256.Size)
+	for i, m := range msgs {
+		b, err := json.Marshal(m)
+		if err != nil {
+			return -1
+		}
+		h.Write(b)
+		h.Write([]byte{'\n'})
+		sum = h.Sum(sum[:0])
+		if bytes.Equal(sum, target[:]) {
+			return i + 1
+		}
+	}
+	return -1
+}
+
+// appendCoversPersistedBaseline reports whether an append-shaped write (disk
+// transcript a prefix of next, modulo a compatible leading-system swap) still
+// covers everything this session ever persisted: the baseline digest must be
+// reachable as a prefix of the pending snapshot, and the disk transcript must
+// still extend at least to that depth. A shorter disk transcript means some
+// other runtime deliberately rewound below the baseline — appending over it
+// would resurrect the removed suffix, so the caller must conflict instead.
+func appendCoversPersistedBaseline(next, existing []provider.Message, baseDigest [sha256.Size]byte) bool {
+	depth := messagesPrefixDigestDepth(next, baseDigest)
+	if depth < 0 && len(next) > 0 && len(existing) > 0 &&
+		next[0].Role == provider.RoleSystem && existing[0].Role == provider.RoleSystem &&
+		!messagesEqualForStorage(next[0], existing[0]) {
+		// A resume that swapped the system prompt persisted its baseline with
+		// the previous system message — the one still on disk. Re-anchor the
+		// search on that message so the swap alone doesn't hide the baseline.
+		variant := append([]provider.Message{existing[0]}, next[1:]...)
+		depth = messagesPrefixDigestDepth(variant, baseDigest)
+	}
+	return depth >= 0 && len(existing) >= depth
 }
 
 func messagesHavePrefixWithCompatibleSystem(full, prefix []provider.Message) bool {
