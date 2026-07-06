@@ -864,6 +864,276 @@ func TestRecoveryBranchPersistsLaterOwnedCompactionRewrite(t *testing.T) {
 	}
 }
 
+func TestConcurrentSnapshotsShareSingleRecoveryHandoff(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := currentSess.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan controlRecoveryInfo, 16)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:    localExec,
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+		OnSessionRecovered: func(info SessionRecoveryInfo) error {
+			entered <- controlRecoveryInfo{originalPath: info.OriginalPath, recoveryPath: info.RecoveryPath}
+			<-release
+			return nil
+		},
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Snapshot() }()
+	first := <-entered
+	if first.originalPath != path || first.recoveryPath == "" || first.recoveryPath == path {
+		t.Fatalf("first recovery info = %+v, want distinct recovery from original", first)
+	}
+
+	const racingSnapshots = 8
+	var wg sync.WaitGroup
+	errs := make(chan error, racingSnapshots)
+	for i := 0; i < racingSnapshots; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			errs <- c.Snapshot()
+		}()
+	}
+
+	select {
+	case extra := <-entered:
+		t.Fatalf("concurrent snapshot entered recovery while first handoff was blocked: %+v", extra)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(release)
+	if err := <-firstDone; err != nil {
+		t.Fatalf("first Snapshot: %v", err)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("racing Snapshot: %v", err)
+		}
+	}
+	select {
+	case extra := <-entered:
+		t.Fatalf("unexpected additional recovery after handoff completed: %+v", extra)
+	default:
+	}
+
+	if got := c.SessionPath(); got != first.recoveryPath {
+		t.Fatalf("controller session path = %q, want recovery %q", got, first.recoveryPath)
+	}
+	matches, err := filepath.Glob(filepath.Join(dir, "*-recovery-*.jsonl"))
+	if err != nil {
+		t.Fatalf("glob recovery branches: %v", err)
+	}
+	recoveries := recoveryTranscriptPaths(matches)
+	if len(recoveries) != 1 || recoveries[0] != first.recoveryPath {
+		t.Fatalf("recovery branches = %v err=%v, want only %q", matches, err, first.recoveryPath)
+	}
+}
+
+func recoveryTranscriptPaths(paths []string) []string {
+	out := paths[:0]
+	for _, path := range paths {
+		if !strings.HasSuffix(path, ".events.jsonl") {
+			out = append(out, path)
+		}
+	}
+	return out
+}
+
+type controlRecoveryInfo struct {
+	originalPath string
+	recoveryPath string
+}
+
+// blockedRecoveryHandoff is a controller whose first Snapshot has entered the
+// recovery handoff and is parked inside OnSessionRecovered until release is
+// closed, so tests can race other controller operations against an in-flight
+// handoff.
+type blockedRecoveryHandoff struct {
+	c         *Controller
+	dir       string
+	path      string
+	local     *agent.Session
+	first     controlRecoveryInfo
+	release   chan struct{}
+	firstDone chan error
+}
+
+func startBlockedRecoveryHandoff(t *testing.T) *blockedRecoveryHandoff {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "session.jsonl")
+
+	currentSess := agent.NewSession("sys")
+	currentSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	currentSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "disk"})
+	if err := currentSess.Save(path); err != nil {
+		t.Fatalf("Save current: %v", err)
+	}
+
+	localSess := agent.NewSession("sys")
+	localSess.Add(provider.Message{Role: provider.RoleUser, Content: "first"})
+	localSess.Add(provider.Message{Role: provider.RoleAssistant, Content: "local"})
+	localExec := agent.New(nil, nil, localSess, agent.Options{}, event.Discard)
+
+	entered := make(chan controlRecoveryInfo, 1)
+	release := make(chan struct{})
+	c := New(Options{
+		Executor:    localExec,
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "test",
+		OnSessionRecovered: func(info SessionRecoveryInfo) error {
+			entered <- controlRecoveryInfo{originalPath: info.OriginalPath, recoveryPath: info.RecoveryPath}
+			<-release
+			return nil
+		},
+	})
+	t.Cleanup(func() {
+		select {
+		case <-release:
+		default:
+			close(release)
+		}
+	})
+
+	firstDone := make(chan error, 1)
+	go func() { firstDone <- c.Snapshot() }()
+	first := <-entered
+	if first.originalPath != path || first.recoveryPath == "" || first.recoveryPath == path {
+		t.Fatalf("recovery info = %+v, want distinct recovery from original", first)
+	}
+	return &blockedRecoveryHandoff{
+		c: c, dir: dir, path: path, local: localSess,
+		first: first, release: release, firstDone: firstDone,
+	}
+}
+
+// TestSessionSwapWaitsForRecoveryHandoff guards the swap side of the snapshot
+// serialization: moves of controller-owned session state must wait for an
+// in-flight save/recovery handoff instead of interleaving with it. A swap that
+// lands mid-handoff pairs the old path with the new session, which either
+// writes one transcript's messages into another's file or manufactures another
+// bogus conflict on the next save.
+func TestSessionSwapWaitsForRecoveryHandoff(t *testing.T) {
+	cases := []struct {
+		name string
+		run  func(t *testing.T, h *blockedRecoveryHandoff) (done chan struct{}, wantPath string)
+		// during runs while the handoff is still blocked; verify after the
+		// racing operation completed.
+		during func(t *testing.T, h *blockedRecoveryHandoff)
+		verify func(t *testing.T, h *blockedRecoveryHandoff)
+	}{
+		{name: "SetSessionPath", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+			other := filepath.Join(h.dir, "other.jsonl")
+			done := make(chan struct{})
+			go func() { h.c.SetSessionPath(other); close(done) }()
+			return done, other
+		}},
+		{name: "Resume", run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+			other := filepath.Join(h.dir, "resumed.jsonl")
+			sess := agent.NewSession("sys")
+			sess.Add(provider.Message{Role: provider.RoleUser, Content: "resumed"})
+			if err := sess.Save(other); err != nil {
+				t.Fatalf("Save resumed: %v", err)
+			}
+			done := make(chan struct{})
+			go func() { h.c.Resume(sess, other); close(done) }()
+			return done, other
+		}},
+		{
+			name: "CancelFlush",
+			run: func(t *testing.T, h *blockedRecoveryHandoff) (chan struct{}, string) {
+				// Truncate the cancelled turn: drop the assistant reply, the
+				// same shape stripTurnMessagesAfter feeds this helper.
+				truncated := []provider.Message{
+					{Role: provider.RoleSystem, Content: "sys"},
+					{Role: provider.RoleUser, Content: "first"},
+				}
+				done := make(chan struct{})
+				go func() { h.c.replaceSessionAfterCancel(truncated); close(done) }()
+				return done, h.first.recoveryPath
+			},
+			during: func(t *testing.T, h *blockedRecoveryHandoff) {
+				// The in-memory truncation itself must wait for the handoff: an
+				// early Replace would let the blocked save capture the shortened
+				// transcript, read the longer on-disk partial as a stale-prefix
+				// conflict, and adopt it back over the cancel cleanup.
+				if got := len(h.local.Snapshot()); got != 3 {
+					t.Fatalf("session truncated to %d messages while the handoff was still in flight, want 3", got)
+				}
+			},
+			verify: func(t *testing.T, h *blockedRecoveryHandoff) {
+				if got := len(h.local.Snapshot()); got != 2 {
+					t.Fatalf("session = %d messages after cancel flush, want 2", got)
+				}
+				loaded, err := agent.LoadSession(h.first.recoveryPath)
+				if err != nil {
+					t.Fatalf("LoadSession recovery: %v", err)
+				}
+				if got := len(loaded.Messages); got != 2 {
+					t.Fatalf("recovery transcript = %d messages after cancel flush, want 2", got)
+				}
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			h := startBlockedRecoveryHandoff(t)
+			done, wantPath := tc.run(t, h)
+			select {
+			case <-done:
+				t.Fatal("session state moved while the recovery handoff was still in flight")
+			case <-time.After(100 * time.Millisecond):
+			}
+			if tc.during != nil {
+				tc.during(t, h)
+			}
+			close(h.release)
+			if err := <-h.firstDone; err != nil {
+				t.Fatalf("first Snapshot: %v", err)
+			}
+			select {
+			case <-done:
+			case <-time.After(10 * time.Second):
+				t.Fatal("session state move did not finish after the handoff completed")
+			}
+			if got := h.c.SessionPath(); got != wantPath {
+				t.Fatalf("controller session path = %q, want %q", got, wantPath)
+			}
+			matches, err := filepath.Glob(filepath.Join(h.dir, "*-recovery-*.jsonl"))
+			if err != nil {
+				t.Fatalf("glob recovery branches: %v", err)
+			}
+			recoveries := recoveryTranscriptPaths(matches)
+			if len(recoveries) != 1 || recoveries[0] != h.first.recoveryPath {
+				t.Fatalf("recovery branches = %v, want only %q", matches, h.first.recoveryPath)
+			}
+			if tc.verify != nil {
+				tc.verify(t, h)
+			}
+		})
+	}
+}
+
 // TestSnapshotConflictAdoptionResetsRewriteBaseline guards the baseline
 // handoff on the adopt path: adopting a newer on-disk transcript installs a
 // freshly loaded session, and the replaced session's rewrite version must not

@@ -172,6 +172,17 @@ type Controller struct {
 	autosaveWG  sync.WaitGroup
 	planMode    bool
 	sessionPath string
+	// snapshotMu serializes the whole save/recovery handoff for this controller.
+	// Agent-level path locks protect individual files, but recovery also moves
+	// controller-owned state (sessionPath, guardianPath, checkpoints, rewrite
+	// baseline). Letting a second snapshot observe that migration halfway through
+	// can turn one conflict into a recovery cascade. Session/path swaps
+	// (new/clear/fork/branch/switch/resume/SetSessionPath) hold it for the same
+	// reason: a save that reads the old path but the new session would write one
+	// transcript's messages into another's file, or manufacture a bogus conflict.
+	// Not reentrant — never call snapshot (or anything that snapshots, such as
+	// recoverInterruptedTurn or maybeColdResumePrune) while holding it.
+	snapshotMu sync.Mutex
 	// savedRewriteVersion is the session rewrite generation that has been
 	// durably persisted for sessionPath. Auto-compaction rewrites history inside
 	// a normal turn; the next autosave must use SaveRewrite, not SaveSnapshot.
@@ -2042,6 +2053,9 @@ func (c *Controller) NewSession() error {
 		return err
 	}
 	c.hooks.SessionEnd(context.Background())
+	// Hold snapshotMu across the swap so an in-flight save cannot pair the old
+	// path with the fresh session (or the fresh path with the old session).
+	c.snapshotMu.Lock()
 	if c.sessionDir != "" {
 		c.mu.Lock()
 		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
@@ -2056,6 +2070,7 @@ func (c *Controller) NewSession() error {
 	}
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
+	c.snapshotMu.Unlock()
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
@@ -2082,10 +2097,15 @@ func (c *Controller) ClearSession() error {
 			return err
 		}
 	}
+	// Hold snapshotMu from artifact removal through the swap: a save slipping
+	// in between would resurrect the just-removed transcript, and one that
+	// overlapped the swap could pair the old path with the fresh session.
+	c.snapshotMu.Lock()
 	destroy := c.BeginDestroySession(oldPath)
 	if !destroy.Async {
 		if err := removeSessionArtifacts(oldPath); err != nil {
 			destroy.Finish()
+			c.snapshotMu.Unlock()
 			return err
 		}
 		destroy.Finish()
@@ -2105,6 +2125,7 @@ func (c *Controller) ClearSession() error {
 	}
 	c.ResetPlannerSession()
 	c.rebindCheckpoints(c.SessionPath())
+	c.snapshotMu.Unlock()
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
@@ -2322,6 +2343,8 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		return "", c.rewindFail(err)
 	}
 	if switchToFork {
+		// See snapshotMu: the swap must not interleave with an in-flight save.
+		c.snapshotMu.Lock()
 		c.executor.SetSession(sess)
 		c.markSessionRewritePersisted(sess)
 		c.ResetPlannerSession()
@@ -2334,6 +2357,7 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		if c.guardianSess != nil {
 			c.guardianSess.Reset()
 		}
+		c.snapshotMu.Unlock()
 	}
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("forked conversation at turn %d into a new session", turn)})
@@ -2396,6 +2420,8 @@ func (c *Controller) Branch(name string) (string, error) {
 	}); err != nil {
 		return "", c.rewindFail(err)
 	}
+	// See snapshotMu: the swap must not interleave with an in-flight save.
+	c.snapshotMu.Lock()
 	c.executor.SetSession(sess)
 	c.markSessionRewritePersisted(sess)
 	c.ResetPlannerSession()
@@ -2408,6 +2434,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
+	c.snapshotMu.Unlock()
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
 	return newPath, nil
@@ -2450,6 +2477,8 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	if err != nil {
 		return agent.BranchInfo{}, c.rewindFail(err)
 	}
+	// See snapshotMu: the swap must not interleave with an in-flight save.
+	c.snapshotMu.Lock()
 	if c.executor != nil {
 		c.executor.SetSession(loaded)
 		c.markSessionRewritePersisted(loaded)
@@ -2463,6 +2492,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	c.rebindCheckpoints(match.Path)
 	c.restoreTerminalGoalTodos(match.Path)
 	c.loadGuardianSession()
+	c.snapshotMu.Unlock()
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
 	return match, nil
@@ -2557,6 +2587,10 @@ func (c *Controller) summarizeAt(ctx context.Context, turn int, from bool) error
 // Resume seeds the session from a loaded transcript and pins the active file to
 // its path so auto-save keeps appending there.
 func (c *Controller) Resume(s *agent.Session, path string) {
+	// See snapshotMu: the swap must not interleave with an in-flight save.
+	// recoverInterruptedTurn and maybeColdResumePrune snapshot on their own,
+	// so they stay outside the locked section (snapshotMu is not reentrant).
+	c.snapshotMu.Lock()
 	if c.executor != nil {
 		c.executor.SetSession(s)
 		c.markSessionRewritePersisted(s)
@@ -2571,6 +2605,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	c.goals.restoreRunningFromState(path)
 	c.restoreTerminalGoalTodos(path)
 	c.loadGuardianSession()
+	c.snapshotMu.Unlock()
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
 }
@@ -2742,6 +2777,9 @@ func (c *Controller) autosaveWhileRunning(ctx context.Context) {
 }
 
 func (c *Controller) snapshot(markActivity, forceRewrite bool) error {
+	c.snapshotMu.Lock()
+	defer c.snapshotMu.Unlock()
+
 	c.mu.Lock()
 	path := c.sessionPath
 	modelRef := c.modelRef
@@ -3008,6 +3046,14 @@ func (c *Controller) stripCancelledVisibleTurnMessagesAfter(idx int) {
 }
 
 func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
+	// The whole cleanup is a save/recovery handoff like snapshot's: hold
+	// snapshotMu from the in-memory truncation onward. Truncating outside the
+	// lock would let an in-flight save capture the shortened transcript, read
+	// the longer partial autosave on disk as a stale-prefix conflict, and
+	// adopt it back into the executor — silently undoing the cancel cleanup
+	// before the flush below could persist it.
+	c.snapshotMu.Lock()
+	defer c.snapshotMu.Unlock()
 	c.executor.Session().Replace(append([]provider.Message(nil), msgs...))
 	// Rebuild canonical todo state from the truncated transcript so
 	// Controller.Todos(), goal readiness, and the task panel no longer see
@@ -3018,7 +3064,8 @@ func (c *Controller) replaceSessionAfterCancel(msgs []provider.Message) {
 	// returns to startMessages, so flush the cleaned transcript here. SaveRewrite
 	// still checks that this controller owns the current on-disk baseline before
 	// overwriting it, and also covers the edge case where the strip leaves only a
-	// system message (HasContent() == false).
+	// system message (HasContent() == false). The path is read under the lock so
+	// an in-flight recovery retarget cannot leave it stale.
 	c.mu.Lock()
 	path := c.sessionPath
 	c.mu.Unlock()
@@ -3047,6 +3094,9 @@ func (c *Controller) snapshotActivityIfChanged(startMessages int) {
 // SetSessionPath pins where auto-save lands (a fresh session file minted by the
 // caller when no resume path applies).
 func (c *Controller) SetSessionPath(p string) {
+	// See snapshotMu: the swap must not interleave with an in-flight save.
+	c.snapshotMu.Lock()
+	defer c.snapshotMu.Unlock()
 	c.mu.Lock()
 	c.sessionPath = p
 	c.guardianPath = guardian.PathFor(p)
