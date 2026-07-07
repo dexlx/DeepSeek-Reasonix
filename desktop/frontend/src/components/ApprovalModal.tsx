@@ -56,6 +56,8 @@ export function approvalToolLabel(tool: string, t: Translator): string {
       return t("approval.toolLabelSandboxEscape");
     case "plan_mode_read_only_command":
       return t("approval.toolLabelPlanModeReadOnly");
+    case "exit_plan_mode":
+      return t("approval.toolLabelExitPlan");
     default:
       return tool;
   }
@@ -159,6 +161,9 @@ export function ApprovalModal({
   const [revisionText, setRevisionText] = useState("");
   const [detailsOpen, setDetailsOpen] = useState(() => showToolDetailsByDefault);
   const [selectedIndex, setSelectedIndex] = useState(() => (isPlanApproval ? 1 : 0));
+  // Action index currently hovered/focused; the consequence preview row
+  // prefers it over the keyboard-selected action.
+  const [hoverIndex, setHoverIndex] = useState<number | null>(null);
   const cardRef = useRef<HTMLDivElement | null>(null);
   const shelfRef = useRef<HTMLDivElement | null>(null);
   const inputRef = useRef<HTMLTextAreaElement | null>(null);
@@ -217,6 +222,7 @@ export function ApprovalModal({
     setRevisionText("");
     setDetailsOpen(showToolDetailsByDefault);
     setSelectedIndex(isPlanApproval ? 1 : 0);
+    setHoverIndex(null);
   }, [approval.id, isPlanApproval, showToolDetailsByDefault]);
 
   const actionCount = isPlanApproval ? 3 : isFreshHumanApproval ? (hasFreshSessionGrant ? 3 : 2) : 4;
@@ -395,6 +401,26 @@ export function ApprovalModal({
     );
   }
 
+  // Descriptor list mirrors the action buttons below; the consequence row
+  // previews what the hovered (or keyboard-selected) action will actually do,
+  // in the quick-pick style the ask card uses for option descriptions.
+  const toolActions: { key: string; label: string; desc: string; run: () => void }[] = [
+    { key: "1", label: t("approval.allowOnce"), desc: t("approval.allowOnceDesc"), run: () => onAnswer(true, false, false) },
+    ...(isFreshHumanApproval
+      ? hasFreshSessionGrant
+        ? [
+            { key: "2", label: t("approval.allowSandboxEscapeSession"), desc: t("approval.allowSandboxEscapeSessionDesc"), run: () => onAnswer(true, true, false) },
+            { key: "3", label: t("approval.deny"), desc: t("approval.denyDesc"), run: () => onAnswer(false, false, false) },
+          ]
+        : [{ key: "2", label: t("approval.deny"), desc: t("approval.denyDesc"), run: () => onAnswer(false, false, false) }]
+      : [
+          { key: "2", label: t("approval.allowRuleSession"), desc: t("approval.allowRuleSessionDesc"), run: () => onAnswer(true, true, false) },
+          { key: "3", label: t("approval.allowRulePersistent"), desc: t("approval.allowRulePersistentDesc"), run: () => onAnswer(true, true, true) },
+          { key: "4", label: t("approval.deny"), desc: t("approval.denyDesc"), run: () => onAnswer(false, false, false) },
+        ]),
+  ];
+  const previewAction = toolActions[hoverIndex ?? selectedIndex] ?? null;
+
   return (
     <div ref={shelfRef}>
       <PromptShelf
@@ -418,24 +444,28 @@ export function ApprovalModal({
         }
         actions={
           <>
-            <PromptAction keyLabel="1" label={t("approval.allowOnce")} onClick={() => answerWithExit(() => onAnswer(true, false, false))} selected={selectedIndex === 0} />
-            {isFreshHumanApproval ? (
-              hasFreshSessionGrant ? (
-                <>
-                  <PromptAction keyLabel="2" label={t("approval.allowSandboxEscapeSession")} onClick={() => answerWithExit(() => onAnswer(true, true, false))} selected={selectedIndex === 1} />
-                  <PromptAction keyLabel="3" label={t("approval.deny")} onClick={() => answerWithExit(() => onAnswer(false, false, false))} selected={selectedIndex === 2} />
-                </>
-              ) : (
-                <PromptAction keyLabel="2" label={t("approval.deny")} onClick={() => answerWithExit(() => onAnswer(false, false, false))} selected={selectedIndex === 1} />
-              )
-            ) : (
-              <>
-                <PromptAction keyLabel="2" label={t("approval.allowRuleSession")} onClick={() => answerWithExit(() => onAnswer(true, true, false))} selected={selectedIndex === 1} />
-                <PromptAction keyLabel="3" label={t("approval.allowRulePersistent")} onClick={() => answerWithExit(() => onAnswer(true, true, true))} selected={selectedIndex === 2} />
-                <PromptAction keyLabel="4" label={t("approval.deny")} onClick={() => answerWithExit(() => onAnswer(false, false, false))} selected={selectedIndex === 3} />
-              </>
-            )}
+            {toolActions.map((action, index) => (
+              <PromptAction
+                key={action.key}
+                keyLabel={action.key}
+                label={action.label}
+                onClick={() => answerWithExit(action.run)}
+                selected={selectedIndex === index}
+                title={action.desc}
+                onHoverChange={(hovering) =>
+                  setHoverIndex((current) => (hovering ? index : current === index ? null : current))
+                }
+              />
+            ))}
           </>
+        }
+        note={
+          previewAction && (
+            <div className="approval-consequence">
+              <span className="approval-consequence__label">{previewAction.label}</span>
+              <span className="approval-consequence__text">{previewAction.desc}</span>
+            </div>
+          )
         }
       >
         {/* Guard the whole block: PromptShelf only renders its body when children

@@ -7538,6 +7538,31 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   overflow-wrap: anywhere;
 }
+/* Tool-approval consequence preview: same quick-pick pattern as the ask
+   detail row — pill buttons stay compact, the row spells out what the
+   hovered/selected action will do. */
+.approval-consequence {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0 2px;
+  color: var(--fg-dim);
+  font-size: 11.5px;
+  line-height: 1.45;
+}
+.approval-consequence__label {
+  flex: 0 0 auto;
+  max-width: 40%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--fg);
+  font-weight: 620;
+}
+.approval-consequence__text {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
 .prompt-shelf--ask .ask-shelf__custom-row {
   margin-top: 0;
 }
