@@ -141,7 +141,7 @@ func (a *App) AcceptMemorySuggestionForTab(tabID string, in MemorySuggestion) (s
 	if desc == "" || body == "" {
 		return "", fmt.Errorf("memory suggestion requires description and body")
 	}
-	name := suggestionName(in.Name, desc, "memory-candidate")
+	name := acceptedSuggestionName(in.Name, desc)
 	return ctrl.SaveMemory(memory.Memory{
 		Name:        name,
 		Title:       oneLine(in.Title),
@@ -506,6 +506,44 @@ func suggestionName(given, source, fallback string) string {
 		return name
 	}
 	return "candidate"
+}
+
+// acceptedSuggestionName preserves the candidate name generated at suggestion
+// time. Re-running asciiSlug here would truncate back to 56 chars and strip
+// the uniqueness hash suffix, re-colliding long common-prefix candidates at
+// save time even though their generated Name/ID differed. A well-formed slug
+// is kept verbatim (memory.Store.Save's own slug pass cleans but never
+// truncates); anything else falls back to deriving from the description as
+// before.
+func acceptedSuggestionName(given, desc string) string {
+	if isWellFormedSlug(given) {
+		return given
+	}
+	return suggestionName("", desc, "memory-candidate")
+}
+
+// isWellFormedSlug reports whether s already matches asciiSlug's output shape
+// (lowercase ASCII letters/digits separated by single dashes), possibly with a
+// hash suffix beyond asciiSlug's 56-char cap.
+func isWellFormedSlug(s string) bool {
+	if s == "" || len(s) > 128 || s[0] == '-' || s[len(s)-1] == '-' {
+		return false
+	}
+	prevDash := false
+	for _, r := range s {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			prevDash = false
+		case r == '-':
+			if prevDash {
+				return false
+			}
+			prevDash = true
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 // stableSuggestionName returns a slug that is unique per source text and stable

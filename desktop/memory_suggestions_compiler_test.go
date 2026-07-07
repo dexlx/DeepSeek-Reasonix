@@ -193,3 +193,48 @@ func compilerCandidateIDs(memories []MemorySuggestion) []string {
 	}
 	return out
 }
+
+// TestCompilerCandidateLongPrefixNamesPersistDistinctly reproduces the review
+// finding: two patterns sharing a >56-char ASCII prefix get distinct generated
+// Name/ID (hash suffix), but the accept path used to re-run asciiSlug, which
+// truncates to 56 chars and strips the hash — so both saved to one file.
+func TestCompilerCandidateLongPrefixNamesPersistDistinctly(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	userDir := t.TempDir()
+	cwd := t.TempDir()
+	sessionDir := t.TempDir()
+	store := memory.StoreFor(userDir, cwd)
+	prefix := "cannot find module providing package example dot com slash very long prefix "
+	seedCompilerFailures(t, cwd, 2, prefix+"alpha")
+	seedCompilerFailures(t, cwd, 2, prefix+"beta")
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{
+		Memory:     &memory.Set{Store: store, CWD: cwd, UserDir: userDir},
+		SessionDir: sessionDir,
+	}), "test-model")
+	app.tabs["test"].WorkspaceRoot = cwd
+
+	view := app.MemorySuggestions()
+	var candidates []MemorySuggestion
+	for _, item := range view.Memories {
+		if strings.HasPrefix(item.Name, "memory-v5-") {
+			candidates = append(candidates, item)
+		}
+	}
+	if len(candidates) != 2 {
+		t.Fatalf("candidates = %+v, want both long-prefix patterns", candidates)
+	}
+	for _, c := range candidates {
+		if _, err := app.AcceptMemorySuggestion(c); err != nil {
+			t.Fatalf("AcceptMemorySuggestion(%s): %v", c.Name, err)
+		}
+	}
+	saved := store.List()
+	if len(saved) != 2 {
+		t.Fatalf("saved memories = %d, want 2 distinct files (accept path truncated the hash suffix)", len(saved))
+	}
+	if saved[0].Name == saved[1].Name {
+		t.Fatalf("saved names collided: %q", saved[0].Name)
+	}
+}
