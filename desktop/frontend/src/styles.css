@@ -7477,14 +7477,14 @@ body > .mermaid-diagram--fullscreen {
 }
 .prompt-shelf--ask .prompt-shelf__actions {
   display: grid;
-  grid-template-columns: 1fr;
-  max-height: 154px;
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  max-height: min(220px, 30vh);
   overflow: auto;
   padding-right: 2px;
 }
 .prompt-shelf--ask .prompt-action {
   width: 100%;
-  min-height: 42px;
+  min-height: 36px;
   align-items: center;
   border-radius: 8px;
   padding: 5px 8px;
@@ -7499,6 +7499,19 @@ body > .mermaid-diagram--fullscreen {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+.prompt-shelf--ask .prompt-shelf__quick-actions {
+  justify-content: flex-end;
+  gap: 6px;
+  border-top: 1px solid var(--border-soft);
+  padding-top: 6px;
+  margin-top: 2px;
+}
+.prompt-shelf--ask .prompt-shelf__quick-actions > .prompt-action {
+  width: auto;
+  min-height: 28px;
+  padding: 4px 12px;
+  border-radius: 999px;
 }
 .prompt-shelf--ask .ask-shelf__custom-row {
   margin-top: 0;
