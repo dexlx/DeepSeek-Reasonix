@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"hash/fnv"
 	"path/filepath"
 	"strings"
 	"time"
@@ -232,7 +233,7 @@ func suggestMemories(set *memory.Set, sessions []suggestionSession) []MemorySugg
 				continue
 			}
 			seen[key] = true
-			name := suggestionName("", statement, fmt.Sprintf("memory-candidate-%d", len(out)+1))
+			name := stableSuggestionName(statement, "memory-candidate")
 			title := suggestionTitle(statement, "Memory candidate")
 			typ := inferMemoryType(statement)
 			out = append(out, MemorySuggestion{
@@ -505,6 +506,19 @@ func suggestionName(given, source, fallback string) string {
 		return name
 	}
 	return "candidate"
+}
+
+// stableSuggestionName returns a slug that is unique per source text and stable
+// across suggestion refreshes. asciiSlug drops non-ASCII runes and truncates to
+// 56 chars, so two CJK-only statements (or long English statements sharing a
+// prefix) can collide — colliding Names make Store.Save overwrite the earlier
+// memory, and colliding IDs cross-wire the frontend's accepted-state map.
+// Appending a content-based hash keeps slugs unique and deterministic.
+func stableSuggestionName(source, fallback string) string {
+	base := suggestionName("", source, fallback)
+	h := fnv.New32a()
+	_, _ = h.Write([]byte(source))
+	return fmt.Sprintf("%s-%08x", base, h.Sum32())
 }
 
 func asciiSlug(s string) string {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"fmt"
-	"hash/fnv"
 
 	"reasonix/internal/config"
 	"reasonix/internal/memory"
@@ -39,7 +38,7 @@ func suggestCompilerMemories(workspaceRoot string, set *memory.Set, already []Me
 			continue
 		}
 		seen[key] = true
-		name := compilerCandidateName(p.Pattern)
+		name := stableSuggestionName("memory-v5 "+p.Pattern, "memory-v5-pattern")
 		out = append(out, MemorySuggestion{
 			ID:          "memory-" + name,
 			Name:        name,
@@ -55,19 +54,6 @@ func suggestCompilerMemories(workspaceRoot string, set *memory.Set, already []Me
 		}
 	}
 	return out
-}
-
-// compilerCandidateName derives a stable, unique slug for one Memory v5
-// pattern. asciiSlug drops non-ASCII runes and truncates, so patterns that
-// differ only in CJK error text (or share a long English prefix) would
-// otherwise collide on Name/ID — the frontend keys cards and accepted state
-// by ID, and Store.Save overwrites by Name. A short hash of the full pattern
-// keeps the slug unique and stable across refreshes.
-func compilerCandidateName(pattern string) string {
-	base := suggestionName("", "memory-v5 "+pattern, "memory-v5-pattern")
-	h := fnv.New32a()
-	_, _ = h.Write([]byte(pattern))
-	return fmt.Sprintf("%s-%08x", base, h.Sum32())
 }
 
 func compilerPatternStatement(pattern string) string {
