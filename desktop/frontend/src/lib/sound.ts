@@ -159,13 +159,14 @@ export function playAttentionChime(): void {
 
 export type AttentionChimeEvent = {
   kind?: string;
+  tabId?: string;
   approval?: { id?: string };
   ask?: { id?: string };
 };
 
 export function attentionChimeEventKey(event: AttentionChimeEvent): string | undefined {
-  if (event.kind === "approval_request" && event.approval?.id) return `approval:${event.approval.id}`;
-  if (event.kind === "ask_request" && event.ask?.id) return `ask:${event.ask.id}`;
+  if (event.kind === "approval_request" && event.approval?.id) return `approval:${event.tabId ?? ""}:${event.approval.id}`;
+  if (event.kind === "ask_request" && event.ask?.id) return `ask:${event.tabId ?? ""}:${event.ask.id}`;
   return undefined;
 }
 

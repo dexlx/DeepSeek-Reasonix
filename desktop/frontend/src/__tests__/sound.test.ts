@@ -18,16 +18,18 @@ function eq(a: unknown, b: unknown, label: string) {
 console.log("\nsound notifications");
 
 {
-  eq(attentionChimeEventKey({ kind: "approval_request", approval: { id: "approval-1" } }), "approval:approval-1", "approval request builds a stable chime key");
-  eq(attentionChimeEventKey({ kind: "ask_request", ask: { id: "ask-1" } }), "ask:ask-1", "ask request builds a stable chime key");
+  eq(attentionChimeEventKey({ kind: "approval_request", tabId: "tab-a", approval: { id: "approval-1" } }), "approval:tab-a:approval-1", "approval request builds a tab-scoped chime key");
+  eq(attentionChimeEventKey({ kind: "ask_request", tabId: "tab-a", ask: { id: "ask-1" } }), "ask:tab-a:ask-1", "ask request builds a tab-scoped chime key");
+  eq(attentionChimeEventKey({ kind: "approval_request", approval: { id: "approval-1" } }), "approval::approval-1", "legacy approval events without a tab still build a stable key");
   eq(attentionChimeEventKey({ kind: "turn_done" }), undefined, "non-attention events do not build chime keys");
 }
 
 {
   const seen = new Set<string>();
-  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", approval: { id: "approval-1" } }, seen), true, "first approval event plays");
-  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", approval: { id: "approval-1" } }, seen), false, "replayed approval event is deduped");
-  eq(shouldPlayAttentionChimeForEvent({ kind: "ask_request", ask: { id: "ask-1" } }, seen), true, "different ask event still plays");
+  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", tabId: "tab-a", approval: { id: "1" } }, seen), true, "first approval event plays");
+  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", tabId: "tab-a", approval: { id: "1" } }, seen), false, "replayed approval event for the same tab is deduped");
+  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", tabId: "tab-b", approval: { id: "1" } }, seen), true, "same approval id from another tab still plays");
+  eq(shouldPlayAttentionChimeForEvent({ kind: "ask_request", tabId: "tab-a", ask: { id: "1" } }, seen), true, "ask id sharing an approval id still plays");
   eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request" }, seen), false, "malformed approval event does not play");
 }
 
