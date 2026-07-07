@@ -33,6 +33,17 @@ console.log("\nsound notifications");
   eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request" }, seen), false, "malformed approval event does not play");
 }
 
+{
+  // The dedupe set stays bounded: after many unique prompts it self-prunes
+  // while still deduping recently seen ids.
+  const seen = new Set<string>();
+  for (let i = 0; i < 2000; i++) {
+    shouldPlayAttentionChimeForEvent({ kind: "approval_request", tabId: "t", approval: { id: String(i) } }, seen);
+  }
+  eq(seen.size <= 1024, true, "dedupe set stays bounded after 2000 unique prompts");
+  eq(shouldPlayAttentionChimeForEvent({ kind: "approval_request", tabId: "t", approval: { id: "1999" } }, seen), false, "most recent prompt id is still deduped after pruning");
+}
+
 if (failed) {
   console.error(`sound notifications: ${failed} failed, ${passed} passed`);
   process.exit(1);

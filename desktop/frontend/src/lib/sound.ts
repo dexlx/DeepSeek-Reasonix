@@ -170,9 +170,22 @@ export function attentionChimeEventKey(event: AttentionChimeEvent): string | und
   return undefined;
 }
 
+// attentionChimeSeenCap bounds the dedupe set. Prompt ids are unique per
+// prompt, so the set only ever grows; past the cap the oldest half is dropped
+// (insertion order) — replay dedupe only needs to cover recently replayed
+// prompts, not the whole session history.
+const attentionChimeSeenCap = 512;
+
 export function shouldPlayAttentionChimeForEvent(event: AttentionChimeEvent, seen: Set<string>): boolean {
   const key = attentionChimeEventKey(event);
   if (!key || seen.has(key)) return false;
+  if (seen.size >= attentionChimeSeenCap) {
+    let drop = seen.size - attentionChimeSeenCap / 2;
+    for (const k of seen) {
+      if (drop-- <= 0) break;
+      seen.delete(k);
+    }
+  }
   seen.add(key);
   return true;
 }
