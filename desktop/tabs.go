@@ -1551,6 +1551,42 @@ func (a *App) ListTabs() []TabMeta {
 	return enrichTabMetas(out)
 }
 
+// syncTabWorkspaceRootSpellings repoints open project tabs at the registry's
+// canonical root spelling after a registry write may have rewritten it
+// (addProject and friends adopt the caller's spelling). Tabs, the project
+// tree, and persisted tab state then agree on a single string form of each
+// root, which the frontend compares exactly. Callers must not hold a.mu.
+func (a *App) syncTabWorkspaceRootSpellings() {
+	projects := loadProjectsFile().Projects
+	a.mu.Lock()
+	changed := false
+	for _, tab := range a.tabs {
+		if tab == nil || tab.Scope != "project" {
+			continue
+		}
+		i := projectIndexByRoot(projects, tab.WorkspaceRoot)
+		if i < 0 || tab.WorkspaceRoot == projects[i].Root {
+			continue
+		}
+		tab.WorkspaceRoot = projects[i].Root
+		changed = true
+	}
+	if changed {
+		a.saveTabsLocked()
+	}
+	a.mu.Unlock()
+	if changed {
+		a.emitProjectTreeChanged()
+	}
+}
+
+// registerProjectRoot indexes workspaceRoot in the project registry and
+// realigns open tabs when the registry adopted a new spelling of the root.
+func (a *App) registerProjectRoot(workspaceRoot string) {
+	_ = addProject(workspaceRoot, "")
+	a.syncTabWorkspaceRootSpellings()
+}
+
 // OpenProjectTab builds a controller scoped to workspaceRoot and opens the
 // session selected by the given topic. Topic selection resolves to a concrete
 // session path first; the visible tab is then attached to that session runtime.
@@ -1562,7 +1598,7 @@ func (a *App) OpenProjectTab(workspaceRoot, topicID string) (TabMeta, error) {
 		workspaceRoot = abs
 	}
 	saveWorkspace(workspaceRoot)
-	_ = addProject(workspaceRoot, "")
+	a.registerProjectRoot(workspaceRoot)
 
 	sessionPath, _ := a.findTopicSessionForTarget("project", workspaceRoot, topicID)
 	return a.openTopicTab("project", workspaceRoot, topicID, sessionPath)
@@ -1579,7 +1615,7 @@ func (a *App) openProjectTabInactive(workspaceRoot, topicID string) (TabMeta, er
 	if abs, err := filepath.Abs(workspaceRoot); err == nil {
 		workspaceRoot = abs
 	}
-	_ = addProject(workspaceRoot, "")
+	a.registerProjectRoot(workspaceRoot)
 
 	sessionPath, _ := a.findTopicSessionForTarget("project", workspaceRoot, topicID)
 	return a.openTopicTabWithActivation("project", workspaceRoot, topicID, sessionPath, false)
@@ -1713,7 +1749,7 @@ func (a *App) OpenTopicSession(scope, workspaceRoot, topicID, sessionPath string
 			return TabMeta{}, fmt.Errorf("workspaceRoot is required")
 		}
 		saveWorkspace(workspaceRoot)
-		_ = addProject(workspaceRoot, "")
+		a.registerProjectRoot(workspaceRoot)
 	}
 	_, validPath, err := a.sessionDirForPath(sessionPath)
 	if err != nil {
@@ -1794,7 +1830,7 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 			workspaceRoot = abs
 		}
 		saveWorkspace(workspaceRoot)
-		_ = addProject(workspaceRoot, "")
+		a.registerProjectRoot(workspaceRoot)
 	} else {
 		workspaceRoot = ""
 		globalRoot = globalWorkspaceRoot()
@@ -3063,7 +3099,7 @@ func (a *App) applySessionBindingToTab(tab *WorkspaceTab, binding sessionBinding
 		if workspaceRoot == "" {
 			return
 		}
-		_ = addProject(workspaceRoot, "")
+		a.registerProjectRoot(workspaceRoot)
 	} else {
 		scope = "global"
 		workspaceRoot = globalTabWorkspaceRoot()
@@ -3872,10 +3908,11 @@ func desktopMCPMigrationRoots(tabs desktopTabsFile) []string {
 	var roots []string
 	add := func(root string) {
 		root = normalizeProjectRoot(root)
-		if root == "" || seen[root] {
+		key := projectRootKey(root)
+		if root == "" || seen[key] {
 			return
 		}
-		seen[root] = true
+		seen[key] = true
 		roots = append(roots, root)
 	}
 	if cur := loadWorkspace(); cur != "" {
@@ -3907,16 +3944,17 @@ func recoverLegacyProjectSidebarRoots(tabs desktopTabsFile) (bool, error) {
 		for _, project := range f.Projects {
 			root := normalizeProjectRoot(project.Root)
 			if root != "" {
-				seen[root] = true
+				seen[projectRootKey(root)] = true
 			}
 		}
 
 		add := func(root string) {
 			root = normalizeProjectRoot(root)
-			if root == "" || seen[root] || !existingDirectory(root) {
+			key := projectRootKey(root)
+			if root == "" || seen[key] || !existingDirectory(root) {
 				return
 			}
-			seen[root] = true
+			seen[key] = true
 			f.Projects = append(f.Projects, desktopProject{Root: root})
 			changed = true
 		}
@@ -5862,6 +5900,7 @@ func (a *App) RenameProject(workspaceRoot, title string) error {
 	if err := renameProject(workspaceRoot, title); err != nil {
 		return err
 	}
+	a.syncTabWorkspaceRootSpellings()
 	a.emitProjectTreeChanged()
 	return nil
 }
@@ -5872,6 +5911,7 @@ func (a *App) SetProjectColor(workspaceRoot, color string) error {
 	if err := setProjectColor(workspaceRoot, color); err != nil {
 		return err
 	}
+	a.syncTabWorkspaceRootSpellings()
 	a.emitProjectTreeChanged()
 	return nil
 }

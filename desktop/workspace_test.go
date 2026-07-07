@@ -421,6 +421,42 @@ func TestProjectRootOpsFoldCaseOnWindows(t *testing.T) {
 	}
 }
 
+func TestSyncTabWorkspaceRootSpellingsOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("case-insensitive root matching only applies to Windows paths")
+	}
+	isolateDesktopUserDirs(t)
+	projectRoot := t.TempDir()
+	flipped := flipPathASCIICase(t, projectRoot)
+
+	if err := addProject(projectRoot, "Project"); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+
+	app := NewApp()
+	installNoopRuntimeEvents(app)
+	app.tabs["tab_case"] = &WorkspaceTab{
+		ID:            "tab_case",
+		Scope:         "project",
+		WorkspaceRoot: normalizeProjectRoot(projectRoot),
+		Ready:         true,
+		disabledMCP:   map[string]ServerView{},
+	}
+	app.tabOrder = []string{"tab_case"}
+
+	// Re-registering under the flipped spelling self-heals the registry root;
+	// open tabs must follow so the frontend keeps comparing one string form.
+	app.registerProjectRoot(flipped)
+
+	projects := loadProjectsFile().Projects
+	if len(projects) != 1 || projects[0].Root != normalizeProjectRoot(flipped) {
+		t.Fatalf("registry projects = %+v, want single root %q", projects, normalizeProjectRoot(flipped))
+	}
+	if got := app.tabs["tab_case"].WorkspaceRoot; got != projects[0].Root {
+		t.Fatalf("tab root = %q, want registry spelling %q", got, projects[0].Root)
+	}
+}
+
 func TestDialogDefaultDirectoryFallsBackFromMissingWorkspace(t *testing.T) {
 	parent := t.TempDir()
 	missing := filepath.Join(parent, "deleted", "project")

@@ -2774,7 +2774,7 @@ func (a *App) openTransientBlankRuntime(scope, workspaceRoot string) error {
 			return fmt.Errorf("workspaceRoot is required")
 		}
 		saveWorkspace(workspaceRoot)
-		_ = addProject(workspaceRoot, "")
+		a.registerProjectRoot(workspaceRoot)
 		actualRoot = workspaceRoot
 	} else {
 		actualRoot = globalWorkspaceRoot()
