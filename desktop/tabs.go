@@ -1059,6 +1059,13 @@ type runtimeEventEnvelope struct {
 // emission. runtime.EventsEmit can block when the single webview event channel
 // backs up; callers enqueue in-order work and return without holding the
 // agent's event.Sync lock.
+// runtimeEventsEmitFallback is the emit used when no per-instance override is
+// installed. Production keeps the real Wails bridge; the test binary swaps in
+// a no-op via TestMain, because Wails EventsEmit log.Fatals outside a running
+// Wails app and would kill the whole test process from any code path that
+// emits a runtime event with a plain Background context.
+var runtimeEventsEmitFallback runtimeEventEmitFunc = runtime.EventsEmit
+
 type asyncRuntimeEmitter struct {
 	mu      sync.Mutex
 	emit    runtimeEventEmitFunc
@@ -1114,7 +1121,7 @@ func (e *asyncRuntimeEmitter) run() {
 		}
 		emit := e.emit
 		if emit == nil {
-			emit = runtime.EventsEmit
+			emit = runtimeEventsEmitFallback
 		}
 		e.mu.Unlock()
 
@@ -1155,6 +1162,16 @@ func isBackgroundJobLifecycleNotice(e event.Event) bool {
 			strings.Contains(text, " finished: ") ||
 			strings.Contains(text, " failed: ") ||
 			strings.Contains(text, " killed: "))
+}
+
+// notifyTabRuntimeRebuilt tells the frontend a tab's controller was replaced
+// in place (model/effort/token-mode switch, clear-while-running). A rebuilt
+// controller restarts its approval/ask id counter at "1", so tab-scoped
+// frontend state keyed by prompt id (the attention-chime dedupe) must reset —
+// unlike agent:ready, this event carries no reload semantics, so emitting it
+// on every swap adds no hydration churn.
+func (a *App) notifyTabRuntimeRebuilt(tabID string) {
+	a.emitRuntimeEvent("runtime:rebuilt", tabID)
 }
 
 func (a *App) emitReady(ctx context.Context, tabID ...string) {

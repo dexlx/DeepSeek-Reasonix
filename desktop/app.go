@@ -1792,6 +1792,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	tab.resetTelemetry(path)
 	oldCtrl.CloseAfterDestroy()
 	a.emitProjectTreeChanged()
+	a.notifyTabRuntimeRebuilt(tab.ID)
 	return nil
 }
 
@@ -7345,6 +7346,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	// The runtime now reflects the on-disk config; drop any deferred refresh.
 	a.clearDeferredRebuild(tab.ID)
 	a.persistTabSessionPath(tab, path)
+	a.notifyTabRuntimeRebuilt(tab.ID)
 	return nil
 }
 
@@ -7496,6 +7498,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	// The rebuilt runtime reflects the on-disk config; drop any deferred refresh.
 	a.clearDeferredRebuild(tab.ID)
 	a.persistTabSessionPath(tab, path)
+	a.notifyTabRuntimeRebuilt(tab.ID)
 	return nil
 }
 
@@ -7623,6 +7626,7 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	// The rebuilt runtime reflects the on-disk config; drop any deferred refresh.
 	a.clearDeferredRebuild(tab.ID)
 	a.persistTabSessionPath(tab, path)
+	a.notifyTabRuntimeRebuilt(tab.ID)
 	return nil
 }
 
