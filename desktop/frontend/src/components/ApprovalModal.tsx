@@ -422,7 +422,7 @@ export function ApprovalModal({
             {isFreshHumanApproval ? (
               hasFreshSessionGrant ? (
                 <>
-                  <PromptAction keyLabel="2" label={t("approval.allowSandboxEscapeSession")} onClick={() => answerWithExit(() => onAnswer(true, true, false))} selected={selectedIndex === 1} />
+                  <PromptAction keyLabel="2" label={t(approval.tool === "config_write" ? "approval.allowConfigWriteSession" : "approval.allowSandboxEscapeSession")} onClick={() => answerWithExit(() => onAnswer(true, true, false))} selected={selectedIndex === 1} />
                   <PromptAction keyLabel="3" label={t("approval.deny")} onClick={() => answerWithExit(() => onAnswer(false, false, false))} selected={selectedIndex === 2} />
                 </>
               ) : (

@@ -689,6 +689,7 @@ export const zh: Record<DictKey, string> = {
   "approval.allowEditsSession": "本会话允许编辑",
   "approval.allowFilePersistent": "总是允许此文件（保存）",
   "approval.allowSandboxEscapeSession": "本会话使用真实环境",
+  "approval.allowConfigWriteSession": "本会话允许修改 Reasonix 配置",
   "approval.toolLabelBash": "bash",
   "approval.toolLabelEditFile": "编辑文件",
   "approval.toolLabelWriteFile": "写入文件",

@@ -688,6 +688,7 @@ export const en = {
   "approval.allowEditsSession": "Allow edits for session",
   "approval.allowFilePersistent": "Always allow this file (save)",
   "approval.allowSandboxEscapeSession": "Use real environment for this session",
+  "approval.allowConfigWriteSession": "Allow Reasonix config writes this session",
   "approval.toolLabelBash": "bash",
   "approval.toolLabelEditFile": "edit file",
   "approval.toolLabelWriteFile": "write file",

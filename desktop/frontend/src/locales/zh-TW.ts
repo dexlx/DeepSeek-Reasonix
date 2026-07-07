@@ -535,6 +535,7 @@ export const zhTW: Record<DictKey, string> = {
   "approval.allowEditsSession": "本會話允許編輯",
   "approval.allowFilePersistent": "總是允許此檔案（儲存）",
   "approval.allowSandboxEscapeSession": "本會話使用真實環境",
+  "approval.allowConfigWriteSession": "本會話允許修改 Reasonix 設定",
   "approval.toolLabelBash": "bash",
   "approval.toolLabelEditFile": "編輯檔案",
   "approval.toolLabelWriteFile": "寫入檔案",
