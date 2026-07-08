@@ -762,6 +762,8 @@ export const zh: Record<DictKey, string> = {
   "history.clearRecoveryCopies": "清理副本",
   "history.confirmClearRecoveryCopies": "确认清理副本",
   "history.clearRecoveryCopiesMenu": "清理恢复副本…",
+  "history.trashRecoveryCopies": "副本移入回收站",
+  "history.confirmTrashRecoveryCopies": "确认移入回收站",
   "history.recoveryCopiesGroup": "恢复副本",
   "history.moveToTrash": "移到回收站",
   "history.confirmMoveToTrash": "确认移入回收站",

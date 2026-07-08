@@ -761,6 +761,8 @@ export const en = {
   "history.clearRecoveryCopies": "Clear copies",
   "history.confirmClearRecoveryCopies": "Confirm clear copies",
   "history.clearRecoveryCopiesMenu": "Clear recovery copies…",
+  "history.trashRecoveryCopies": "Trash recovery copies",
+  "history.confirmTrashRecoveryCopies": "Confirm trash copies",
   "history.recoveryCopiesGroup": "Recovery copies",
   "history.moveToTrash": "Move to trash",
   "history.confirmMoveToTrash": "Confirm move to trash",

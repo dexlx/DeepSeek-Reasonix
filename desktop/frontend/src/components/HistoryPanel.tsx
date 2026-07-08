@@ -28,7 +28,7 @@ export function HistoryPanel({
   onRestore,
   onPurge,
   onPurgeAll,
-  onPurgeRecoveryCopies,
+  onDeleteMany,
   onClose,
 }: {
   kind?: "history" | "trash";
@@ -41,7 +41,7 @@ export function HistoryPanel({
   onRestore?: (path: string) => void;
   onPurge?: (path: string) => void;
   onPurgeAll?: (paths: string[]) => void;
-  onPurgeRecoveryCopies?: (paths: string[]) => void;
+  onDeleteMany?: (paths: string[]) => void;
   onClose: () => void;
 }) {
   const tr = useT();
@@ -146,7 +146,15 @@ export function HistoryPanel({
       return [s.title, s.preview, s.path, s.topicTitle, s.workspaceRoot].some((part) => (part ?? "").toLowerCase().includes(q));
     });
   }, [dateFilter, isTrash, query, scopeFilter, sessions, statusFilter]);
-  const recoveryCopyPaths = useMemo(() => sessions.filter((s) => s.recovered).map((s) => s.path), [sessions]);
+  // Recovery copies are bulk-actionable in both views: trash purges them for
+  // good, history sweeps them into the trash. The history sweep skips copies
+  // that are current or open in a tab — an adopted copy is someone's live
+  // conversation. Counting from `sessions` (not the filtered list) keeps the
+  // sweep exhaustive even while a search or filter is active.
+  const recoveryCopyPaths = useMemo(
+    () => sessions.filter((s) => s.recovered && (isTrash || (!s.current && !s.open))).map((s) => s.path),
+    [isTrash, sessions],
+  );
   const recoveryCopyCount = recoveryCopyPaths.length;
   const displayedSessions = useMemo(
     () =>
@@ -220,7 +228,7 @@ export function HistoryPanel({
     setMenuConfirmTarget({ kind: "clear" });
   };
   const armClearRecoveryCopies = () => {
-    if (!isTrash || recoveryCopyCount === 0) return;
+    if (recoveryCopyCount === 0 || (!isTrash && running)) return;
     setMenuSession(null);
     setMenuPoint(null);
     setBlankMenuPoint(null);
@@ -246,8 +254,10 @@ export function HistoryPanel({
     onPurgeAll?.(paths);
   };
   const clearRecoveryCopies = () => {
+    const paths = recoveryCopyPaths;
     closeHistoryMenus();
-    onPurgeRecoveryCopies?.(recoveryCopyPaths);
+    if (isTrash) onPurgeAll?.(paths);
+    else onDeleteMany?.(paths);
   };
   const sessionMenuItems: ContextMenuItem[] = menuSession
     ? isTrash
@@ -360,7 +370,7 @@ export function HistoryPanel({
   const actionConfirmPurge =
     selectedSession && menuConfirmTarget?.kind === "purge" && menuConfirmTarget.path === selectedSession.path;
   const actionConfirmClearTrash = isTrash && menuConfirmTarget?.kind === "clear";
-  const actionConfirmClearRecovery = isTrash && menuConfirmTarget?.kind === "clearRecovery";
+  const actionConfirmClearRecovery = menuConfirmTarget?.kind === "clearRecovery";
 
   const openSelected = () => {
     if (!selectedSession || running || isTrash) return;
@@ -401,13 +411,16 @@ export function HistoryPanel({
           {!isTrash && running && <div className="management-modal__summary history-modal__summary">{tr("history.readOnlyHint")}</div>}
         </div>
         <div className="management-modal__actions history-modal__actions">
-          {isTrash && recoveryCopyCount > 0 && (
+          {recoveryCopyCount > 0 && (
             <button
               className={`chip history-clear${actionConfirmClearRecovery ? " history-clear--confirm" : ""}`}
               type="button"
+              disabled={!isTrash && running}
               onClick={actionConfirmClearRecovery ? clearRecoveryCopies : armClearRecoveryCopies}
             >
-              {tr(actionConfirmClearRecovery ? "history.confirmClearRecoveryCopies" : "history.clearRecoveryCopies")}
+              {isTrash
+                ? tr(actionConfirmClearRecovery ? "history.confirmClearRecoveryCopies" : "history.clearRecoveryCopies")
+                : tr(actionConfirmClearRecovery ? "history.confirmTrashRecoveryCopies" : "history.trashRecoveryCopies")}
             </button>
           )}
           {isTrash && sessions.length > 0 && (
