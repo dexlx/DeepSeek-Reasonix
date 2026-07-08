@@ -140,17 +140,21 @@ func io2str(calls []string) string { return strings.Join(calls, ",") }
 
 func TestUpdateSinkToolLocations(t *testing.T) {
 	s := newUpdateSink(&fakeNotifier{}, "sess")
-	s.bindCwd("/proj")
+	cwd := t.TempDir()
+	s.bindCwd(cwd)
 
 	locs := s.toolLocations("read_file", `{"path":"pkg/a.go","offset":41}`)
-	if len(locs) != 1 || locs[0].Path != filepath.Join("/proj", "pkg/a.go") {
+	if len(locs) != 1 || locs[0].Path != filepath.Join(cwd, "pkg", "a.go") {
 		t.Fatalf("read_file locations = %+v", locs)
 	}
 	if locs[0].Line == nil || *locs[0].Line != 42 {
 		t.Fatalf("read_file line = %v, want 42 (offset is 0-based)", locs[0].Line)
 	}
-	if locs := s.toolLocations("edit_file", `{"path":"/abs/b.go"}`); len(locs) != 1 || locs[0].Path != "/abs/b.go" || locs[0].Line != nil {
-		t.Fatalf("edit_file locations = %+v", locs)
+	// A platform-absolute path passes through untouched.
+	abs := filepath.Join(t.TempDir(), "b.go")
+	absArgs, _ := json.Marshal(map[string]string{"path": abs})
+	if locs := s.toolLocations("edit_file", string(absArgs)); len(locs) != 1 || locs[0].Path != abs || locs[0].Line != nil {
+		t.Fatalf("edit_file locations = %+v, want %s", locs, abs)
 	}
 	if locs := s.toolLocations("bash", `{"command":"ls"}`); locs != nil {
 		t.Fatalf("bash should have no locations, got %+v", locs)
