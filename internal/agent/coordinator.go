@@ -266,72 +266,14 @@ func (c *Coordinator) Run(ctx context.Context, input string) error {
 }
 
 // isNoOpPlan reports whether the plan explicitly concludes that nothing needs
-// to change. The primary contract is the [no_changes] marker requested from the
-// planner in DefaultPlannerPrompt: when the final non-empty line IS the marker
-// (exactly, as the prompt asks) it is trusted as-is, so research notes above it
-// (which may mention tests, runs, or edits that already exist) cannot veto the
-// conclusion. A final line that merely mentions the marker in prose ("do not
-// emit [no_changes] because…") is not a conclusion and falls through to the
-// veto-guarded heuristics below. The legacy phrase list stays
-// as a fallback for planners that ignore the marker, but it only matches
-// conclusion positions (the first or last non-empty line) and is vetoed by
-// action verbs anywhere in the plan: a wrong skip silently drops the task,
-// while a missed skip just costs one executor round.
+// to change: the final non-empty line is exactly the [no_changes] marker that
+// DefaultPlannerPrompt requests. The marker is trusted as-is, so research notes
+// above it (which may mention tests, runs, or edits that already exist) cannot
+// veto the conclusion. There is deliberately no phrase heuristic behind it: a
+// wrong skip silently drops the task, while a planner that ignores the marker
+// contract just costs one executor round.
 func isNoOpPlan(plan string) bool {
-	trimmed := strings.TrimSpace(plan)
-	if trimmed == "" {
-		return false
-	}
-	first := strings.ToLower(firstNonEmptyLine(trimmed))
-	last := strings.ToLower(lastNonEmptyLine(trimmed))
-	if last == noChangesMarker {
-		return true
-	}
-	if containsNoOpActionTerm(strings.ToLower(trimmed)) {
-		return false
-	}
-	noOp := []string{
-		"no changes needed",
-		"no changes are needed",
-		"no changes required",
-		"no changes are required",
-		"no action needed",
-		"no action required",
-		"nothing to change",
-		"nothing to do",
-		"already handled",
-		"already implemented",
-		"already resolved",
-		"无需改动",
-		"无需修改",
-		"无需更改",
-		"不需要修改",
-		"不需要改",
-		"不用改",
-		"不用修改",
-		"不必改动",
-		"没有需要修改",
-		"已经正确处理",
-		"已经实现",
-		"已经解决",
-	}
-	for _, phrase := range noOp {
-		for _, line := range []string{first, last} {
-			if strings.Contains(line, phrase) && !strings.Contains(line, "not "+phrase) && !strings.Contains(line, "不是"+phrase) {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func firstNonEmptyLine(s string) string {
-	for _, line := range strings.Split(s, "\n") {
-		if t := strings.TrimSpace(line); t != "" {
-			return t
-		}
-	}
-	return ""
+	return strings.ToLower(lastNonEmptyLine(plan)) == noChangesMarker
 }
 
 func lastNonEmptyLine(s string) string {
@@ -342,25 +284,6 @@ func lastNonEmptyLine(s string) string {
 		}
 	}
 	return ""
-}
-
-func containsNoOpActionTerm(lower string) bool {
-	terms := []string{
-		" add ", " add docs", " add tests", " update ", " edit ", " write ",
-		" create ", " delete ", " remove ", " patch ", " refactor ", " implement ",
-		" run ", " test ", " build ", " fix ", " extend ", " verify ", " check ",
-		" investigate ",
-		"新增", "补充", "更新", "编辑", "写入", "创建", "删除", "移除",
-		"运行", "测试", "构建", "修复", "实现", "重构", "扩展", "验证", "排查",
-		"检查", "调查",
-	}
-	padded := " " + lower + " "
-	for _, term := range terms {
-		if strings.Contains(padded, term) {
-			return true
-		}
-	}
-	return false
 }
 
 func (c *Coordinator) persistExecutorNoOp(ctx context.Context, input, plan string) {
@@ -431,7 +354,7 @@ func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, 
 		// saved work is what the user is asked to continue from.
 		var pause *maxStepsPause
 		if !errors.As(err, &pause) {
-			c.plannerSess.Replace(before)
+			c.rollbackPlannerTurn(before, rewriteBefore)
 		}
 		return "", err
 	}
@@ -454,8 +377,32 @@ func (c *Coordinator) planWithTools(ctx context.Context, input string) (string, 
 	}
 	// No usable plan came back: roll back too, so the executor-fallback turn
 	// does not leave the planner session ending in a user message.
-	c.plannerSess.Replace(before)
+	c.rollbackPlannerTurn(before, rewriteBefore)
 	return "", fmt.Errorf("planner finished without producing a plan")
+}
+
+// rollbackPlannerTurn discards a failed planning turn from the planner session.
+// Without a mid-turn rewrite the pre-turn snapshot is restored exactly. When
+// auto-compaction rewrote the log during the turn, restoring the snapshot would
+// also revert the compaction — wasting its summarizer call and re-growing the
+// prompt the fold just paid to shrink — so only the trailing plain user
+// messages are dropped (the dangling turn input plus any steer/nudge messages):
+// those are what would produce consecutive user roles on the next plan, while
+// completed tool rounds and the compaction digest stay coherent history.
+func (c *Coordinator) rollbackPlannerTurn(before []provider.Message, rewriteBefore int) {
+	if c.plannerSess.RewriteVersion() == rewriteBefore {
+		c.plannerSess.Replace(before)
+		return
+	}
+	msgs := c.plannerSess.Snapshot()
+	for len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		if last.Role != provider.RoleUser || isCompactionSummary(last) {
+			break
+		}
+		msgs = msgs[:len(msgs)-1]
+	}
+	c.plannerSess.Replace(msgs)
 }
 
 func plannerSink(sink event.Sink) event.Sink {
