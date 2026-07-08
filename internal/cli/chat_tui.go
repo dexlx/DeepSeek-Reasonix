@@ -365,6 +365,11 @@ const resetMouseTracking = ansi.ResetModeMouseX10 +
 // snapshots on success.
 type compactDoneMsg struct{ err error }
 
+// tuiShutdownMsg asks the live TUI model to persist its current controller and
+// quit. It is injected from the signal handler so shutdown does not snapshot a
+// stale controller captured before an in-TUI rebuild.
+type tuiShutdownMsg struct{}
+
 // elapsedTickMsg fires once a second while a turn runs, driving the "thinking
 // Ns" counter in the status line.
 type elapsedTickMsg struct{}
@@ -1364,14 +1369,25 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice(fmt.Sprintf("%s: %v", i18n.M.SlashCompactFailed, msg.err))
 		} else {
 			_ = m.ctrl.Snapshot()
+			m.followSessionLease()
 		}
+
+	case tuiShutdownMsg:
+		if m.ctrl != nil {
+			_ = m.ctrl.Snapshot()
+			m.followSessionLease()
+		}
+		return m, tea.Quit
 
 	case modelSwitchMsg:
 		m.modelSwitchPending = false
 		m.pendingModelSwitch = nil
 		if msg.err != nil {
 			m.notice("model: " + msg.err.Error())
-			// Build failed — no old controller to retire.
+			// Build failed — no old controller to retire. The kept controller
+			// may still have been retargeted to a recovery branch by the
+			// pre-switch snapshot, so the lease must follow it.
+			m.followSessionLease()
 		} else {
 			m.ctrl = msg.ctrl
 			m.label = msg.label

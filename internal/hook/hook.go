@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/config"
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/proc"
+	"reasonix/internal/secrets"
 )
 
 // Event is a point in the agent loop a hook can fire at.
@@ -547,8 +548,8 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 	cmd := spawnCommand(cctx, in.Command)
 	proc.HideWindow(cmd)
 	cmd.Dir = in.Cwd
+	env := secrets.ProcessEnv()
 	if len(in.Env) > 0 {
-		env := os.Environ()
 		keys := make([]string, 0, len(in.Env))
 		for k := range in.Env {
 			keys = append(keys, k)
@@ -557,8 +558,8 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 		for _, k := range keys {
 			env = append(env, k+"="+in.Env[k])
 		}
-		cmd.Env = env
 	}
+	cmd.Env = env
 	cmd.Stdin = strings.NewReader(in.Stdin)
 	var outBuf, errBuf cappedBuffer
 	cmd.Stdout = &outBuf
