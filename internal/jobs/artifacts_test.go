@@ -77,6 +77,27 @@ func TestJobArtifactRedactsSecrets(t *testing.T) {
 	}
 }
 
+func TestJobArtifactMetadataRedactsLabel(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+	m := NewManager(event.Discard)
+	defer m.Close()
+	m.SetActiveSessionPath("session", sessionPath)
+	const secret = "sk-real-secret-value-123456"
+
+	j := m.StartForSession("session", "bash", "echo DEEPSEEK_API_KEY="+secret, func(context.Context, io.Writer) (string, error) {
+		return "", nil
+	})
+	<-j.done
+
+	data, err := os.ReadFile(filepath.Join(ArtifactDir(sessionPath), j.ID+jobMetaExt))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), secret) {
+		t.Fatalf("job metadata leaked label secret:\n%s", data)
+	}
+}
+
 func TestRestoreSessionArtifactsAndAdvanceSequence(t *testing.T) {
 	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
 	first := NewManager(event.Discard)

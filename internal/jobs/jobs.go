@@ -243,6 +243,7 @@ func (m *Manager) Start(kind, label string, run func(ctx context.Context, out io
 // only see jobs whose owner matches the active session.
 func (m *Manager) StartForSession(parentSession, kind, label string, run func(ctx context.Context, out io.Writer) (string, error)) *Job {
 	parentSession = strings.TrimSpace(parentSession)
+	label = secrets.Redact(label)
 	m.mu.Lock()
 	m.seq++
 	id := fmt.Sprintf("%s-%d", kind, m.seq)
