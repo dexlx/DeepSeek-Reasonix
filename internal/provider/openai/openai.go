@@ -346,9 +346,6 @@ var bufPool = sync.Pool{
 }
 
 func (c *client) Stream(ctx context.Context, req provider.Request) (<-chan provider.Chunk, error) {
-	if err := c.validateToolCallReasoning(req.Messages); err != nil {
-		return nil, err
-	}
 	buf := bufPool.Get().(*bytes.Buffer)
 	buf.Reset()
 	if err := json.NewEncoder(buf).Encode(c.buildRequest(req)); err != nil {
@@ -432,22 +429,6 @@ func sendChunk(ctx context.Context, out chan<- provider.Chunk, chunk provider.Ch
 	}
 }
 
-func (c *client) validateToolCallReasoning(messages []provider.Message) error {
-	if !c.RequiresToolCallReasoning() {
-		return nil
-	}
-	for i, m := range provider.SanitizeToolPairing(messages) {
-		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 && strings.TrimSpace(m.ReasoningContent) == "" {
-			return &provider.MissingToolCallReasoningError{
-				Provider:      c.name,
-				MessageIndex:  i,
-				ToolCallCount: len(m.ToolCalls),
-			}
-		}
-	}
-	return nil
-}
-
 func (c *client) buildRequest(req provider.Request) chatRequest {
 	// Repair tool-call pairing before sending: an interrupted/resumed history can
 	// carry an assistant tool_calls turn whose results never landed, which DeepSeek
@@ -460,11 +441,15 @@ func (c *client) buildRequest(req provider.Request) chatRequest {
 			ToolCallID: m.ToolCallID,
 			Name:       m.Name,
 		}
-		// DeepSeek thinking mode 400s a tool_calls turn whose reasoning_content was
-		// dropped on a cache-miss replay ("reasoning_content … must be passed back"),
-		// so round it back — but only on the turn that carries the tool calls.
+		// DeepSeek thinking mode 400s an assistant tool_calls turn whose
+		// reasoning_content KEY is absent from the request JSON ("reasoning_content
+		// … must be passed back"). The API accepts an empty string, and only
+		// validates turns after the last user message, but emitting the field on
+		// every tool_calls turn is uniform and verified accepted — so always send
+		// it (empty included) rather than fail the request when reasoning was lost
+		// upstream (e.g. a gateway renamed the field).
 		if c.deepseek && m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
-			cm.ReasoningContent = m.ReasoningContent
+			cm.ReasoningContent = &m.ReasoningContent
 		}
 		for _, tc := range m.ToolCalls {
 			wire := chatToolCall{ID: tc.ID, Type: "function"}
@@ -834,8 +819,12 @@ type chatMessage struct {
 	// serializes as null (nil here); a string for every other text message
 	// (empty included — null is rejected by some backends for a tool message);
 	// and a []chatContentPart array for a vision user turn carrying images.
-	Content          any            `json:"content"`
-	ReasoningContent string         `json:"reasoning_content,omitempty"`
+	Content any `json:"content"`
+	// A pointer so the field can serialize as an empty string: DeepSeek thinking
+	// mode requires the reasoning_content key to be PRESENT on assistant
+	// tool_calls turns (an empty value passes; a missing key 400s), while every
+	// other message must keep omitting it.
+	ReasoningContent *string        `json:"reasoning_content,omitempty"`
 	ToolCalls        []chatToolCall `json:"tool_calls,omitempty"`
 	ToolCallID       string         `json:"tool_call_id,omitempty"`
 	Name             string         `json:"name,omitempty"`

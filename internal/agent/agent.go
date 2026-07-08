@@ -1158,9 +1158,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		// when building the request, since re-sent reasoning is billable prompt
 		// input for no cache or coherence gain.
 		calls = a.withPreviewFileDiffs(calls)
-		if err := a.validateToolCallReasoning(calls, reasoning); err != nil {
-			return err
-		}
+		a.warnMissingToolCallReasoning(calls, reasoning)
 		a.session.Add(provider.Message{
 			Role:               provider.RoleAssistant,
 			Content:            text,
@@ -1258,18 +1256,21 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
 }
 
-func (a *Agent) validateToolCallReasoning(calls []provider.ToolCall, reasoning string) error {
+// warnMissingToolCallReasoning surfaces a DeepSeek thinking-mode tool_calls
+// turn that arrived without reasoning text — usually a gateway renaming or
+// dropping the reasoning field. The turn is still saved and the replay still
+// succeeds (the wire layer always emits the reasoning_content key for such
+// turns), but the model continues without its chain-of-thought context, so the
+// degradation is worth a visible warning.
+func (a *Agent) warnMissingToolCallReasoning(calls []provider.ToolCall, reasoning string) {
 	if len(calls) == 0 || !provider.RequiresToolCallReasoning(a.prov) {
-		return nil
+		return
 	}
 	if strings.TrimSpace(reasoning) != "" {
-		return nil
+		return
 	}
-	return &provider.MissingToolCallReasoningError{
-		Provider:      a.prov.Name(),
-		ToolCallCount: len(calls),
-		CurrentTurn:   true,
-	}
+	a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn,
+		Text: fmt.Sprintf("%s returned %d tool call(s) without reasoning_content; continuing, but thinking context is lost for this turn (is a gateway dropping the reasoning field?)", a.prov.Name(), len(calls))})
 }
 
 // maxStepsPause is the deliberate stop when a positive tool-call budget runs

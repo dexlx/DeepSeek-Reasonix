@@ -1014,17 +1014,17 @@ func TestStreamReasoningContentTakesPrecedenceOverFallback(t *testing.T) {
 	}
 }
 
-func TestStreamRejectsDeepSeekToolCallsWithoutReasoningBeforeHTTP(t *testing.T) {
-	var requests int
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		requests++
-		w.WriteHeader(http.StatusTeapot)
-	}))
-	defer srv.Close()
-
+// TestBuildRequestAlwaysSendsReasoningKeyOnDeepSeekToolCalls proves the wire
+// contract verified against the live API: DeepSeek thinking mode 400s an
+// assistant tool_calls turn whose reasoning_content KEY is missing from the
+// request JSON, but accepts an empty string. A turn whose reasoning was lost
+// upstream (gateway renamed/dropped the field, legacy session, model switch)
+// must therefore still serialize the key — while plain assistant text turns
+// keep omitting it.
+func TestBuildRequestAlwaysSendsReasoningKeyOnDeepSeekToolCalls(t *testing.T) {
 	p, err := New(provider.Config{
 		Name:    "deepseek-proxy",
-		BaseURL: srv.URL,
+		BaseURL: "https://api.deepseek.com",
 		Model:   "deepseek-v4-pro",
 		APIKey:  "k",
 		Extra:   map[string]any{"reasoning_protocol": "deepseek"},
@@ -1032,21 +1032,66 @@ func TestStreamRejectsDeepSeekToolCallsWithoutReasoningBeforeHTTP(t *testing.T) 
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	_, err = p.Stream(context.Background(), provider.Request{
+	body, err := json.Marshal(p.(*client).buildRequest(provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleUser, Content: "inspect"},
 			{Role: provider.RoleAssistant, ToolCalls: []provider.ToolCall{{
 				ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
 			}}},
 			{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
+			{Role: provider.RoleAssistant, Content: "plain text turn"},
+		},
+	}))
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	var req struct {
+		Messages []map[string]json.RawMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(body, &req); err != nil {
+		t.Fatalf("unmarshal request: %v", err)
+	}
+	if len(req.Messages) != 4 {
+		t.Fatalf("messages = %d, want 4", len(req.Messages))
+	}
+	rc, ok := req.Messages[1]["reasoning_content"]
+	if !ok {
+		t.Fatal("tool_calls turn with lost reasoning must still serialize the reasoning_content key")
+	}
+	if string(rc) != `""` {
+		t.Fatalf("reasoning_content = %s, want empty string", rc)
+	}
+	if _, ok := req.Messages[3]["reasoning_content"]; ok {
+		t.Fatal("plain assistant text turn must keep omitting reasoning_content")
+	}
+}
+
+// TestBuildRequestRoundTripsDeepSeekToolCallReasoning keeps the healthy-path
+// bytes intact: when the session has the provider-issued reasoning, it is
+// replayed verbatim on the tool_calls turn.
+func TestBuildRequestRoundTripsDeepSeekToolCallReasoning(t *testing.T) {
+	p, err := New(provider.Config{
+		Name:    "deepseek-proxy",
+		BaseURL: "https://api.deepseek.com",
+		Model:   "deepseek-v4-pro",
+		APIKey:  "k",
+		Extra:   map[string]any{"reasoning_protocol": "deepseek"},
+	})
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	out := p.(*client).buildRequest(provider.Request{
+		Messages: []provider.Message{
+			{Role: provider.RoleUser, Content: "inspect"},
+			{Role: provider.RoleAssistant, ReasoningContent: "read main.go first", ToolCalls: []provider.ToolCall{{
+				ID: "call_1", Name: "read_file", Arguments: `{"path":"main.go"}`,
+			}}},
+			{Role: provider.RoleTool, ToolCallID: "call_1", Name: "read_file", Content: "package main"},
 		},
 	})
-	var missing *provider.MissingToolCallReasoningError
-	if !errors.As(err, &missing) {
-		t.Fatalf("Stream error = %T %v, want MissingToolCallReasoningError", err, err)
-	}
-	if requests != 0 {
-		t.Fatalf("invalid DeepSeek history should fail locally, server saw %d request(s)", requests)
+	got := out.Messages[1].ReasoningContent
+	if got == nil || *got != "read main.go first" {
+		t.Fatalf("reasoning_content = %v, want provider-issued reasoning round-tripped", got)
 	}
 }
 

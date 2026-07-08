@@ -530,21 +530,40 @@ func TestRunWellFormedToolLoopRoundTrips(t *testing.T) {
 	}
 }
 
-func TestRunRejectsRequiredToolCallsWithoutReasoning(t *testing.T) {
+// TestRunWarnsAndContinuesOnMissingToolCallReasoning: a DeepSeek thinking-mode
+// tool_calls turn arriving without reasoning (gateway dropped the field) is a
+// quality degradation, not a failure — the turn is saved, the loop continues to
+// completion, and the user sees a warn notice naming the likely cause. The
+// wire layer keeps the replay valid by always serializing the reasoning_content
+// key on such turns.
+func TestRunWarnsAndContinuesOnMissingToolCallReasoning(t *testing.T) {
 	mp := testutil.NewMock("deepseek-proxy",
 		testutil.Turn{ToolCalls: []provider.ToolCall{{ID: "c1", Name: "echo", Arguments: `{"text":"hi"}`}}},
+		testutil.Turn{Text: "done"},
 	)
-	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, event.Discard)
+	sink := &recordSink{}
+	a := New(toolCallReasoningRequiredProvider{mp}, echoRegistry(), NewSession(""), Options{}, sink)
 
-	err := a.Run(context.Background(), "go")
-	var missing *provider.MissingToolCallReasoningError
-	if !errors.As(err, &missing) || !missing.CurrentTurn {
-		t.Fatalf("Run error = %T %v, want current-turn MissingToolCallReasoningError", err, err)
+	if err := a.Run(context.Background(), "go"); err != nil {
+		t.Fatalf("Run: %v", err)
 	}
+	var savedToolTurn bool
 	for _, m := range a.Session().Messages {
-		if m.Role == provider.RoleAssistant || m.Role == provider.RoleTool {
-			t.Fatalf("invalid tool-call turn should not be saved, session=%+v", a.Session().Messages)
+		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
+			savedToolTurn = true
 		}
+	}
+	if !savedToolTurn {
+		t.Fatalf("tool-call turn should be saved despite missing reasoning, session=%+v", a.Session().Messages)
+	}
+	var warned bool
+	for _, e := range sink.kinds(event.Notice) {
+		if e.Level == event.LevelWarn && strings.Contains(e.Text, "without reasoning_content") {
+			warned = true
+		}
+	}
+	if !warned {
+		t.Fatal("missing-reasoning tool_calls turn should emit a warn notice")
 	}
 }
 
