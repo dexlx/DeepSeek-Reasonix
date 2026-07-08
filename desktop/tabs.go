@@ -5390,6 +5390,9 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	// unmarked so the next render retries instead of the gate hiding it forever.
 	deferred := false
 	for _, info := range infos {
+		if sessionOrderInfoIsAutomaticRecovery(info) {
+			continue
+		}
 		if strings.TrimSpace(info.TopicID) != "" {
 			continue
 		}
@@ -5567,6 +5570,9 @@ func repairIndexedSessionTopics(dir string) []string {
 	sourcesChanged := false
 	deferred := false
 	for _, info := range infos {
+		if sessionOrderInfoIsAutomaticRecovery(info) {
+			continue
+		}
 		topicID := strings.TrimSpace(info.TopicID)
 		if topicID == "" {
 			continue
@@ -5661,6 +5667,37 @@ func indexedSessionTopicTitle(sessionTitles map[string]string, info agent.Sessio
 		return title
 	}
 	return topicTitleFromText(info.Preview)
+}
+
+func sessionOrderInfoIsAutomaticRecovery(info agent.SessionOrderInfo) bool {
+	return info.Recovered ||
+		strings.TrimSpace(info.RecoveryDigest) != "" ||
+		isAutomaticRecoverySessionPath(info.Path)
+}
+
+func sessionInfoIsAutomaticRecovery(info agent.SessionInfo) bool {
+	return info.Recovered ||
+		strings.TrimSpace(info.RecoveryDigest) != "" ||
+		isAutomaticRecoverySessionPath(info.Path)
+}
+
+func isAutomaticRecoverySessionPath(path string) bool {
+	id := agent.BranchID(path)
+	idx := strings.LastIndex(id, "-recovery-")
+	if idx <= 0 {
+		return false
+	}
+	suffix := id[idx+len("-recovery-"):]
+	if len(suffix) != 16 {
+		return false
+	}
+	for _, r := range suffix {
+		if (r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F') {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func legacyMigrationTargetForDir(dir string) (scope, workspaceRoot, topicTitleRoot string, ok bool) {
@@ -6547,6 +6584,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 		}
 		seenRuntimePaths[sessionPath] = true
 		info := sessionInfos[sessionPath]
+		recovered := sessionInfoIsAutomaticRecovery(info) || isAutomaticRecoverySessionPath(sessionPath)
 		label := runtimeSessionTreeLabel(tab, info, sessionTitles[sessionPath])
 		status := activityStatusForTab(tab)
 		runtimeStatus := control.RuntimeStatus{}
@@ -6563,7 +6601,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 			open:             open,
 			running:          running,
 			status:           status,
-			recovered:        info.Recovered,
+			recovered:        recovered,
 			recoveryReason:   info.RecoveryReason,
 			recoveryDigest:   info.RecoveryDigest,
 			recoveryParentID: string(info.ParentID),
@@ -7807,7 +7845,7 @@ func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]
 		key := topicSummaryKey(info.Scope, info.WorkspaceRoot, info.TopicID)
 		summary := topicSummaries[key]
 		lastActivityAt := info.LastActivityAt.UnixMilli()
-		if info.Recovered {
+		if sessionInfoIsAutomaticRecovery(info) {
 			// A conflict copy duplicates its original, so its turns would
 			// double-count — but its activity is real: once a tab adopts the
 			// copy as its live transcript, all new work lands here, and

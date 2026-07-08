@@ -2273,7 +2273,7 @@ func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, 
 		WorkspaceRoot:  s.WorkspaceRoot,
 		TopicID:        s.TopicID,
 		TopicTitle:     s.TopicTitle,
-		Recovered:      s.Recovered,
+		Recovered:      sessionInfoIsAutomaticRecovery(s),
 	}
 }
 
