@@ -530,6 +530,7 @@ export const zhTW: Record<DictKey, string> = {
   "approval.allowRulePersistentDesc": "儲存為持久允許規則，之後的會話也不再詢問。",
   "approval.denyDesc": "拒絕本次呼叫，模型會收到拒絕結果並繼續。",
   "approval.allowSandboxEscapeSessionDesc": "本會話後續命令改在真實環境執行，跳過沙箱。",
+  "approval.allowConfigWriteSessionDesc": "本會話後續寫入 Reasonix 受管設定檔不再詢問。",
   "approval.details": "詳情",
   "approval.hideDetails": "收起",
   "approval.deny": "拒絕",
@@ -545,6 +546,7 @@ export const zhTW: Record<DictKey, string> = {
   "approval.allowEditsSession": "本會話允許編輯",
   "approval.allowFilePersistent": "總是允許此檔案（儲存）",
   "approval.allowSandboxEscapeSession": "本會話使用真實環境",
+  "approval.allowConfigWriteSession": "本會話允許修改 Reasonix 設定",
   "approval.toolLabelBash": "bash",
   "approval.toolLabelEditFile": "編輯檔案",
   "approval.toolLabelWriteFile": "寫入檔案",
@@ -567,6 +569,9 @@ export const zhTW: Record<DictKey, string> = {
   "approval.sandboxEscapeSubjectPrefix": "僅本次不進沙箱執行：",
   "approval.sandboxEscapeWrapReason": "Windows 沙箱無法包裝這條命令。是否僅本次不進 OS 沙箱執行？這只會對此命令繞過 OS 沙箱。",
   "approval.sandboxEscapeRuntimeReason": "Windows 沙箱啟動這條命令時失敗。是否僅本次不進 OS 沙箱執行？這只會對此命令繞過 OS 沙箱。",
+  "approval.toolLabelConfigWrite": "Reasonix 設定寫入核准",
+  "approval.configWriteSubjectPrefix": "寫入 Reasonix 設定：",
+  "approval.configWriteReason": "這次寫入的目標是工作區之外的 Reasonix 託管設定檔。它可以改變後續工作階段的模型供應商、沙箱規則、權限和 MCP 伺服器，因此需要你的明確核准。",
 
   // 提問卡片
   "ask.title": "需要你決定",

@@ -683,6 +683,7 @@ export const en = {
   "approval.allowRulePersistentDesc": "Save a persistent allow rule; future sessions stop asking too.",
   "approval.denyDesc": "Reject this call; the model sees the refusal and continues.",
   "approval.allowSandboxEscapeSessionDesc": "Run follow-up commands in the real environment for the rest of this session.",
+  "approval.allowConfigWriteSessionDesc": "Allow future writes to Reasonix-managed config files for the rest of this session.",
   "approval.details": "Details",
   "approval.hideDetails": "Hide",
   "approval.deny": "Deny",
@@ -698,6 +699,7 @@ export const en = {
   "approval.allowEditsSession": "Allow edits for session",
   "approval.allowFilePersistent": "Always allow this file (save)",
   "approval.allowSandboxEscapeSession": "Use real environment for this session",
+  "approval.allowConfigWriteSession": "Allow Reasonix config writes this session",
   "approval.toolLabelBash": "bash",
   "approval.toolLabelEditFile": "edit file",
   "approval.toolLabelWriteFile": "write file",
@@ -720,6 +722,9 @@ export const en = {
   "approval.sandboxEscapeSubjectPrefix": "run unconfined once: ",
   "approval.sandboxEscapeWrapReason": "Windows sandbox could not wrap this command. Run it unconfined one time? This bypasses the OS sandbox for this command only.",
   "approval.sandboxEscapeRuntimeReason": "Windows sandbox failed while starting this command. Run it unconfined one time? This bypasses the OS sandbox for this command only.",
+  "approval.toolLabelConfigWrite": "Reasonix config write",
+  "approval.configWriteSubjectPrefix": "write Reasonix config: ",
+  "approval.configWriteReason": "This write targets a Reasonix-managed configuration file outside the workspace. It can change providers, sandbox rules, permissions, and MCP servers for future sessions, so it needs your explicit approval.",
 
   // ask card
   "ask.title": "Need your decision",
