@@ -3670,6 +3670,11 @@ export default function App() {
               guidanceConsumedKey={latestGuidanceConsumed?.key}
               guidanceConsumedText={latestGuidanceConsumed?.text}
               guidanceQueuePreviewItems={guidanceQueueMockItems}
+              context={state.context}
+              turnCost={state.turnCost}
+              cacheHitTokens={state.usage?.cacheHitTokens}
+              cacheMissTokens={state.usage?.cacheMissTokens}
+              balance={state.balance}
             />
             <StatusBar
               context={state.context}

@@ -27494,6 +27494,208 @@ body > .mermaid-diagram--fullscreen {
   flex: 0 1 auto;
 }
 
+/* —— Creation 上下文窗口环形进度 —— */
+
+.context-ring {
+  display: none;
+}
+.app--creation .context-ring,
+:root[data-theme-style] .app--creation .context-ring {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: none;
+  background: transparent;
+  cursor: pointer;
+  border-radius: 50%;
+  flex-shrink: 0;
+  margin-right: 5px;
+  transition: background 0.16s var(--ease-out);
+}
+.app--creation .context-ring:hover,
+:root[data-theme-style] .app--creation .context-ring:hover {
+  background: color-mix(in srgb, var(--fg-faint) 8%, transparent);
+}
+.app--creation .context-ring__svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+}
+.app--creation .context-ring__track {
+  stroke: color-mix(in srgb, var(--fg-faint) 18%, transparent);
+}
+.app--creation .context-ring__arc {
+  transition: stroke-dashoffset 0.4s var(--ease-out), stroke 0.4s var(--ease-out);
+}
+.app--creation .context-ring--good .context-ring__arc {
+  stroke: var(--accent);
+}
+.app--creation .context-ring--notice .context-ring__arc {
+  stroke: var(--warn);
+}
+.app--creation .context-ring--warn .context-ring__arc {
+  stroke: var(--err);
+}
+
+/* popover 卡片 —— 对齐 context-panel__capacity-card 风格（portal 到 body，无 .app--creation 前缀） */
+.context-ring-popover,
+:root[data-theme-style] .context-ring-popover {
+  min-width: 220px;
+  max-width: 270px;
+  padding: 0;
+  border-radius: 8px;
+  border: 1px solid color-mix(in srgb, var(--accent) 12%, var(--border-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg)) 0%, var(--bg) 100%);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+  font-size: 12px;
+  line-height: 1.5;
+}
+/* 警告/注意态 tinted border + gradient */
+.context-ring-popover--notice,
+:root[data-theme-style] .context-ring-popover--notice {
+  border-color: color-mix(in srgb, var(--warn) 26%, var(--border-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--warn) 6%, var(--bg)) 0%, var(--bg) 100%);
+}
+.context-ring-popover--warn,
+:root[data-theme-style] .context-ring-popover--warn {
+  border-color: color-mix(in srgb, var(--err) 28%, var(--border-soft));
+  background:
+    linear-gradient(180deg, color-mix(in srgb, var(--err) 6%, var(--bg)) 0%, var(--bg) 100%);
+}
+.context-ring-popover__inner {
+  padding: 10px;
+}
+.context-ring-popover__header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.context-ring-popover__pct {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  padding: 1px 6px;
+  border-radius: 5px;
+  background: color-mix(in srgb, var(--accent) 14%, transparent);
+  color: var(--accent);
+  font-size: 11px;
+  font-weight: 650;
+  line-height: 1.4;
+  font-variant-numeric: tabular-nums;
+}
+/* 进度条 */
+.context-ring-popover__gauge {
+  margin-bottom: 8px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.context-ring-popover__bar {
+  position: relative;
+  display: flex;
+  height: 5px;
+  border-radius: 999px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+}
+.context-ring-popover__seg {
+  height: 100%;
+  transition: width 0.3s var(--ease-out);
+}
+.context-ring-popover__seg--prompt {
+  background: color-mix(in srgb, var(--accent) 68%, var(--fg));
+}
+.context-ring-popover__seg--completion {
+  background: color-mix(in srgb, var(--accent) 48%, var(--fg));
+}
+.context-ring-popover__seg--reasoning {
+  background: color-mix(in srgb, var(--warn) 56%, var(--fg));
+}
+.context-ring-popover__seg--other {
+  background: color-mix(in srgb, var(--fg-faint) 22%, var(--fg));
+}
+/* 进度条标记线 */
+.context-ring-popover__mark {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  pointer-events: none;
+}
+.context-ring-popover__mark--compact {
+  background: color-mix(in srgb, var(--warn) 55%, var(--fg-faint));
+}
+.context-ring-popover__mark--attention {
+  background: repeating-linear-gradient(
+    to bottom,
+    color-mix(in srgb, var(--fg-faint) 35%, transparent) 0px,
+    color-mix(in srgb, var(--fg-faint) 35%, transparent) 2px,
+    transparent 2px,
+    transparent 4px
+  );
+}
+.context-ring-popover__title {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg);
+  font-size: 14px;
+  font-weight: 620;
+  line-height: 1.15;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+.context-ring-popover__rows {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+}
+.context-ring-popover__row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 12px;
+}
+.context-ring-popover__label {
+  color: var(--fg-faint);
+  font-size: 11px;
+  white-space: nowrap;
+}
+.context-ring-popover__value {
+  color: var(--fg-dim);
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+  white-space: nowrap;
+}
+.context-ring-popover__value--accent {
+  color: var(--accent);
+  font-weight: 650;
+}
+/* popover 内环 SVG */
+.context-ring-popover__track {
+  stroke: color-mix(in srgb, var(--fg-faint) 18%, transparent);
+}
+.context-ring-popover__arc {
+  transition: stroke-dashoffset 0.4s var(--ease-out);
+}
+.context-ring-popover--good .context-ring-popover__arc {
+  stroke: var(--accent);
+}
+.context-ring-popover--notice .context-ring-popover__arc {
+  stroke: var(--warn);
+}
+.context-ring-popover--warn .context-ring-popover__arc {
+  stroke: var(--err);
+}
+
 @media (max-width: 760px) {
   .app--creation .footer,
   :root[data-theme-style] .app--creation .footer {

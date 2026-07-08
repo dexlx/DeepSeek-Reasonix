@@ -12,7 +12,7 @@ import { detectShortcutPlatform, matchesShortcut } from "../lib/keyboardShortcut
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
-import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode } from "../lib/types";
+import { type CollaborationMode, type CommandInfo, type ComposerInsertRequest, type ContextInfo, type DirEntry, type EffortInfo, type HistoryMessage, type Mode, type PromptHistoryEntry, type SessionMeta, type SessionReference, type SlashArgItem, type SlashArgsResult, type TokenMode, type ToolApprovalMode, type BalanceInfo } from "../lib/types";
 import {
   formatWorkspaceReference,
   parseWorkspaceReference,
@@ -26,6 +26,7 @@ import { EffortSwitcher } from "./EffortSwitcher";
 import { ModelSwitcher } from "./ModelSwitcher";
 import { Tooltip } from "./Tooltip";
 import { ComposerContextCard } from "./ComposerContextCard";
+import { ContextWindowRing } from "./ContextWindowRing";
 import { ImageViewer } from "./ImageViewer";
 import { VirtualMenu } from "./VirtualMenu";
 import { dirEntryMenuLabel, dirEntrySubmitPath } from "./FileReferenceMenu";
@@ -468,6 +469,11 @@ export function Composer({
   guidanceConsumedKey,
   guidanceConsumedText,
   guidanceQueuePreviewItems,
+  context,
+  turnCost,
+  cacheHitTokens,
+  cacheMissTokens,
+  balance,
 }: {
   running: boolean;
   collaborationMode: CollaborationMode;
@@ -516,6 +522,11 @@ export function Composer({
   guidanceConsumedKey?: string;
   guidanceConsumedText?: string;
   guidanceQueuePreviewItems?: readonly string[];
+  context?: ContextInfo;
+  turnCost?: number;
+  cacheHitTokens?: number;
+  cacheMissTokens?: number;
+  balance?: BalanceInfo;
 }) {
   const { t, locale } = useI18n();
   const { showToast } = useToast();
@@ -2754,6 +2765,7 @@ export function Composer({
               </div>
             </div>
             <div className="composer-meta__control composer-meta__control--model">
+              <ContextWindowRing context={context} tabId={tabId} turnCost={turnCost} cacheHitTokens={cacheHitTokens} cacheMissTokens={cacheMissTokens} balance={balance} />
               <ModelSwitcher label={modelLabel} tabId={tabId} onPick={onSwitchModel} />
             </div>
             {hasEffort && (
