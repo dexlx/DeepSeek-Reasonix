@@ -473,7 +473,7 @@ func TestCoordinatorNudgesMixedGuidanceAndWorkTask(t *testing.T) {
 
 func TestCoordinatorSkipsExecutorWhenPlannerConcludesNoChanges(t *testing.T) {
 	planner := &mockProvider{name: "planner", chunks: []provider.Chunk{
-		{Type: provider.ChunkText, Text: "No changes are needed; the current implementation already handles this."},
+		{Type: provider.ChunkText, Text: "No changes are needed; the current implementation already handles this.\n[no_changes]"},
 		{Type: provider.ChunkDone},
 	}}
 	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
@@ -736,10 +736,10 @@ func (e *errorProvider) Stream(context.Context, provider.Request) (<-chan provid
 	return nil, fmt.Errorf("provider unavailable")
 }
 
-// TestIsNoOpPlan pins the no-op conclusion contract: the [no_changes] marker on
-// the final line wins; phrase heuristics only match conclusion lines and are
-// vetoed by action verbs, so an "already implemented; extend it" plan must
-// still reach the executor.
+// TestIsNoOpPlan pins the no-op conclusion contract: only a final non-empty
+// line that is exactly the [no_changes] marker skips the executor. Phrase
+// conclusions without the marker deliberately do not — a wrong skip silently
+// drops the task, a missed one costs a single executor round.
 func TestIsNoOpPlan(t *testing.T) {
 	cases := []struct {
 		name string
@@ -747,7 +747,7 @@ func TestIsNoOpPlan(t *testing.T) {
 		want bool
 	}{
 		{"empty", "", false},
-		{"conclusion phrase single line", "No changes are needed; the current implementation already handles this.", true},
+		{"conclusion phrase without marker", "No changes are needed; the current implementation already handles this.", false},
 		{"already implemented with follow-up work", "The auth flow is already implemented; extend it to cover refresh tokens.", false},
 		{"mid-plan aside is not a conclusion", "Findings:\nThis part is already handled by the retry helper.\nConfirm the desired direction with the user.", false},
 		{"explicit marker on final line", "The retry logic exists in client.go and the tests already run this path.\n[no_changes]", true},
@@ -757,7 +757,7 @@ func TestIsNoOpPlan(t *testing.T) {
 		{"marker with trailing prose on final line", "[no_changes] — but confirm the flag default first.", false},
 		{"negated conclusion", "It is not already implemented.", false},
 		{"no-op phrase with action verb", "No changes are needed in code, but run the test suite.", false},
-		{"chinese conclusion", "无需改动,当前逻辑已经覆盖该场景。", true},
+		{"chinese conclusion without marker", "无需改动,当前逻辑已经覆盖该场景。", false},
 		{"chinese follow-up work", "重试逻辑已经实现,但需要扩展覆盖刷新令牌。", false},
 	}
 	for _, tc := range cases {
@@ -1155,5 +1155,68 @@ func TestCoordinatorPassesTurnContextToPlannerGate(t *testing.T) {
 	}
 	if !sawTurnValue {
 		t.Fatal("planner gate did not receive the turn context")
+	}
+}
+
+// TestCoordinatorFailedTurnRollbackKeepsCompaction pins the rewrite-aware
+// rollback economics: when auto-compaction fires mid-turn (after a tool round)
+// and the planner THEN fails, restoring the pre-turn snapshot would revert the
+// compaction — wasting its summarizer call and re-growing the prompt. The
+// rollback must instead keep the compacted log and only drop trailing plain
+// user messages, so the next plan still starts from the folded history without
+// consecutive user roles.
+func TestCoordinatorFailedTurnRollbackKeepsCompaction(t *testing.T) {
+	planner := &mockProvider{name: "planner", streams: [][]provider.Chunk{
+		{ // tool round whose usage crosses the force-compaction watermark
+			{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "call-1", Name: "read_file", Arguments: `{"path":"main.go"}`}},
+			{Type: provider.ChunkUsage, Usage: &provider.Usage{PromptTokens: 1900, TotalTokens: 1950}},
+			{Type: provider.ChunkDone},
+		},
+		{ // the compaction summarizer call
+			{Type: provider.ChunkText, Text: "- goal: guard work\n- pending: continue"},
+			{Type: provider.ChunkDone},
+		},
+		{ // the next planner round fails
+			{Type: provider.ChunkError, Err: fmt.Errorf("rate limited")},
+		},
+	}}
+	exec := &mockProvider{name: "executor", chunks: []provider.Chunk{
+		{Type: provider.ChunkText, Text: "Done."},
+		{Type: provider.ChunkDone},
+	}}
+
+	plannerReg := tool.NewRegistry()
+	plannerReg.Add(coordinatorTestTool{name: "read_file", readOnly: true, output: "package main"})
+
+	executor := New(exec, tool.NewRegistry(), NewSession("exec-sys"), Options{}, event.Discard)
+	plannerSess := NewSession("planner-sys")
+	filler := strings.Repeat("planner history filler. ", 150)
+	for i := 0; i < 3; i++ {
+		plannerSess.Add(provider.Message{Role: provider.RoleUser, Content: filler})
+		plannerSess.Add(provider.Message{Role: provider.RoleAssistant, Content: filler})
+	}
+	coord := NewCoordinator(planner, plannerSess, nil, plannerReg, Options{ContextWindow: 2000}, executor, 0, event.Discard, nil)
+
+	if err := coord.Run(context.Background(), "fix the bug"); err != nil {
+		t.Fatalf("Run should fall back to the executor, got: %v", err)
+	}
+	if got := len(exec.requests); got != 1 {
+		t.Fatalf("executor requests = %d, want 1 fallback run", got)
+	}
+	if plannerSess.RewriteVersion() == 0 {
+		t.Fatal("test setup: planner compaction did not fire, the rewrite-aware rollback is not exercised")
+	}
+	msgs := plannerSess.Snapshot()
+	var hasSummary bool
+	for _, m := range msgs {
+		if isCompactionSummary(m) {
+			hasSummary = true
+		}
+	}
+	if !hasSummary {
+		t.Fatal("rollback reverted the compaction: no compaction summary left in the planner session")
+	}
+	if last := msgs[len(msgs)-1]; last.Role == provider.RoleUser && !isCompactionSummary(last) {
+		t.Fatalf("planner session ends in a plain user message after rollback: %q", last.Content)
 	}
 }
