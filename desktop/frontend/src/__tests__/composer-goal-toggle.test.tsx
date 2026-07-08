@@ -789,6 +789,53 @@ console.log("\ncomposer goal toggle");
 }
 
 {
+  // #6210 follow-up: if the turn ends naturally while the controller is
+  // still activating/hydrating (submitDisabled), onSend would silently
+  // no-op — auto-send must wait for submitDisabled to clear instead of
+  // firing into that window and losing the queued message anyway.
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    submitDisabled: false,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+      return Promise.resolve();
+    },
+  });
+
+  await rerender({ insertRequest: { id: 9, text: "keep going once ready", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
+
+  // Turn ends, but the controller is still not ready to accept a submit —
+  // matches a rebuild/hydration window right after the turn finishes.
+  await rerender({ running: false, submitDisabled: true });
+  await act(async () => {
+    await flushTimers();
+  });
+  eq(calls.send.length, 0, "auto-send does not fire while the controller is still activating");
+  ok(document.querySelector(".composer-guidance-item") !== null, "queued message stays on the shelf while not ready");
+
+  await rerender({ submitDisabled: false });
+  await waitFor("queued guidance auto-sent once the controller becomes ready", () => calls.send.length === 1);
+
+  eq(calls.send.join(","), "keep going once ready", "queued guidance sends once submitDisabled clears, instead of being lost");
+  ok(document.querySelector(".composer-guidance-item") === null, "guidance shelf clears once the delayed send completes");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
   const dom = installDom();
   let listDirCalls = 0;
   mockApp({

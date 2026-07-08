@@ -691,19 +691,26 @@ export function Composer({
         setPastedBlocks([]);
         setOpenPastedLabels([]);
       }
-      // A message queued while the turn was running (without the explicit
-      // "guide" steer click) is the user's next turn, not scratch text to
-      // discard — send it now that the turn is done. sendQueuedGuidance
-      // removes it from the shelf on success and starts a new turn, which
-      // flips `running` true then false again, so this same effect fires
-      // once more and drains the shelf one item at a time. A failed send
-      // is left in place (dismissible via the trash button) rather than
-      // silently dropped.
-      const next = pendingGuidance[0];
-      if (next) void sendQueuedGuidance(next);
     }
     wasRunning.current = running;
-  }, [running, text, pendingGuidance]);
+  }, [running, text]);
+
+  // A message queued while a turn was running (without the explicit "guide"
+  // steer click) is the user's next turn, not scratch text to discard — send
+  // it once the turn is done. Gated on submitDisabled, not just running:
+  // if the turn ends while the controller is still activating/hydrating,
+  // App's onSend silently no-ops on !controllerReady, but sendQueuedGuidance
+  // still removes the item as if it had sent — so wait for submitDisabled to
+  // clear instead of firing into that no-op window (#6210 follow-up). Once
+  // both conditions hold, a successful send removes the head and starts a
+  // new turn, which flips `running` true then false again, re-running this
+  // effect to drain the shelf one item at a time; a failed send is left in
+  // place (dismissible via the trash button) rather than silently dropped.
+  useEffect(() => {
+    if (running || submitDisabled) return;
+    const next = pendingGuidance[0];
+    if (next) void sendQueuedGuidance(next);
+  }, [running, submitDisabled, pendingGuidance]);
 
   useEffect(() => {
     setPendingGuidance([]);
