@@ -330,6 +330,16 @@ func (s *acpSession) swapModeID(id string) (old string) {
 	return old
 }
 
+// currentModeID returns the mode last reported to the client.
+func (s *acpSession) currentModeID() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.modeID == "" {
+		return sessionModeDefault
+	}
+	return s.modeID
+}
+
 // currentCtrl returns the session's controller under mu. rebuildSession swaps
 // ctrl while holding mu, so any read of the field outside mu races with a
 // concurrent config rebuild; always go through this accessor unless mu is
@@ -659,7 +669,17 @@ func (s *service) sessionLoad(ctx context.Context, raw json.RawMessage) (any, er
 	if err != nil {
 		return nil, err
 	}
-	return SessionLoadResult{Models: cfgState.Models, Modes: sessionModesState(sessionModeDefault), ConfigOptions: cfgState.ConfigOptions}, nil
+	return SessionLoadResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions}, nil
+}
+
+// sessionModesFor reports the modes state for a just-opened session: a session
+// already live in this process keeps whatever mode the user put it in (plan /
+// auto), so load/resume must not tell a reconnecting client "default".
+func (s *service) sessionModesFor(id string) *SessionModeState {
+	if sess := s.session(id); sess != nil {
+		return sessionModesState(sess.currentModeID())
+	}
+	return sessionModesState(sessionModeDefault)
 }
 
 // sessionResume restores a previously-saved session without replaying its
@@ -673,7 +693,7 @@ func (s *service) sessionResume(ctx context.Context, raw json.RawMessage) (any, 
 	if err != nil {
 		return nil, err
 	}
-	return SessionResumeResult{Models: cfgState.Models, Modes: sessionModesState(sessionModeDefault), ConfigOptions: cfgState.ConfigOptions}, nil
+	return SessionResumeResult{Models: cfgState.Models, Modes: s.sessionModesFor(p.SessionID), ConfigOptions: cfgState.ConfigOptions}, nil
 }
 
 func (s *service) openExistingSession(ctx context.Context, method, id, cwdParam string, servers []MCPServerSpec, replay bool) (SessionConfigState, error) {
@@ -1044,14 +1064,18 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	prevPath := cur.SessionPath()
 	carried := cur.History()
 
-	newCtrl, err := s.factory.NewSession(ctx, SessionParams{
+	rebuildParams := SessionParams{
 		Cwd:                cwd,
 		MCPServers:         mcpServers,
 		Sink:               sink,
 		Model:              cfgState.Model,
 		EffortOverride:     cloneStringPtr(cfgState.EffortOverride),
 		OnSessionRecovered: s.sessionRecoveredHandler(sess.id),
-	})
+	}
+	// The rebuilt controller must keep the client-capability wiring (fs
+	// overlay, host terminal) a model/effort switch would otherwise drop.
+	s.bindClientIO(&rebuildParams, sess.id)
+	newCtrl, err := s.factory.NewSession(ctx, rebuildParams)
 	if err != nil {
 		return &RPCError{Code: ErrInternal, Message: "session config: " + err.Error()}
 	}
@@ -1059,6 +1083,15 @@ func (s *service) rebuildSession(ctx context.Context, sess *acpSession, cfgState
 	sink.bindApprove(newCtrl.Approve)
 	sink.bindAnswer(newCtrl.AnswerQuestion)
 	newCtrl.AdoptHistory(carried, prevPath)
+	// Re-apply the session's ACP mode: a fresh controller boots with default
+	// switches, which would silently drop a user-selected plan/auto mode and
+	// desynchronize the client's mode picker.
+	switch sess.currentModeID() {
+	case sessionModePlan:
+		newCtrl.SetMode(true, false)
+	case sessionModeAuto:
+		newCtrl.SetMode(false, true)
+	}
 	// InheritLifecycleFrom wires two concrete controllers' turn/hook state; it's a
 	// construction concern, not part of the driving port. cur is always the
 	// *control.Controller the factory built for this session, so this is safe.

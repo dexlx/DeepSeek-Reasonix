@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 )
 
 // fakeOverlay serves a fixed path→content map and records writes.
@@ -163,5 +164,21 @@ func TestBashTerminalSkippedWhenSandboxEnforced(t *testing.T) {
 	_, _ = b.Execute(context.Background(), json.RawMessage(`{"command":"echo hi"}`))
 	if len(term.called) != 0 {
 		t.Fatalf("enforced sandbox must never route to the client terminal; calls = %v", term.called)
+	}
+}
+
+func TestBashTerminalSkippedWhenEnvFilteringEnabled(t *testing.T) {
+	secrets.SetFilterSubprocessEnv(true)
+	t.Cleanup(func() { secrets.SetFilterSubprocessEnv(false) })
+	term := &fakeTerminal{out: "must not run", ok: true}
+	b := bash{workDir: t.TempDir(), terminal: term}
+	// The client terminal spawns with its own unfiltered environment, so an
+	// enabled [secrets].filter_subprocess_env must force local execution.
+	out, err := b.Execute(context.Background(), json.RawMessage(`{"command":"printf local"}`))
+	if err != nil || !strings.Contains(out, "local") {
+		t.Fatalf("env filtering must fall back to local execution; got %q, %v", out, err)
+	}
+	if len(term.called) != 0 {
+		t.Fatalf("env filtering must never route to the client terminal; calls = %v", term.called)
 	}
 }

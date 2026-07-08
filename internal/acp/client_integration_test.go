@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"reasonix/internal/agent"
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/permission"
@@ -307,7 +308,8 @@ func TestE2ESessionModes(t *testing.T) {
 	defer stop()
 
 	client.call(t, "initialize", InitializeParams{ProtocolVersion: 1})
-	resp := client.call(t, "session/new", SessionNewParams{Cwd: t.TempDir()})
+	cwd := t.TempDir()
+	resp := client.call(t, "session/new", SessionNewParams{Cwd: cwd})
 	var nr SessionNewResult
 	if err := json.Unmarshal(resp.Result, &nr); err != nil {
 		t.Fatalf("session/new result: %v", err)
@@ -345,5 +347,87 @@ unknownMode:
 	bad := client.call(t, "session/set_mode", SessionSetModeParams{SessionID: nr.SessionID, ModeID: "yolo"})
 	if bad.Error == nil {
 		t.Fatal("unknown modeId must be rejected")
+	}
+
+	// Reconnecting to the live session must report its actual mode, not a
+	// hardcoded default — the mode picker would otherwise go stale.
+	loadResp := client.call(t, "session/load", SessionLoadParams{SessionID: nr.SessionID, Cwd: cwd})
+	if loadResp.Error != nil {
+		t.Fatalf("session/load: %+v", loadResp.Error)
+	}
+	var lr SessionLoadResult
+	if err := json.Unmarshal(loadResp.Result, &lr); err != nil {
+		t.Fatalf("session/load result: %v", err)
+	}
+	if lr.Modes == nil || lr.Modes.CurrentModeID != sessionModePlan {
+		t.Fatalf("session/load modes = %+v, want current plan for the live session", lr.Modes)
+	}
+}
+
+// TestRebuildSessionKeepsClientIOAndMode pins two rebuild invariants: a
+// model/effort switch must rebuild the controller with the same client
+// capability wiring (fs overlay, host terminal) the original had, and must
+// re-apply the session's ACP mode — a fresh controller boots with default
+// switches, which would silently drop a user-selected plan mode.
+func TestRebuildSessionKeepsClientIOAndMode(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sess-rebuild.jsonl")
+	base := agent.NewSession("sys prompt")
+	base.Add(provider.Message{Role: provider.RoleUser, Content: "hi"})
+	if err := base.Save(path); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+
+	sink := newUpdateSink(&fakeNotifier{}, "sess-rebuild")
+	sess := &acpSession{
+		id:         "sess-rebuild",
+		sink:       sink,
+		cwd:        dir,
+		model:      "fast",
+		transcript: path,
+		modeID:     sessionModePlan,
+	}
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("acquire session lease: %v", err)
+	}
+	sess.lease = lease
+	t.Cleanup(sess.releaseSessionLease)
+
+	factory := &configurableFactory{dir: dir}
+	svc := &service{
+		factory:  factory,
+		sessions: map[string]*acpSession{sess.id: sess},
+		clientCaps: ClientCapabilities{
+			FS:       FSCapabilities{ReadTextFile: true, WriteTextFile: true},
+			Terminal: true,
+		},
+	}
+	oldCtrl := control.New(control.Options{
+		Executor:    agent.New(nil, nil, base, agent.Options{}, event.Discard),
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "fast",
+	})
+	sess.ctrl = oldCtrl
+
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}); err != nil {
+		t.Fatalf("rebuildSession: %v", err)
+	}
+	if sess.ctrl == oldCtrl {
+		t.Fatal("session controller was not replaced")
+	}
+
+	factory.mu.Lock()
+	last := factory.builds[len(factory.builds)-1]
+	factory.mu.Unlock()
+	if last.FileOverlay == nil {
+		t.Fatal("rebuild must keep the fs overlay wiring")
+	}
+	if last.Terminal == nil {
+		t.Fatal("rebuild must keep the host terminal wiring")
+	}
+	if !sess.ctrl.PlanMode() {
+		t.Fatal("rebuild must re-apply the session's plan mode to the new controller")
 	}
 }

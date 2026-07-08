@@ -176,9 +176,11 @@ func (b bash) Execute(ctx context.Context, args json.RawMessage) (string, error)
 
 	// A host-owned terminal runs the command where the user watches it live.
 	// Never when the OS sandbox is enforcing (the host cannot honor the local
-	// confinement config) and never for background jobs. ok=false falls back to
-	// local execution unchanged.
-	if b.terminal != nil && !p.RunInBackground && !b.sb.Enforce() {
+	// confinement config), never when [secrets].filter_subprocess_env is on
+	// (the host terminal spawns with its own unfiltered environment, which
+	// would leak the credentials the user asked to strip), and never for
+	// background jobs. ok=false falls back to local execution unchanged.
+	if b.terminal != nil && !p.RunInBackground && !b.sb.Enforce() && !secrets.FilterSubprocessEnv() {
 		if out, ok, err := b.terminal.RunCommand(ctx, p.Command, b.workDir, b.timeout); ok {
 			return appendSessionDataHint(out, b.guard.CommandHint(b.workDir, p.Command)), err
 		}
