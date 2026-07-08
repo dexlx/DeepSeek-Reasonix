@@ -3,6 +3,7 @@ package guardian
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -24,6 +25,7 @@ type scriptedProvider struct {
 type scriptedResponse struct {
 	text  string
 	usage *provider.Usage
+	err   error
 }
 
 func (p *scriptedProvider) Name() string { return "guardian-test" }
@@ -39,6 +41,10 @@ func (p *scriptedProvider) Stream(ctx context.Context, req provider.Request) (<-
 	p.mu.Unlock()
 
 	ch := make(chan provider.Chunk, 3)
+	if resp.err != nil {
+		close(ch)
+		return nil, resp.err
+	}
 	if resp.text != "" {
 		ch <- provider.Chunk{Type: provider.ChunkText, Text: resp.text}
 	}
@@ -246,5 +252,65 @@ func TestGuardianReviewTurnsAlternateRoles(t *testing.T) {
 		if !strings.Contains(review, want) {
 			t.Fatalf("combined review message missing %q:\n%s", want, review)
 		}
+	}
+}
+
+// TestGuardianFailedReviewRollsBackSession pins the error-path rollback:
+// agent.Run appends the combined review user message before the provider is
+// reached, so a failed review must not leave it dangling — the next review
+// would otherwise append another user message and strict-alternation providers
+// would reject every request from then on.
+func TestGuardianFailedReviewRollsBackSession(t *testing.T) {
+	prov := &scriptedProvider{responses: []scriptedResponse{
+		{err: fmt.Errorf("provider unavailable")},
+		{text: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`},
+	}}
+	gs := NewSession(prov, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	parent := agent.NewSession("sys")
+	parent.Add(provider.Message{Role: provider.RoleUser, Content: "do the thing"})
+
+	allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent)
+	if err == nil && allow {
+		t.Fatal("first review should fail closed")
+	}
+	if n := gs.sess.Len(); n != 1 {
+		t.Fatalf("guardian session messages = %d after failed review, want rollback to system only", n)
+	}
+
+	if allow, _, err := gs.Review(context.Background(), "write_file", json.RawMessage(`{"file_path":"a.txt"}`), parent); err != nil || !allow {
+		t.Fatalf("second review = allow %v err %v, want allow nil", allow, err)
+	}
+	reqs := prov.requestsSnapshot()
+	last := reqs[len(reqs)-1]
+	for i := 1; i < len(last.Messages); i++ {
+		if last.Messages[i].Role == provider.RoleUser && last.Messages[i-1].Role == provider.RoleUser {
+			t.Fatalf("request after failed review carries consecutive user messages at index %d", i)
+		}
+	}
+}
+
+// TestGuardianLoadResetsLegacyConsecutiveUserSessions pins the load-time
+// normalization: sessions saved by the old multi-message review shape carry
+// consecutive user messages that would poison strict-alternation providers, so
+// Load starts fresh instead of adopting them.
+func TestGuardianLoadResetsLegacyConsecutiveUserSessions(t *testing.T) {
+	legacy := agent.NewSession(PolicyPrompt())
+	legacy.Add(provider.Message{Role: provider.RoleUser, Content: "transcript evidence"})
+	legacy.Add(provider.Message{Role: provider.RoleUser, Content: "action request"})
+	legacy.Add(provider.Message{Role: provider.RoleAssistant, Content: `{"risk_level":"low","user_authorization":"high","outcome":"allow","rationale":"ok"}`})
+	path := filepath.Join(t.TempDir(), "session.guardian.jsonl")
+	if err := legacy.Save(path); err != nil {
+		t.Fatalf("Save legacy session: %v", err)
+	}
+
+	gs := NewSession(&scriptedProvider{}, tool.NewRegistry(), PolicyPrompt(), "guardian-test", 0, nil, &captureSink{})
+	if err := gs.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if n := gs.sess.Len(); n != 1 {
+		t.Fatalf("loaded legacy session messages = %d, want reset to system only", n)
+	}
+	if gs.cursor.EntryCount != 0 {
+		t.Fatalf("cursor = %+v, want zeroed after reset", gs.cursor)
 	}
 }

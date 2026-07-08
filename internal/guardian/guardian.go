@@ -159,6 +159,8 @@ func (gs *Session) Review(ctx context.Context, toolName string, args json.RawMes
 	// agent.Run appends the combined review as this turn's user message; the
 	// model sees [system, user(evidence + action)] and responds with its JSON
 	// verdict.
+	before := gs.sess.Snapshot()
+	rewriteBefore := gs.sess.RewriteVersion()
 	start := time.Now()
 	agentErr := gs.agent.Run(reviewCtx, transcriptText+"\n"+formatReviewRequest(toolName, args))
 	dur := time.Since(start).Milliseconds()
@@ -171,6 +173,7 @@ func (gs *Session) Review(ctx context.Context, toolName string, args json.RawMes
 	// Parse the result and update circuit breaker under the lock.
 	var assessment Assessment
 	if agentErr != nil {
+		gs.rollbackReview(before, rewriteBefore)
 		assessment = Assessment{
 			RiskLevel:         "high",
 			UserAuthorization: "unknown",
@@ -256,6 +259,30 @@ func (gs *Session) Save(path string) error {
 	return nil
 }
 
+// rollbackReview discards a failed review turn. agent.Run already appended the
+// combined review as a user message; leaving it dangling would make the next
+// review append another user message right after it — consecutive user roles,
+// which strict-alternation providers reject, permanently poisoning the session.
+// Without a mid-review rewrite the pre-review snapshot is restored exactly;
+// after a rewrite (auto-compaction on a large transcript) only trailing plain
+// user messages are dropped, so the compaction the review paid for survives.
+// Caller holds gs.mu.
+func (gs *Session) rollbackReview(before []provider.Message, rewriteBefore int) {
+	if gs.sess.RewriteVersion() == rewriteBefore {
+		gs.sess.Replace(before)
+		return
+	}
+	msgs := gs.sess.Snapshot()
+	for len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		if last.Role != provider.RoleUser || agent.IsCompactionSummary(last) {
+			break
+		}
+		msgs = msgs[:len(msgs)-1]
+	}
+	gs.sess.Replace(msgs)
+}
+
 // Load replaces the guardian's internal agent session with the one at path,
 // restoring the conversation so the prefix cache stays warm across restarts.
 func (gs *Session) Load(path string) error {
@@ -267,6 +294,15 @@ func (gs *Session) Load(path string) error {
 		gs.Reset()
 		return err
 	}
+	// Sessions written before the single-user-turn review shape (or torn by an
+	// unrolled failed review) can carry consecutive user messages, which
+	// strict-alternation providers reject on every subsequent request. Their
+	// prefix-cache value does not outweigh a permanently failing guardian, so
+	// start fresh instead of adopting them.
+	if hasConsecutiveUserMessages(sess.Snapshot()) {
+		gs.Reset()
+		return nil
+	}
 	gs.mu.Lock()
 	defer gs.mu.Unlock()
 	gs.agent.SetSession(sess)
@@ -274,6 +310,15 @@ func (gs *Session) Load(path string) error {
 	gs.cursor = loadCursor(cursorPathForGuardianPath(path))
 	gs.reviewCount = 0
 	return nil
+}
+
+func hasConsecutiveUserMessages(msgs []provider.Message) bool {
+	for i := 1; i < len(msgs); i++ {
+		if msgs[i].Role == provider.RoleUser && msgs[i-1].Role == provider.RoleUser {
+			return true
+		}
+	}
+	return false
 }
 
 func loadCursor(path string) TranscriptCursor {
