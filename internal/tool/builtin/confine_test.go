@@ -13,6 +13,7 @@ import (
 
 	"reasonix/internal/config"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 )
 
 func TestWithin(t *testing.T) {
@@ -280,7 +281,16 @@ func TestConfineReadBlocksReadFile(t *testing.T) {
 	}
 }
 
-func TestDefaultSensitiveReadPathsAreBlocked(t *testing.T) {
+// withProtectSensitiveFiles flips the [secrets] protect_sensitive_files
+// toggle for one test and restores the default-off state afterwards.
+func withProtectSensitiveFiles(t *testing.T, enabled bool) {
+	t.Helper()
+	secrets.SetProtectSensitiveFiles(enabled)
+	t.Cleanup(func() { secrets.SetProtectSensitiveFiles(false) })
+}
+
+func TestSensitiveReadPathsAreBlockedWhenProtected(t *testing.T) {
+	withProtectSensitiveFiles(t, true)
 	dir := t.TempDir()
 	envPath := filepath.Join(dir, ".env")
 	if err := os.WriteFile(envPath, []byte("DEEPSEEK_API_KEY=sk-real-secret-value-123456\n"), 0o600); err != nil {
@@ -293,7 +303,7 @@ func TestDefaultSensitiveReadPathsAreBlocked(t *testing.T) {
 
 	for _, path := range []string{envPath, pemPath} {
 		if !confineRead(nil, path) {
-			t.Fatalf("sensitive path %s should be blocked by default", path)
+			t.Fatalf("sensitive path %s should be blocked when protection is on", path)
 		}
 		rf := readFile{}
 		_, err := rf.Execute(context.Background(), argsJSON(t, map[string]any{"path": path}))
@@ -311,7 +321,27 @@ func TestDefaultSensitiveReadPathsAreBlocked(t *testing.T) {
 	}
 }
 
-func TestGlobFiltersSensitiveMatchesByDefault(t *testing.T) {
+func TestSensitiveReadPathsAllowedByDefault(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("PORT=8080\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if confineRead(nil, envPath) {
+		t.Fatalf(".env should stay readable while protect_sensitive_files is off (default)")
+	}
+	rf := readFile{}
+	out, err := rf.Execute(context.Background(), argsJSON(t, map[string]any{"path": envPath}))
+	if err != nil {
+		t.Fatalf("read_file .env with protection off: %v", err)
+	}
+	if !strings.Contains(out, "PORT=8080") {
+		t.Fatalf("read_file dropped .env content:\n%s", out)
+	}
+}
+
+func TestGlobFiltersSensitiveMatchesWhenProtected(t *testing.T) {
+	withProtectSensitiveFiles(t, true)
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SECRET_TOKEN=abc\n"), 0o600); err != nil {
 		t.Fatal(err)

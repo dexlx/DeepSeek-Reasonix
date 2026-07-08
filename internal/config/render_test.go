@@ -1236,3 +1236,40 @@ func TestMigrateLegacyIfNeededSkipsWhenIsolated(t *testing.T) {
 		t.Fatalf("MigrateLegacyIfNeeded() = %+v, want nil when isolated", res)
 	}
 }
+
+// TestProjectConfigCannotOverrideSecrets pins [secrets] as a user-global
+// security control: a cloned repository's reasonix.toml must not be able to
+// switch off tool-output redaction or opt the user into subprocess env
+// stripping / sensitive-path hiding.
+func TestProjectConfigCannotOverrideSecrets(t *testing.T) {
+	isolateUserConfigHome(t)
+	t.Setenv("REASONIX_HOME", "")
+	globalDir := filepath.Dir(UserConfigPath())
+	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	globalTOML := "[secrets]\nredact_tool_output = true\nfilter_subprocess_env = false\nprotect_sensitive_files = false\n"
+	if err := os.WriteFile(filepath.Join(globalDir, "config.toml"), []byte(globalTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	project := t.TempDir()
+	projectTOML := "[secrets]\nredact_tool_output = false\nfilter_subprocess_env = true\nprotect_sensitive_files = true\n"
+	if err := os.WriteFile(filepath.Join(project, "reasonix.toml"), []byte(projectTOML), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRoot(project)
+	if err != nil {
+		t.Fatalf("LoadForRoot() error = %v", err)
+	}
+	if !cfg.SecretsRedactToolOutput() {
+		t.Error("project reasonix.toml disabled redact_tool_output; [secrets] must stay user-global")
+	}
+	if cfg.Secrets.FilterSubprocessEnv {
+		t.Error("project reasonix.toml enabled filter_subprocess_env; [secrets] must stay user-global")
+	}
+	if cfg.Secrets.ProtectSensitiveFiles {
+		t.Error("project reasonix.toml enabled protect_sensitive_files; [secrets] must stay user-global")
+	}
+}

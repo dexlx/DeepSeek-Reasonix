@@ -10,6 +10,7 @@ import (
 
 	"reasonix/internal/netclient"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 	"reasonix/internal/tool"
 )
 
@@ -72,18 +73,24 @@ func ConfineReaders(forbidRoots []string) []tool.Tool {
 	}
 }
 
-// confineRead reports whether target is inside any forbidRoot or matches
-// Reasonix's built-in sensitive credential path denylist. Callers should return
-// a result that mimics the directory appearing empty, matching the tmpfs
-// semantics the bubblewrap sandbox provides. Deny-side, so the check folds case
-// on case-insensitive platforms (see withinFold): a case-variant of a forbidden
+// confineRead reports whether target is inside any forbidRoot or, when the
+// user enabled [secrets] protect_sensitive_files, matches Reasonix's built-in
+// sensitive credential path denylist. An empty forbidRoots slice with the
+// denylist off is unconfined (returns false). Callers should return a result
+// that mimics the directory appearing empty, matching the tmpfs semantics the
+// bubblewrap sandbox provides. Deny-side, so the check folds case on
+// case-insensitive platforms (see withinFold): a case-variant of a forbidden
 // path reaches the same bytes there.
 func confineRead(forbidRoots []string, target string) bool {
+	protect := secrets.ProtectSensitiveFiles()
+	if len(forbidRoots) == 0 && !protect {
+		return false
+	}
 	abs, err := realPath(target)
 	if err != nil {
 		return false // can't resolve -> let the caller's normal error path handle it
 	}
-	if sensitiveReadPath(abs) {
+	if protect && sensitiveReadPath(abs) {
 		return true
 	}
 	for _, r := range forbidRoots {

@@ -44,6 +44,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
@@ -146,6 +147,13 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if err != nil {
 		return nil, err
 	}
+	// Arm the credential-protection layers from the user-global [secrets]
+	// section before any tool, hook, or plugin subprocess can spawn. Package
+	// globals are correct here because [secrets] is user-global (project
+	// reasonix.toml cannot override it), so concurrent workspaces agree.
+	secrets.SetRedactToolOutput(cfg.SecretsRedactToolOutput())
+	secrets.SetFilterSubprocessEnv(cfg.Secrets.FilterSubprocessEnv)
+	secrets.SetProtectSensitiveFiles(cfg.Secrets.ProtectSensitiveFiles)
 	modelName := opts.Model
 	if modelName == "" {
 		modelName = cfg.DefaultModel

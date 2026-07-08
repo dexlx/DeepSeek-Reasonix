@@ -2399,10 +2399,10 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	callID := call.ID
 	cctx = tool.WithProgress(cctx, func(chunk string) {
-		a.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: callID, Output: secrets.Redact(chunk)}})
+		a.sink.Emit(event.Event{Kind: event.ToolProgress, Tool: event.Tool{ID: callID, Output: secrets.RedactToolOutput(chunk)}})
 	})
 	result, err := t.Execute(cctx, json.RawMessage(call.Arguments))
-	result = secrets.Redact(result)
+	result = secrets.RedactToolOutput(result)
 	if a.evidence != nil {
 		if call.Name == "complete_step" {
 			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly())
