@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/proc"
+	"reasonix/internal/secrets"
 	"reasonix/internal/shellparse"
 )
 
@@ -237,7 +238,7 @@ func runOne(ctx context.Context, command string, opts ProbeOptions) ProbeResult 
 	defer cancel()
 	cmd := exec.CommandContext(cmdCtx, exe, parts[1:]...)
 	if len(probe.Env) > 0 {
-		cmd.Env = append(os.Environ(), probe.Env...)
+		cmd.Env = append(secrets.ProcessEnv(), probe.Env...)
 	}
 	prepareProbeCommand(cmd)
 	var stdout, stderr bytes.Buffer

@@ -2,6 +2,7 @@ package builtin
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -71,22 +72,43 @@ func ConfineReaders(forbidRoots []string) []tool.Tool {
 	}
 }
 
-// confineRead reports whether target is inside any forbidRoot. An empty
-// forbidRoots slice is unconfined (returns false). Callers should return a
-// result that mimics the directory appearing empty, matching
-// the tmpfs semantics the bubblewrap sandbox provides. Deny-side, so the
-// check folds case on case-insensitive platforms (see withinFold): a
-// case-variant of a forbidden path reaches the same bytes there.
+// confineRead reports whether target is inside any forbidRoot or matches
+// Reasonix's built-in sensitive credential path denylist. Callers should return
+// a result that mimics the directory appearing empty, matching the tmpfs
+// semantics the bubblewrap sandbox provides. Deny-side, so the check folds case
+// on case-insensitive platforms (see withinFold): a case-variant of a forbidden
+// path reaches the same bytes there.
 func confineRead(forbidRoots []string, target string) bool {
-	if len(forbidRoots) == 0 {
-		return false
-	}
 	abs, err := realPath(target)
 	if err != nil {
 		return false // can't resolve -> let the caller's normal error path handle it
 	}
+	if sensitiveReadPath(abs) {
+		return true
+	}
 	for _, r := range forbidRoots {
 		if withinFold(r, abs) {
+			return true
+		}
+	}
+	return false
+}
+
+func sensitiveReadPath(abs string) bool {
+	clean := filepath.Clean(abs)
+	name := strings.ToLower(filepath.Base(clean))
+	switch name {
+	case ".env", ".git-credentials", ".netrc":
+		return true
+	}
+	for _, ext := range []string{".pem", ".key", ".p12", ".pfx"} {
+		if strings.HasSuffix(name, ext) {
+			return true
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err == nil && home != "" {
+		if withinFold(filepath.Join(home, ".ssh"), clean) {
 			return true
 		}
 	}

@@ -47,6 +47,36 @@ func TestCompletedJobPersistsOutputAndReleasesMemory(t *testing.T) {
 	}
 }
 
+func TestJobArtifactRedactsSecrets(t *testing.T) {
+	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
+	m := NewManager(event.Discard)
+	defer m.Close()
+	m.SetActiveSessionPath("session", sessionPath)
+	secret := "sk-real-secret-value-123456"
+
+	j := m.StartForSession("session", "bash", "persist secret", func(_ context.Context, out io.Writer) (string, error) {
+		_, _ = io.WriteString(out, "DEEPSEEK_API_KEY="+secret+"\n")
+		return "Authorization: Bearer ghp_abcdefghijklmnopqrstuvwxyz", nil
+	})
+	<-j.done
+
+	res := m.WaitForSession(context.Background(), "session", []string{j.ID}, 1)
+	if len(res) != 1 {
+		t.Fatalf("wait result = %+v", res)
+	}
+	if strings.Contains(res[0].Output, secret) || strings.Contains(res[0].Output, "ghp_abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("wait output leaked secret:\n%s", res[0].Output)
+	}
+
+	data, err := os.ReadFile(filepath.Join(ArtifactDir(sessionPath), j.ID+jobLogExt))
+	if err != nil {
+		t.Fatalf("read artifact: %v", err)
+	}
+	if strings.Contains(string(data), secret) || strings.Contains(string(data), "ghp_abcdefghijklmnopqrstuvwxyz") {
+		t.Fatalf("artifact leaked secret:\n%s", data)
+	}
+}
+
 func TestRestoreSessionArtifactsAndAdvanceSequence(t *testing.T) {
 	sessionPath := filepath.Join(t.TempDir(), "session.jsonl")
 	first := NewManager(event.Discard)

@@ -280,12 +280,21 @@ func (g grepTool) runNative(ctx context.Context, pattern, path string, info os.F
 func (g grepTool) runRipgrep(ctx context.Context, pattern, path string, to time.Duration, rp ResolvedPath) (string, bool, error) {
 	// Build the ripgrep argv and wrap it in the OS sandbox so forbid-read
 	// directories are invisible to the ripgrep subprocess.
-	argv, wrapped := sandbox.CommandArgs(g.sb, []string{
+	args := []string{
 		g.rg,
 		"--no-heading", "--line-number", "--with-filename", "--color", "never",
+		"--glob", "!.env",
+		"--glob", "!.git-credentials",
+		"--glob", "!.netrc",
+		"--glob", "!*.pem",
+		"--glob", "!*.key",
+		"--glob", "!*.p12",
+		"--glob", "!*.pfx",
+		"--glob", "!.ssh/**",
 		"--regexp", pattern,
 		"--", path,
-	})
+	}
+	argv, wrapped := sandbox.CommandArgs(g.sb, args)
 	if len(g.forbidRoots) > 0 && !wrapped {
 		return "", wrapped, nil
 	}

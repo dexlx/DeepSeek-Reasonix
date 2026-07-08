@@ -102,7 +102,7 @@ func (g globTool) Execute(ctx context.Context, args json.RawMessage) (string, er
 }
 
 func filterForbidMatches(matches, forbidRoots []string) []string {
-	if len(forbidRoots) == 0 || len(matches) == 0 {
+	if len(matches) == 0 {
 		return matches
 	}
 	out := matches[:0]

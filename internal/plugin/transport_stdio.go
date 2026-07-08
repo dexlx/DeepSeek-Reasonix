@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/proc"
+	"reasonix/internal/secrets"
 )
 
 const closeWaitBudget = 5 * time.Second
@@ -65,7 +66,7 @@ func newStdioTransport(ctx context.Context, s Spec) (*stdioTransport, error) {
 			releaseSlot()
 		}
 	}()
-	env := mergeEnv(os.Environ(), s.Env)
+	env := mergeEnv(secrets.ProcessEnv(), s.Env)
 	exe, env, err := resolveStdioExecutable(ctx, s, env)
 	if err != nil {
 		return nil, err
@@ -349,7 +350,7 @@ func stdioShell() string {
 			if isExecutableFile(shell) {
 				return shell
 			}
-		} else if exe, ok := lookPathInEnv(shell, os.Environ()); ok {
+		} else if exe, ok := lookPathInEnv(shell, secrets.ProcessEnv()); ok {
 			return exe
 		}
 	}

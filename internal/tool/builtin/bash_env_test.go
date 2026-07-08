@@ -52,6 +52,20 @@ func TestBashMergesLoginShellPath(t *testing.T) {
 	}
 }
 
+func TestBashCommandEnvFiltersSensitiveKeys(t *testing.T) {
+	t.Setenv("DEEPSEEK_API_KEY", "sk-real-secret-value-123456")
+	t.Setenv("GH_TOKEN", "ghp_abcdefghijklmnopqrstuvwxyz")
+	t.Setenv("REASONIX_TEST_VISIBLE", "ok")
+
+	env := strings.Join(bashCommandEnv(context.Background()), "\n")
+	if strings.Contains(env, "DEEPSEEK_API_KEY") || strings.Contains(env, "GH_TOKEN") {
+		t.Fatalf("bash env leaked sensitive keys:\n%s", env)
+	}
+	if !strings.Contains(env, "REASONIX_TEST_VISIBLE=ok") {
+		t.Fatalf("bash env dropped non-sensitive key:\n%s", env)
+	}
+}
+
 func TestParseShellPATH(t *testing.T) {
 	const marker = "__REASONIX_BASH_PATH__="
 	cases := []struct {

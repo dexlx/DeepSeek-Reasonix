@@ -280,6 +280,59 @@ func TestConfineReadBlocksReadFile(t *testing.T) {
 	}
 }
 
+func TestDefaultSensitiveReadPathsAreBlocked(t *testing.T) {
+	dir := t.TempDir()
+	envPath := filepath.Join(dir, ".env")
+	if err := os.WriteFile(envPath, []byte("DEEPSEEK_API_KEY=sk-real-secret-value-123456\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	pemPath := filepath.Join(dir, "client.pem")
+	if err := os.WriteFile(pemPath, []byte("PRIVATE KEY"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, path := range []string{envPath, pemPath} {
+		if !confineRead(nil, path) {
+			t.Fatalf("sensitive path %s should be blocked by default", path)
+		}
+		rf := readFile{}
+		_, err := rf.Execute(context.Background(), argsJSON(t, map[string]any{"path": path}))
+		if err == nil {
+			t.Fatalf("read_file should refuse sensitive path %s", path)
+		}
+	}
+
+	visible := filepath.Join(dir, "notes.txt")
+	if err := os.WriteFile(visible, []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if confineRead(nil, visible) {
+		t.Fatalf("ordinary path %s should not be blocked", visible)
+	}
+}
+
+func TestGlobFiltersSensitiveMatchesByDefault(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, ".env"), []byte("SECRET_TOKEN=abc\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "notes.txt"), []byte("ok"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	g := globTool{}
+	out, err := g.Execute(context.Background(), argsJSON(t, map[string]any{"pattern": filepath.Join(dir, "*")}))
+	if err != nil {
+		t.Fatalf("glob: %v", err)
+	}
+	if strings.Contains(out, ".env") {
+		t.Fatalf("glob leaked sensitive match:\n%s", out)
+	}
+	if !strings.Contains(out, "notes.txt") {
+		t.Fatalf("glob dropped ordinary match:\n%s", out)
+	}
+}
+
 // --- grep forbid-read ---
 
 func TestConfineReadBlocksGrepFile(t *testing.T) {

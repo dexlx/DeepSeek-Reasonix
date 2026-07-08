@@ -68,6 +68,33 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
+func TestSaveRedactsSecretsOnDisk(t *testing.T) {
+	secret := "sk-real-secret-value-123456"
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect"})
+	s.Add(provider.Message{
+		Role:       provider.RoleTool,
+		Name:       "bash",
+		ToolCallID: "call_1",
+		Content:    "DEEPSEEK_API_KEY=" + secret + "\n",
+	})
+
+	path := filepath.Join(t.TempDir(), "redacted.jsonl")
+	if err := s.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved session: %v", err)
+	}
+	if strings.Contains(string(body), secret) {
+		t.Fatalf("session persisted raw secret:\n%s", body)
+	}
+	if !strings.Contains(string(body), "DEEPSEEK_API_KEY=sk-rea") {
+		t.Fatalf("session did not persist a masked credential marker:\n%s", body)
+	}
+}
+
 func TestSaveLoadLargeMessage(t *testing.T) {
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "run it"})

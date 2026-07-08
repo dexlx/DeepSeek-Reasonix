@@ -25,6 +25,7 @@ import (
 
 	"reasonix/internal/event"
 	"reasonix/internal/nilutil"
+	"reasonix/internal/secrets"
 )
 
 var renamePath = os.Rename
@@ -216,12 +217,13 @@ func NewManager(sink event.Sink, opts ...Option) *Manager {
 type jobWriter struct{ j *Job }
 
 func (w jobWriter) Write(p []byte) (int, error) {
+	redacted := []byte(secrets.Redact(string(p)))
 	w.j.mu.Lock()
 	defer w.j.mu.Unlock()
 	w.j.activityAt = nowMs()
-	w.j.tail = appendTail(w.j.tail, p, defaultTailBytes)
+	w.j.tail = appendTail(w.j.tail, redacted, defaultTailBytes)
 	if w.j.artifactFile != nil {
-		if _, err := w.j.artifactFile.Write(p); err != nil {
+		if _, err := w.j.artifactFile.Write(redacted); err != nil {
 			w.j.artifactErr = err.Error()
 		}
 	}
@@ -296,6 +298,7 @@ func (m *Manager) StartForSession(parentSession, kind, label string, run func(ct
 		}
 		finishedAt := nowMs()
 		if result != "" {
+			result = secrets.Redact(result)
 			j.mu.Lock()
 			if j.artifactFile != nil {
 				if _, writeErr := j.artifactFile.WriteString(result); writeErr != nil {
