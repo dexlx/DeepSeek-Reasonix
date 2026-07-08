@@ -750,6 +750,92 @@ console.log("\ncomposer goal toggle");
 }
 
 {
+  // Reproduces #6210: a message queued while a turn is running, without the
+  // explicit "guide" steer click, must not vanish when the turn ends on its
+  // own — it is the user's next turn, so it should send automatically.
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+      return Promise.resolve();
+    },
+  });
+
+  await rerender({ insertRequest: { id: 8, text: "keep going after this finishes", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+
+  eq(calls.send.length, 0, "queuing while running does not send immediately");
+  ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
+
+  await rerender({ running: false });
+  await waitFor("queued guidance auto-sent on natural completion", () => calls.send.length === 1);
+
+  eq(calls.send.join(","), "keep going after this finishes", "queued guidance is sent automatically once the turn ends naturally, not discarded");
+  eq(calls.submit.join(","), "keep going after this finishes", "auto-sent guidance submits the same text it was queued with");
+  ok(document.querySelector(".composer-guidance-item") === null, "guidance shelf clears once the queued message is sent");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  // #6210 follow-up: if the turn ends naturally while the controller is
+  // still activating/hydrating (submitDisabled), onSend would silently
+  // no-op — auto-send must wait for submitDisabled to clear instead of
+  // firing into that window and losing the queued message anyway.
+  const dom = installDom();
+  const { root, calls, rerender } = await renderComposer({
+    running: true,
+    submitDisabled: false,
+    onSend: (displayText, submitText) => {
+      calls.send.push(displayText);
+      calls.submit.push(submitText);
+      return Promise.resolve();
+    },
+  });
+
+  await rerender({ insertRequest: { id: 9, text: "keep going once ready", mode: "replace" } });
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("running composer send button did not render");
+
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  ok(document.querySelector(".composer-guidance-item") !== null, "queued message shows in the guidance shelf");
+
+  // Turn ends, but the controller is still not ready to accept a submit —
+  // matches a rebuild/hydration window right after the turn finishes.
+  await rerender({ running: false, submitDisabled: true });
+  await act(async () => {
+    await flushTimers();
+  });
+  eq(calls.send.length, 0, "auto-send does not fire while the controller is still activating");
+  ok(document.querySelector(".composer-guidance-item") !== null, "queued message stays on the shelf while not ready");
+
+  await rerender({ submitDisabled: false });
+  await waitFor("queued guidance auto-sent once the controller becomes ready", () => calls.send.length === 1);
+
+  eq(calls.send.join(","), "keep going once ready", "queued guidance sends once submitDisabled clears, instead of being lost");
+  ok(document.querySelector(".composer-guidance-item") === null, "guidance shelf clears once the delayed send completes");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
   const dom = installDom();
   let listDirCalls = 0;
   mockApp({
