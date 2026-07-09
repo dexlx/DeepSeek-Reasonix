@@ -26544,6 +26544,14 @@ body > .mermaid-diagram--fullscreen {
   gap: 12px;
 }
 
+@media (max-width: 980px) {
+  .app--creation .bot-detail-card .settings-field,
+  :root[data-theme-style] .app--creation .bot-detail-card .settings-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
 .app--creation .settings-field__label,
 :root[data-theme-style] .app--creation .settings-field__label {
   font-size: 11.5px;
