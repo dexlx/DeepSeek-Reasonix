@@ -13,4 +13,3 @@ func decodeTOMLFile(path string, v any) (toml.MetaData, error) {
 	}
 	return toml.Decode(string(data), v)
 }
-
