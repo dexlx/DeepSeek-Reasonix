@@ -4,6 +4,8 @@ import gsap from "gsap";
 import { DUR_FAST, EASE_OUT, prefersReducedMotion } from "./gsapAnimations";
 import { isEditableTarget } from "./keyboardShortcuts";
 
+type GsapModule = typeof gsap & { gsap?: typeof gsap };
+
 const BOTTOM_THRESHOLD_PX = 80;
 const TOUCH_SCROLL_THRESHOLD_PX = 2;
 const SCROLL_BREAK_KEYS = new Set([
@@ -26,6 +28,10 @@ function isNearBottom(el: HTMLElement): boolean {
 function isScrollable(el: HTMLElement): boolean {
   return el.scrollHeight - el.clientHeight > 1;
 }
+
+const gsapApi = typeof gsap.killTweensOf === "function"
+  ? gsap
+  : ((gsap as GsapModule).gsap ?? gsap);
 
 /**
  * useScrollManager — GSAP-driven auto-scroll for the transcript container.
@@ -83,7 +89,7 @@ export function useScrollManager() {
 
   const releaseAutoScroll = useCallback(() => {
     const el = scrollRef.current;
-    if (el) gsap.killTweensOf(el);
+    if (el) gsapApi.killTweensOf(el);
     cancelPendingBottomScroll();
     stick.current = false;
     setIsAtBottom(false);
@@ -154,7 +160,7 @@ export function useScrollManager() {
     const containerRect = el.getBoundingClientRect();
     const top = el.scrollTop + rect.top - containerRect.top - offset;
     const reduced = prefersReducedMotion();
-    gsap.to(el, {
+    gsapApi.to(el, {
       scrollTo: { y: Math.max(0, top) },
       duration: reduced ? 0.001 : DUR_FAST * 2,
       ease: EASE_OUT,
@@ -183,7 +189,7 @@ export function useScrollManager() {
         setIsAtBottom(true);
       }
       const reduced = prefersReducedMotion();
-      gsap.to(el, {
+      gsapApi.to(el, {
         scrollTo: { y: "max" },
         duration: reduced ? 0.001 : DUR_FAST,
         ease: "none",
@@ -203,7 +209,7 @@ export function useScrollManager() {
       cancelAnimationFrame(resizeFrame.current);
       resizeFrame.current = null;
     }
-    gsap.killTweensOf(el);
+    gsapApi.killTweensOf(el);
     stick.current = true;
     el.scrollTop = el.scrollHeight;
     setIsAtBottom(true);
