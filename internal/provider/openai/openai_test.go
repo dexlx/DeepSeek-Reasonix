@@ -1103,6 +1103,9 @@ func TestWarnOnMissingToolCallReasoningMatchesDeepSeekModelFamily(t *testing.T) 
 		{name: "r1", model: "deepseek-ai/DeepSeek-R1-0528", want: true},
 		{name: "generic deepseek", model: "deepseek-chat", want: false},
 		{name: "gateway deepseek v3", model: "deepseek-ai/DeepSeek-V3.2", want: false},
+		{name: "prover is not pro", model: "deepseek-ai/DeepSeek-Prover-V2", want: false},
+		{name: "dated pro variant", model: "deepseek-v4-pro-0923", want: true},
+		{name: "dotted pro variant", model: "deepseek-v4-pro.1", want: true},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {

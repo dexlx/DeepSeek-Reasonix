@@ -247,9 +247,13 @@ func expectsDeepSeekToolCallReasoning(model string) bool {
 	if !strings.Contains(model, "deepseek") || strings.Contains(model, "flash") {
 		return false
 	}
+	// "-pro" must end a name segment: a bare Contains would also match the
+	// deepseek-prover math models, which do not emit tool-call reasoning.
 	return strings.Contains(model, "reasoner") ||
 		strings.Contains(model, "deepseek-r1") ||
-		strings.Contains(model, "-pro")
+		strings.HasSuffix(model, "-pro") ||
+		strings.Contains(model, "-pro-") ||
+		strings.Contains(model, "-pro.")
 }
 
 func (c *client) sendOpts() provider.SendOptions {
