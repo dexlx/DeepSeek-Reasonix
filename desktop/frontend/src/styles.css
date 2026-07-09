@@ -27693,9 +27693,7 @@ body > .mermaid-diagram--fullscreen {
   --project-tree-row-radius: 9px;
   padding: 38px 12px 14px;
   border-right: 0;
-  background:
-    radial-gradient(110% 70% at 18% 0%, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 52%),
-    color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
 }
 
 .app--creation .sidebar__brand,
@@ -29228,6 +29226,22 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--creation .workbench-dock,
+:root[data-theme-style] .app--creation .workbench-dock {
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-panel,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-panel,
+.app--creation .workbench-dock .workspace-files,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-files,
+.app--creation .workbench-dock .workspace-preview,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-preview,
+.app--creation .workbench-dock .workspace-preview__body,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-preview__body {
+  background: transparent;
+}
+
+.app--creation .workbench-dock,
 .app--creation .workbench-dock * {
   scrollbar-width: none;
 }
@@ -29776,4 +29790,13 @@ body > .mermaid-diagram--fullscreen {
    recombine both here. */
 .app--windows.app--creation .topicbar__chrome-btn.topicbar__chrome-btn--pressed {
   transform: translateY(-2px) scale(0.94) !important;
+}
+
+/* Windows 控制框在 Creation 下默认用 --bg-elev（近纯白），与右侧 workbench-dock
+   的统一底色（sidebar-bg 88%）有明显色差。改用相同底色，让控制框与右侧面板连成一片。 */
+.app--windows.app--creation .windows-window-controls,
+:root[data-theme-style] .app--windows.app--creation .windows-window-controls {
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+  border-left-color: transparent;
+  box-shadow: none;
 }
