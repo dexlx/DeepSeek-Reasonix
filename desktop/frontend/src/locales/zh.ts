@@ -1470,7 +1470,7 @@ export const zh: Record<DictKey, string> = {
   "settings.yoloHint": "Yolo批准会跳过所有工具权限审批（写文件、bash）。deny 规则仍会拦截，ask 问题和计划确认仍会等待你选择。仅运行时生效，重启后失效。",
   "settings.addRule": "添加 {list} 规则…",
   "settings.sandboxTitle": "沙箱与工作区",
-  "settings.sandboxBoundaryHint": "沙箱可写根只限制已批准的 Bash 和文件工具能写到哪里；它不会自动批准命令。若 Bash 沙箱为 enforce 但宿主机没有 OS 沙箱后端，shell 命令会被拒绝；只在可信工作区把 Bash 沙箱切到 off。",
+  "settings.sandboxBoundaryHint": "沙箱可写根只限制已批准的 Bash 和文件工具能写到哪里；它不会自动批准命令。macOS/Linux 可强制 OS Bash 沙箱；Windows 目前为避免原生 shell 异常，Bash 会按不受限方式运行。",
   "settings.reloadSessionConfig": "应用手动配置修改",
   "settings.reloadSessionConfigHint": "设置页内修改会自动生效；此按钮用于应用手动编辑 config.toml / reasonix.toml 后的变更。",
   "settings.shellInterpreter": "Shell 解释器",

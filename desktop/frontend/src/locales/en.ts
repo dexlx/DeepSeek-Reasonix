@@ -1468,7 +1468,7 @@ export const en = {
   "settings.yoloHint": "YOLO-approves approval-gated tool calls (writers, bash). Deny rules still block, and ask questions plus plan approvals still wait for you. Runtime-only — resets on relaunch.",
   "settings.addRule": "add {list} rule…",
   "settings.sandboxTitle": "Sandbox & workspace",
-  "settings.sandboxBoundaryHint": "Sandbox write roots limit where approved Bash and file tools can write; they do not auto-approve commands. If Bash sandbox is enforced but no OS backend is available, shell commands are refused; switch Bash sandbox off only for trusted workspaces.",
+  "settings.sandboxBoundaryHint": "Sandbox write roots limit where approved Bash and file tools can write; they do not auto-approve commands. macOS/Linux can enforce an OS Bash sandbox; Windows currently runs Bash unconfined to avoid broken native shell behavior.",
   "settings.reloadSessionConfig": "Apply manual config changes",
   "settings.reloadSessionConfigHint": "Changes made in Settings apply automatically; use this only after manually editing config.toml or reasonix.toml.",
   "settings.shellInterpreter": "Shell interpreter",

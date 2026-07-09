@@ -951,7 +951,7 @@ export const zhTW: Record<DictKey, string> = {
   "settings.yoloHint": "所有工具呼叫（寫檔案、bash）自動執行、不再詢問。deny 規則仍會攔截。僅執行時生效，重啟後失效。",
   "settings.addRule": "新增 {list} 規則…",
   "settings.sandboxTitle": "沙箱與工作區",
-  "settings.sandboxBoundaryHint": "沙箱可寫根只限制已核准的 Bash 和檔案工具能寫到哪裡；它不會自動核准命令。若 Bash 沙箱為 enforce 但宿主機沒有 OS 沙箱後端，shell 命令會被拒絕；只在可信工作區把 Bash 沙箱切到 off。",
+  "settings.sandboxBoundaryHint": "沙箱可寫根只限制已核准的 Bash 和檔案工具能寫到哪裡；它不會自動核准命令。macOS/Linux 可強制 OS Bash 沙箱；Windows 目前為避免原生 shell 異常，Bash 會按不受限方式執行。",
   "settings.reloadSessionConfig": "套用手動設定修改",
   "settings.reloadSessionConfigHint": "設定頁內修改會自動生效；此按鈕用於套用手動編輯 config.toml / reasonix.toml 後的變更。",
   "settings.bashSandbox": "Bash 沙箱",
