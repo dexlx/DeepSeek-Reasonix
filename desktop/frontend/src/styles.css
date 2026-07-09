@@ -15657,6 +15657,7 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 18px;
   align-items: center;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elev);
@@ -15666,6 +15667,7 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: 180px minmax(0, 1fr);
   gap: 16px;
   align-items: center;
+  min-width: 0;
   padding: 12px;
 }
 .bot-connect-panel__qr {
@@ -16966,6 +16968,14 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* QR 扫码面板：在 1080px 提前切换单列，防止右侧文字/按钮溢出容器 */
+@media (max-width: 1080px) {
+  .bot-connect-panel,
+  .bot-connect-panel--phone {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 980px) {
   .settings-center {
     grid-template-columns: minmax(176px, 220px) minmax(0, 1fr);
@@ -17010,11 +17020,6 @@ body > .mermaid-diagram--fullscreen {
   .provider-access-card__actions,
   .set-rules__add {
     flex-wrap: wrap;
-  }
-
-  .bot-connect-panel,
-  .bot-connect-panel--phone {
-    grid-template-columns: 1fr;
   }
 
   .bot-simple-hero {
@@ -17242,12 +17247,6 @@ body > .mermaid-diagram--fullscreen {
   .bot-phone-connect__switch {
     justify-content: space-between;
     width: 100%;
-  }
-  .bot-connect-panel {
-    grid-template-columns: 1fr;
-  }
-  .bot-connect-panel--phone {
-    grid-template-columns: 1fr;
   }
   .bot-connection-table__header {
     display: none;
@@ -26536,6 +26535,21 @@ body > .mermaid-diagram--fullscreen {
   gap: 18px;
   padding: 10px 0;
   border-top-color: color-mix(in srgb, var(--border-soft) 72%, transparent);
+}
+
+/* 机器人详情卡片内 settings-field 不受 Creation 全局覆盖 — 保持紧凑布局（仅复位溢出相关的 grid 属性） */
+.app--creation .bot-detail-card .settings-field,
+:root[data-theme-style] .app--creation .bot-detail-card .settings-field {
+  grid-template-columns: minmax(112px, 138px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 980px) {
+  .app--creation .bot-detail-card .settings-field,
+  :root[data-theme-style] .app--creation .bot-detail-card .settings-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
 }
 
 .app--creation .settings-field__label,
