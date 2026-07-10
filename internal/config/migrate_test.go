@@ -350,12 +350,12 @@ func TestMCPMigrationMarkerMakesCurrentConfigAuthoritativeAfterRemoval(t *testin
 		t.Fatalf("migration result = %+v, want one imported MCP", res)
 	}
 
-	cfg := LoadForEdit(dest)
-	if !cfg.RemovePlugin("legacy-only") {
-		t.Fatal("migrated MCP missing from current config")
+	removed, err := RemovePluginFromSourcesForRoot(t.TempDir(), "legacy-only")
+	if err != nil {
+		t.Fatalf("RemovePluginFromSourcesForRoot: %v", err)
 	}
-	if err := cfg.SaveTo(dest); err != nil {
-		t.Fatalf("save current config after removal: %v", err)
+	if !removed {
+		t.Fatal("RemovePluginFromSourcesForRoot reported no removal")
 	}
 
 	loaded, err := Load()
@@ -367,8 +367,15 @@ func TestMCPMigrationMarkerMakesCurrentConfigAuthoritativeAfterRemoval(t *testin
 			t.Fatalf("removed MCP was resurrected from legacy config: %+v", loaded.Plugins)
 		}
 	}
-	if _, err := os.Stat(src); err != nil {
-		t.Fatalf("legacy source should remain untouched: %v", err)
+	if got := loadLegacyMCP(src); len(got) != 0 {
+		t.Fatalf("an older runtime would resurrect the removed legacy MCP: %+v", got)
+	}
+	legacyRaw, err := os.ReadFile(src)
+	if err != nil {
+		t.Fatalf("read legacy source: %v", err)
+	}
+	if !strings.Contains(string(legacyRaw), `"legacy-only"`) || !strings.Contains(string(legacyRaw), `"mcpDisabled"`) {
+		t.Fatalf("legacy source should retain the server and add a compatibility disable marker:\n%s", legacyRaw)
 	}
 }
 

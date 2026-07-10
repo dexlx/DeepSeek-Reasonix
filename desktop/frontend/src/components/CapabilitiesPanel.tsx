@@ -820,7 +820,7 @@ function FailedServersNotice({
                 <button className="btn btn--small" onClick={() => onToggle(s.name)} aria-expanded={open}>
                   {open ? t("common.collapse") : t("caps.showLog")}
                 </button>
-                {!s.builtIn && !s.managedByPlugin && (
+                {!s.builtIn && !s.managedByPlugin && s.configured && (
                   <InlineConfirmButton
                     label={t("caps.remove")}
                     confirmLabel={t("caps.confirmRemove")}
@@ -1022,16 +1022,17 @@ function ServerDetails({
 }) {
   const t = useT();
   const command = serverCommand(s);
-  const canEditConfig = s.configured && !s.builtIn && !s.managedByPlugin;
+  const canMutateConfig = s.configured && !s.builtIn && !s.managedByPlugin;
+  const canEditConfig = canMutateConfig;
   const lifecycle = mcpServerLifecycleActions(s);
   const canConnectNow = lifecycle.canConnectNow;
   const canReconnect = lifecycle.canReconnect;
   const canShowTools = s.status === "connected" && ((s.tools ?? 0) > 0 || (tools?.length ?? 0) > 0);
-  const showClearAuth = canClearAuth(s);
+  const showClearAuth = canMutateConfig && canClearAuth(s);
   const authLabel = serverAuthLabel(s, t);
   const trustedReadOnlyTools = s.trustedReadOnlyTools ?? [];
   const trustedReadOnlyToolNames = new Set(trustedReadOnlyTools);
-  const canTrustTool = s.configured && !s.builtIn;
+  const canTrustTool = canMutateConfig;
   const reportedReadOnlyToolNames = (tools ?? []).filter((tool) => tool.readOnlyHint).map((tool) => tool.name);
   const bulkTrustToolNames = reportedReadOnlyToolNames.filter((name) => !trustedReadOnlyToolNames.has(name));
   if (editing && canEditConfig) {
@@ -1439,7 +1440,7 @@ function shouldOpenAuth(s: ServerView): boolean {
 }
 
 function canClearAuth(s: ServerView): boolean {
-  if (!s.configured || s.builtIn) return false;
+  if (!s.configured || s.builtIn || s.managedByPlugin) return false;
   return Boolean(s.authConfigured || s.authStatus === "required" || s.authStatus === "possible" || isRemoteTransport(s.transport));
 }
 

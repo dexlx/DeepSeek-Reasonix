@@ -6858,6 +6858,18 @@ func TestRemoveMCPServerRejectsPluginManagedServerWithoutDisconnecting(t *testin
 	if !mcpConnected(ctrl, "helper") {
 		t.Fatal("plugin-managed MCP was disconnected despite rejected removal")
 	}
+	for action, actionErr := range map[string]error{
+		"trust tool": app.TrustMCPServerTool("helper", "echo"),
+		"clear auth": app.ClearMCPServerAuthentication("helper"),
+		"update":     app.UpdateMCPServer("helper", MCPServerInput{Name: "helper", Transport: "http", URL: srv.URL}),
+	} {
+		if actionErr == nil || !strings.Contains(actionErr.Error(), "managed by plugin") {
+			t.Fatalf("%s plugin-managed MCP error = %v", action, actionErr)
+		}
+	}
+	if _, found := findPluginEntry(config.LoadForEdit(config.UserConfigPath()).Plugins, "helper"); found {
+		t.Fatal("plugin-managed MCP mutation created a user-config shadow")
+	}
 	servers := app.MCPServers()
 	if len(servers) != 1 || servers[0].Name != "helper" || servers[0].ManagedByPlugin != "superpowers" {
 		t.Fatalf("MCPServers() = %+v, want helper managed by superpowers", servers)

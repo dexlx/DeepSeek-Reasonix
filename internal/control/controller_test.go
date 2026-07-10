@@ -2398,6 +2398,7 @@ func TestRemoveMCPServerKeepsRuntimeOnlyToolsWhenPersistenceRemovalFails(t *test
 func TestRemoveMCPServerRejectsPluginManagedTools(t *testing.T) {
 	home := isolateControlConfigHome(t)
 	reasonixHome := filepath.Join(home, ".reasonix")
+	t.Setenv("REASONIX_HOME", reasonixHome)
 	root := filepath.Join(reasonixHome, "plugins", "superpowers")
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		t.Fatal(err)
@@ -2430,6 +2431,12 @@ func TestRemoveMCPServerRejectsPluginManagedTools(t *testing.T) {
 	}
 	if _, found := reg.Get("mcp__helper__echo"); !found {
 		t.Fatalf("plugin-managed tool was removed despite rejected removal; names=%v", reg.Names())
+	}
+	if disconnected := c.DisconnectMCPServer("helper"); !disconnected {
+		t.Fatal("session-only disconnect should be allowed for a plugin-managed MCP")
+	}
+	if _, found := reg.Get("mcp__helper__echo"); found {
+		t.Fatalf("plugin-managed tool survived session-only disconnect; names=%v", reg.Names())
 	}
 }
 
