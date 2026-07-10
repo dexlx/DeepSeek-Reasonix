@@ -987,18 +987,20 @@ export default function App() {
   const {
     state,
     activeTabId,
-    send,
     sendToTab,
-    runShell,
-    steer,
+    runShellForTab,
+    steerForTab,
     notice,
     cancel,
     approve,
     answerQuestion,
     setControllerMode,
     setCollaborationMode: setControllerCollaborationMode,
+    setCollaborationModeForTab: setControllerCollaborationModeForTab,
     setToolApprovalMode: setControllerToolApprovalMode,
+    setToolApprovalModeForTab: setControllerToolApprovalModeForTab,
     setGoal: setControllerGoal,
+    setGoalForTab: setControllerGoalForTab,
     clearGoal: clearControllerGoal,
     clearSession,
     listSessions,
@@ -1014,7 +1016,7 @@ export default function App() {
     refreshMeta,
     pickWorkspace,
     switchWorkspace,
-    rewind,
+    rewindForTab,
     setModel,
     setEffort,
     setTokenMode,
@@ -1146,8 +1148,12 @@ export default function App() {
   const composerFileRefRefreshKey = `${dockRefreshKey}:${fileRefRefreshKey}`;
   const [projectRevision, setProjectRevision] = useState(0);
   const [activeTopicTurns, setActiveTopicTurns] = useState<number | undefined>(undefined);
-  const [composerInsertRequest, setComposerInsertRequest] = useState<ComposerInsertRequest | null>(null);
-  const [planRevisionInsertRequest, setPlanRevisionInsertRequest] = useState<ComposerInsertRequest | null>(null);
+  const [composerInsertRequestsByTab, setComposerInsertRequestsByTab] = useState<Record<string, ComposerInsertRequest>>({});
+  const [planRevisionInsertRequest, setPlanRevisionInsertRequest] = useState<{
+    tabId: string;
+    approvalId: string;
+    request: ComposerInsertRequest;
+  } | null>(null);
   const [workspaceInsertTarget, setWorkspaceInsertTarget] = useState<WorkspaceInsertTarget>("composer");
   const transientOverlayDismissSignal = useOverlayStore((s) => s.transientOverlayDismissSignal);
   const setTransientOverlayDismissSignal = useOverlayStore((s) => s.setTransientOverlayDismissSignal);
@@ -1346,13 +1352,13 @@ export default function App() {
     return () => window.removeEventListener("resize", onResize);
   }, []);
 
-  const [pendingPlanRevision, setPendingPlanRevision] = useState<string | null>(null);
+  const [pendingPlanRevisionsByTab, setPendingPlanRevisionsByTab] = useState<Record<string, string>>({});
+  const pendingPlanRevisionSendingTabsRef = useRef(new Set<string>());
   const [footerHeight, setFooterHeight] = useState(0);
   const footerHeightRef = useRef(0);
   const footerRef = useRef<HTMLElement>(null);
-  const runningRef = useRef(state.running);
   const activeTabIdRef = useRef(activeTabId);
-  const commitThenSendRef = useRef<(displayText: string, submitText?: string) => Promise<void>>(async () => {});
+  const commitThenSendRef = useRef<(tabId: string, displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
   const preferredWorkspacePanelWidth = rightDockDetailActive ? rightDockPreviewWidth : rightDockTreeWidth;
   const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
@@ -1397,6 +1403,13 @@ export default function App() {
     () => tabMetas.find((tab) => tab.id === activeTabId) ?? tabMetas.find((tab) => tab.active),
     [activeTabId, tabMetas],
   );
+  const activePlanRevisionInsertRequest =
+    planRevisionInsertRequest &&
+    planRevisionInsertRequest.tabId === activeTabId &&
+    planRevisionInsertRequest.approvalId === state.approval?.id
+      ? planRevisionInsertRequest.request
+      : null;
+  const composerInsertRequest = activeTabId ? composerInsertRequestsByTab[activeTabId] ?? null : null;
   const composerSessionKey = useMemo(() => {
     return composerDraftKeyForTab(activeTab, activeTabId);
   }, [activeTab, activeTabId]);
@@ -1723,16 +1736,30 @@ export default function App() {
   );
 
   useEffect(() => {
-    if (!pendingPlanRevision || state.running) return;
-    const text = pendingPlanRevision;
-    setPendingPlanRevision(null);
-    void commitThenSendRef.current(text).catch((err) => {
-      console.warn("Failed to submit pending plan revision", err);
-    });
-  }, [pendingPlanRevision, state.running]);
+    if (!activeTabId || state.running) return;
+    const text = pendingPlanRevisionsByTab[activeTabId];
+    if (!text || pendingPlanRevisionSendingTabsRef.current.has(activeTabId)) return;
+    pendingPlanRevisionSendingTabsRef.current.add(activeTabId);
+    void commitThenSendRef.current(activeTabId, text)
+      .then(() => {
+        setPendingPlanRevisionsByTab((current) => {
+          if (current[activeTabId] !== text) return current;
+          const next = { ...current };
+          delete next[activeTabId];
+          return next;
+        });
+      })
+      .catch((err) => {
+        console.warn("Failed to submit pending plan revision", err);
+      })
+      .finally(() => {
+        pendingPlanRevisionSendingTabsRef.current.delete(activeTabId);
+      });
+  }, [activeTabId, pendingPlanRevisionsByTab, state.running]);
 
   useEffect(() => {
     setClearContextPending(false);
+    setWorkspaceInsertTarget("composer");
   }, [activeTabId]);
 
   const cancelClearContext = useCallback(() => {
@@ -1751,12 +1778,6 @@ export default function App() {
     }
   }, [clearSession, notice, t]);
 
-  // Keep runningRef in sync so handleSend sees the latest running value
-  // even inside a stale closure.
-  useEffect(() => {
-    runningRef.current = state.running;
-  }, [state.running]);
-
   useEffect(() => {
     activeTabIdRef.current = activeTabId;
   }, [activeTabId]);
@@ -1768,7 +1789,9 @@ export default function App() {
   // (/skill, /hooks, /mcp) — goes straight to Submit, which the controller
   // resolves (a turn, or a listing Notice).
   const handleSend = useCallback(
-    async (displayText: string, submitText = displayText) => {
+    async (displayText: string, submitText = displayText, requestedTabId = activeTabId) => {
+      const sourceTabId = requestedTabId || activeTabId;
+      if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
       const trimmed = displayText.trim();
       // "!<cmd>" runs a shell command directly, bypassing the model.
       if (trimmed.startsWith("!")) {
@@ -1777,7 +1800,7 @@ export default function App() {
           notice("usage: !<command>  (e.g. !ls -la)");
           return;
         }
-        await runShell(cmd);
+        await runShellForTab(sourceTabId, cmd);
         return;
       }
       const model = /^\/model\s+(\S+)$/.exec(trimmed);
@@ -1786,11 +1809,13 @@ export default function App() {
         return;
       }
       if (trimmed === "/memory") {
+        if (activeTabIdRef.current !== sourceTabId) return;
         closeTransientOverlays();
         setSettingsTarget("memory");
         return;
       }
       if (trimmed === "/clear") {
+        if (activeTabIdRef.current !== sourceTabId) return;
         setClearContextPending(true);
         return;
       }
@@ -1813,13 +1838,13 @@ export default function App() {
           applyGoal("");
         }
         if (!controllerReady) return;
-        await commitThenSendRef.current(trimmed, submitText.trim());
+        await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim());
         return;
       }
       if (collaborationMode === "goal" && !goal.trim()) {
         if (!controllerReady) return;
         applyGoal(trimmed);
-        await commitThenSendRef.current(trimmed, `/goal ${submitText.trim()}`);
+        await commitThenSendRef.current(sourceTabId, trimmed, `/goal ${submitText.trim()}`);
         return;
       }
       const theme = /^\/theme(?:\s+(\S+))?$/.exec(trimmed);
@@ -1856,15 +1881,21 @@ export default function App() {
         notice(t("settings.themeUnknown", { name: arg }), "warn");
         return;
       }
-      if (runningRef.current) { await steer(submitText.trim()); return; }
       if (!controllerReady) return;
-      await setControllerCollaborationMode(controllerComposerProfileCollaborationMode(composerProfile));
-      await setControllerToolApprovalMode(toolApprovalMode);
-      if (goal.trim()) await setControllerGoal(goal);
-      await commitThenSendRef.current(trimmed, submitText.trim());
+      await setControllerCollaborationModeForTab(sourceTabId, controllerComposerProfileCollaborationMode(composerProfile));
+      await setControllerToolApprovalModeForTab(sourceTabId, toolApprovalMode);
+      if (goal.trim()) await setControllerGoalForTab(sourceTabId, goal);
+      await commitThenSendRef.current(sourceTabId, trimmed, submitText.trim());
     },
-    [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, send, runShell, notice, setControllerCollaborationMode, setControllerGoal, setControllerToolApprovalMode, steer, switchModel, t, toolApprovalMode, showToast],
+    [activeTabId, applyGoal, closeTransientOverlays, collaborationMode, composerProfile, controllerReady, goal, notice, runShellForTab,
+      setControllerCollaborationModeForTab, setControllerGoalForTab, setControllerToolApprovalModeForTab, switchModel, t, toolApprovalMode, showToast],
   );
+
+  const handleSteer = useCallback(async (text: string, requestedTabId = activeTabId) => {
+    const sourceTabId = requestedTabId || activeTabId;
+    if (!sourceTabId) throw new Error(t("composer.workspaceStarting"));
+    await steerForTab(sourceTabId, text.trim());
+  }, [activeTabId, steerForTab, t]);
 
   const refreshTabMetas = useCallback(async (): Promise<TabMeta[]> => {
     const tabs = asArray(await app.ListTabs().catch(() => [] as TabMeta[]));
@@ -2260,12 +2291,21 @@ export default function App() {
   }, [closeWorkspacePanel, openWorkspacePanel]);
 
   const addWorkspaceTextToComposer = useCallback((text: string) => {
-    if (workspaceInsertTarget === "planRevision" && state.approval?.tool === "exit_plan_mode") {
-      setPlanRevisionInsertRequest({ id: Date.now(), text });
+    if (activeTabId && workspaceInsertTarget === "planRevision" && state.approval?.tool === "exit_plan_mode") {
+      setPlanRevisionInsertRequest({
+        tabId: activeTabId,
+        approvalId: state.approval.id,
+        request: { id: Date.now(), text },
+      });
       return;
     }
-    setComposerInsertRequest({ id: Date.now(), text });
-  }, [state.approval?.tool, workspaceInsertTarget]);
+    if (activeTabId) {
+      setComposerInsertRequestsByTab((current) => ({
+        ...current,
+        [activeTabId]: { id: Date.now(), text },
+      }));
+    }
+  }, [activeTabId, state.approval, workspaceInsertTarget]);
 
   // Coalesce tab-bar switches through the same last-click-wins scheduler that
   // openTopic/blank/resume navigation uses, so rapidly clicking between two
@@ -2366,10 +2406,30 @@ export default function App() {
     turnDiff: number;      // turns rolled back
     prompt: string;        // user message text for composer fill
   };
-  const [rewindState, setRewindState] = useState<RewindState | null>(null);
-  const [rewindCommitting, setRewindCommitting] = useState(false);
-  const rewindStateRef = useRef(rewindState);
-  rewindStateRef.current = rewindState;
+  const [rewindStatesByTab, setRewindStatesByTab] = useState<Record<string, RewindState>>({});
+  const rewindStatesByTabRef = useRef(rewindStatesByTab);
+  rewindStatesByTabRef.current = rewindStatesByTab;
+  const [rewindCommittingByTab, setRewindCommittingByTab] = useState<Record<string, boolean>>({});
+  const rewindState = activeTabId ? rewindStatesByTab[activeTabId] ?? null : null;
+  const rewindCommitting = Boolean(activeTabId && rewindCommittingByTab[activeTabId]);
+
+  const setRewindStateForTab = useCallback((tabId: string, nextState: RewindState | null) => {
+    if (!tabId) return;
+    const next = { ...rewindStatesByTabRef.current };
+    if (nextState) next[tabId] = nextState;
+    else delete next[tabId];
+    rewindStatesByTabRef.current = next;
+    setRewindStatesByTab(next);
+  }, []);
+
+  const setRewindCommittingForTab = useCallback((tabId: string, committing: boolean) => {
+    setRewindCommittingByTab((current) => {
+      const next = { ...current };
+      if (committing) next[tabId] = true;
+      else delete next[tabId];
+      return next;
+    });
+  }, []);
 
   const hydratePlaceholderActive = Boolean(
     state.hydrating &&
@@ -2395,24 +2455,25 @@ export default function App() {
   }, [state.items]);
 
   // send wrapper: commits any pending optimistic rewind before sending.
-  const commitThenSend = useCallback(async (displayText: string, submitText?: string) => {
-    if (activeTab?.readOnly) throw new Error(t("composer.readOnlyChannel"));
-    if (!controllerReady) throw new Error(t("composer.workspaceStarting"));
-    const rs = rewindStateRef.current;
+  const commitThenSend = useCallback(async (sourceTabId: string, displayText: string, submitText?: string) => {
+    const sourceTab = tabMetas.find((tab) => tab.id === sourceTabId);
+    if (!sourceTab) throw new Error(t("composer.workspaceStarting"));
+    if (sourceTab.readOnly) throw new Error(t("composer.readOnlyChannel"));
+    if (sourceTab.ready === false) throw new Error(t("composer.workspaceStarting"));
+    const rs = rewindStatesByTabRef.current[sourceTabId];
     if (rs) {
-      rewindStateRef.current = null;
-      setRewindState(null);
-      setRewindCommitting(true);
+      setRewindStateForTab(sourceTabId, null);
+      setRewindCommittingForTab(sourceTabId, true);
       let ok = false;
       try {
-        ok = await rewind(rs.turn, rs.scope);
+        ok = await rewindForTab(sourceTabId, rs.turn, rs.scope);
       } finally {
-        setRewindCommitting(false);
+        setRewindCommittingForTab(sourceTabId, false);
       }
       if (!ok) {
         // Rewind failed: the Go conversation is intact. Do not send; the
         // controller emits a notice with the reason.
-        setRewindState(null);
+        setRewindStateForTab(sourceTabId, rs);
         throw new Error(t("rewind.failed"));
       }
       setRewindSignal((v) => v + 1);
@@ -2422,23 +2483,24 @@ export default function App() {
         setProjectRevision((v) => v + 1);
       }
     }
-    await send(displayText, submitText);
-  }, [activeTab?.readOnly, controllerReady, send, rewind, t]);
+    await sendToTab(sourceTabId, displayText, submitText);
+  }, [rewindForTab, sendToTab, setRewindCommittingForTab, setRewindStateForTab, t, tabMetas]);
 
   const handleTranscriptPrompt = useCallback((text: string) => {
-    if (!controllerReady) return;
-    void commitThenSend(text).catch((err) => {
+    if (!activeTabId || !controllerReady) return;
+    void commitThenSend(activeTabId, text).catch((err) => {
       console.warn("Failed to submit transcript prompt", err);
     });
-  }, [commitThenSend, controllerReady]);
+  }, [activeTabId, commitThenSend, controllerReady]);
   commitThenSendRef.current = commitThenSend;
 
   const handleMessageAction = useCallback((turn: number, scope: string) => {
-    if (activeTab?.readOnly) return;
+    const sourceTabId = activeTabId;
+    if (!sourceTabId || activeTab?.readOnly) return;
     if (hydratePlaceholderActive) return;
     if (scope === "fork") {
       // Fork still goes through the controller (not optimistic).
-      rewind(turn, scope).then((ok) => {
+      rewindForTab(sourceTabId, turn, scope).then((ok) => {
         if (!ok) return;
         refreshTabMetas();
         setProjectRevision((v) => v + 1);
@@ -2449,7 +2511,7 @@ export default function App() {
     // Code-only rewind only affects files — no message truncation,
     // no optimistic UI needed.  Execute immediately.
     if (scope === "code") {
-      rewind(turn, scope).then((ok) => {
+      rewindForTab(sourceTabId, turn, scope).then((ok) => {
         if (!ok) return;
         setDockRefreshKey((v) => v + 1);
         setProjectRevision((v) => v + 1);
@@ -2460,7 +2522,7 @@ export default function App() {
     // Summarize only compresses the conversation log — no files touched,
     // no optimistic UI needed. Execute immediately like code-only rewind.
     if (scope === "summ-from" || scope === "summ-upto") {
-      rewind(turn, scope).then((ok) => {
+      rewindForTab(sourceTabId, turn, scope).then((ok) => {
         if (!ok) return;
         setDockRefreshKey((v) => v + 1);
         setProjectRevision((v) => v + 1);
@@ -2486,7 +2548,7 @@ export default function App() {
       }
     }
     if (boundaryIdx < 0) {
-      rewind(turn, scope).then((ok) => {
+      rewindForTab(sourceTabId, turn, scope).then((ok) => {
         if (!ok) return;
         if (scope === "both") {
           setDockRefreshKey((v) => v + 1);
@@ -2502,7 +2564,7 @@ export default function App() {
     // Save full items for undo.
     const userItem = items[boundaryIdx]?.kind === "user" ? items[boundaryIdx] as Extract<Item, { kind: "user" }> : undefined;
     const prompt = userItem?.text ?? "";
-    setRewindState({
+    setRewindStateForTab(sourceTabId, {
       turn,
       scope,
       fullItems: items,
@@ -2513,14 +2575,17 @@ export default function App() {
 
     // Fill composer with the rewound-to user message.
     const insertId = Date.now();
-    setComposerInsertRequest({ id: insertId, text: prompt, mode: "replace" });
+    setComposerInsertRequestsByTab((current) => ({
+      ...current,
+      [sourceTabId]: { id: insertId, text: prompt, mode: "replace" },
+    }));
 
     setRewindSignal((v) => v + 1);
-  }, [activeTab?.readOnly, hydratePlaceholderActive, state.items, rewind, refreshTabMetas, setComposerInsertRequest]);
+  }, [activeTab?.readOnly, activeTabId, hydratePlaceholderActive, state.items, rewindForTab, refreshTabMetas, setRewindStateForTab]);
 
   const handleEditPrompt = useCallback(async (turn: number, displayText: string, submitText?: string): Promise<boolean> => {
     const sourceTabId = activeTabId;
-    if (!sourceTabId || activeTab?.readOnly || !controllerReady || hydratePlaceholderActive || rewindStateRef.current || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending) return false;
+    if (!sourceTabId || activeTab?.readOnly || !controllerReady || hydratePlaceholderActive || rewindStatesByTabRef.current[sourceTabId] || state.running || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending) return false;
     const next = displayText.trim();
     if (!next) return false;
     const submit = (submitText ?? displayText).trim();
@@ -2536,7 +2601,7 @@ export default function App() {
       }
       userCount++;
     }
-    const ok = await rewind(turn, "conversation");
+    const ok = await rewindForTab(sourceTabId, turn, "conversation");
     if (!ok) return false;
     setRewindSignal((v) => v + 1);
     try {
@@ -2545,7 +2610,7 @@ export default function App() {
     } catch {
       return false;
     }
-  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.items, state.messageAction, state.running, rewind]);
+  }, [activeTab?.readOnly, activeTabId, clearContextPending, controllerReady, hydratePlaceholderActive, sendToTab, state.approval, state.ask, state.items, state.messageAction, state.running, rewindForTab]);
 
   // History drawer: project menus can open a scoped saved-session list. Idle row
   // clicks resume; running row clicks only preview through PreviewSession.
@@ -3597,20 +3662,25 @@ export default function App() {
                   filesRestored: [], // optimistic: files haven't changed yet
                   filesRemoved: [],
                   onUndo: () => {
-                    setRewindState(null);
-                    setComposerInsertRequest({ id: Date.now(), text: "", mode: "replace" });
+                    if (activeTabId) setRewindStateForTab(activeTabId, null);
+                    if (activeTabId) {
+                      setComposerInsertRequestsByTab((current) => ({
+                        ...current,
+                        [activeTabId]: { id: Date.now(), text: "", mode: "replace" },
+                      }));
+                    }
                   },
                 }}
               />
             )}
             {state.approval && (
               <ApprovalModal
-                key={state.approval.id}
+                key={`${activeTabId ?? ""}:${state.approval.id}`}
                 approval={state.approval}
                 cwd={state.meta?.cwd}
                 tabId={activeTabId}
                 workspaceScopeKey={workspaceScopeKey}
-                insertRequest={planRevisionInsertRequest}
+                insertRequest={activePlanRevisionInsertRequest}
                 onRevisionActiveChange={(active) => setWorkspaceInsertTarget(active ? "planRevision" : "composer")}
                 onAnswer={async (allow, session, persist) => {
                   // Approving an exit_plan_mode plan leaves plan mode; await the
@@ -3620,7 +3690,9 @@ export default function App() {
                   approve(state.approval!.id, allow, session, persist);
                 }}
                 onRevisePlan={(text) => {
-                  setPendingPlanRevision(text);
+                  if (activeTabId) {
+                    setPendingPlanRevisionsByTab((current) => ({ ...current, [activeTabId]: text }));
+                  }
                   approve(state.approval!.id, false, false, false);
                 }}
                 onExitPlan={async () => {
@@ -3635,6 +3707,7 @@ export default function App() {
             )}
             {state.ask && (
               <AskCard
+                key={`${activeTabId ?? ""}:${state.ask.id}`}
                 ask={state.ask}
                 onAnswer={answerQuestion}
                 onDismiss={() => answerQuestion(state.ask!.id, [])}
@@ -3663,6 +3736,7 @@ export default function App() {
               tabId={activeTabId}
               effort={state.effort}
               onSend={handleSend}
+              onSteer={handleSteer}
               onCancel={cancel}
               onCycleMode={cycleMode}
               onSetMode={applyMode}

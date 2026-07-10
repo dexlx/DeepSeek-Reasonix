@@ -162,8 +162,11 @@ export interface AppBindings {
   ClearGoal(): Promise<void>;
   ClearGoalForTab(tabID: string): Promise<void>;
   Compact(): Promise<void>;
+  CompactForTab(tabID: string): Promise<void>;
   NewSession(): Promise<void>;
+  NewSessionForTab(tabID: string): Promise<void>;
   ClearSession(): Promise<void>;
+  ClearSessionForTab(tabID: string): Promise<void>;
   History(): Promise<HistoryMessage[]>;
   HistoryForTab(tabID: string): Promise<HistoryMessage[]>;
   HistoryPage(beforeTurn: number, limit: number): Promise<HistoryPage>;
@@ -172,9 +175,13 @@ export interface AppBindings {
   Checkpoints(): Promise<CheckpointMeta[]>;
   CheckpointsForTab(tabID: string): Promise<CheckpointMeta[]>;
   Rewind(turn: number, scope: string): Promise<void>;
+  RewindForTab(tabID: string, turn: number, scope: string): Promise<void>;
   Fork(turn: number): Promise<TabMeta>;
+  ForkForTab(tabID: string, turn: number): Promise<TabMeta>;
   SummarizeFrom(turn: number): Promise<void>;
+  SummarizeFromForTab(tabID: string, turn: number): Promise<void>;
   SummarizeUpTo(turn: number): Promise<void>;
+  SummarizeUpToForTab(tabID: string, turn: number): Promise<void>;
   ListSessions(): Promise<SessionMeta[]>;
   ListTrashedSessions(): Promise<SessionMeta[]>;
   ResumeSession(path: string): Promise<HistoryMessage[]>;
@@ -2217,8 +2224,11 @@ function makeMockApp(): AppBindings {
           await this.SetGoalForTab(tabID, "");
         },
         async Compact() {},
+        async CompactForTab() {},
         async NewSession() {},
+        async NewSessionForTab() {},
         async ClearSession() {},
+        async ClearSessionForTab() {},
     async Checkpoints() {
       return [
         { turn: 0, prompt: "你好呀", files: ["src/App.tsx"], fileCount: 1, turnFileCount: 1, time: Date.now() - 30_000, canCode: true, canConversation: true },
@@ -2228,6 +2238,7 @@ function makeMockApp(): AppBindings {
       return this.Checkpoints();
     },
     async Rewind() {},
+    async RewindForTab() {},
     async Fork() {
       const active = mockTabs.find((tab) => tab.active) ?? mockTabs[0];
       const tab: TabMeta = {
@@ -2241,8 +2252,14 @@ function makeMockApp(): AppBindings {
       mockTabs = [...mockTabs.map((item) => ({ ...item, active: false })), tab];
       return { ...tab };
     },
+    async ForkForTab(tabID, turn) {
+      mockTabs = mockTabs.map((tab) => ({ ...tab, active: tab.id === tabID }));
+      return this.Fork(turn);
+    },
     async SummarizeFrom() {},
+    async SummarizeFromForTab() {},
     async SummarizeUpTo() {},
+    async SummarizeUpToForTab() {},
         async History() {
           return [];
         },

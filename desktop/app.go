@@ -1479,14 +1479,16 @@ func (a *App) AnswerQuestionForTab(tabID, id string, answers []QuestionAnswer) {
 	ctrl.AnswerQuestion(id, out)
 }
 
-// Compact runs one compaction pass on demand.
 // Compact runs a plain compaction pass (the "compact now" button). Focus-guided
 // compaction goes through Submit("/compact <focus>") instead.
 func (a *App) Compact() error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.CompactForTab("")
+}
+
+// CompactForTab compacts the requested tab without depending on which tab is
+// focused when the asynchronous frontend call reaches the backend.
+func (a *App) CompactForTab(tabID string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
@@ -1536,10 +1538,13 @@ func (a *App) tabIsReadOnly(tab *WorkspaceTab) bool {
 
 // NewSession snapshots the current conversation and rotates to a fresh one.
 func (a *App) NewSession() error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.NewSessionForTab("")
+}
+
+// NewSessionForTab snapshots and rotates the requested tab regardless of which
+// tab becomes active while the Wails call is in flight.
+func (a *App) NewSessionForTab(tabID string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
@@ -1647,10 +1652,12 @@ func messagesHaveConversationContent(messages []provider.Message) bool {
 
 // ClearSession discards the current conversation and rotates to a fresh unsaved one.
 func (a *App) ClearSession() error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.ClearSessionForTab("")
+}
+
+// ClearSessionForTab clears the requested tab regardless of later focus changes.
+func (a *App) ClearSessionForTab(tabID string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
@@ -1973,10 +1980,13 @@ func (a *App) ToolResultForTab(tabID, toolID string) *control.ToolResultData {
 // "conversation", or "both" (anything else is treated as "both"). The frontend
 // re-reads History after this resolves.
 func (a *App) Rewind(turn int, scope string) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.RewindForTab("", turn, scope)
+}
+
+// RewindForTab rewinds the requested tab instead of resolving the active tab at
+// execution time, which may have changed after frontend confirmation.
+func (a *App) RewindForTab(tabID string, turn int, scope string) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
@@ -1996,18 +2006,20 @@ func (a *App) Rewind(turn int, scope string) error {
 // Fork branches the conversation at the start of turn into a new session tab
 // (preserving the current tab), keeping code intact, and switches to the new tab.
 func (a *App) Fork(turn int) (TabMeta, error) {
-	a.mu.RLock()
-	sourceTab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
+	return a.ForkForTab("", turn)
+}
+
+// ForkForTab forks the requested source tab even if focus changes before the
+// backend begins processing the request. The fork becomes active only while the
+// source tab still owns focus, so a later tab selection remains authoritative.
+func (a *App) ForkForTab(tabID string, turn int) (TabMeta, error) {
+	sourceTab, ctrl := a.tabAndCtrlByID(tabID)
 	if sourceTab == nil || ctrl == nil {
-		a.mu.RUnlock()
 		return TabMeta{}, nil
 	}
-	if sourceTab.ReadOnly {
-		a.mu.RUnlock()
+	if a.tabIsReadOnly(sourceTab) {
 		return TabMeta{}, readOnlyChannelErr()
 	}
-	a.mu.RUnlock()
 
 	if err := a.ensureTabControllerWorkspace(sourceTab); err != nil {
 		return TabMeta{}, err
@@ -2053,9 +2065,9 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 	invalidateTopicSessionIndexForPath(newPath)
 
 	a.mu.Lock()
-	tabID := a.newUniqueTabIDLocked()
+	newTabID := a.newUniqueTabIDLocked()
 	tab := &WorkspaceTab{
-		ID:               tabID,
+		ID:               newTabID,
 		Scope:            scope,
 		WorkspaceRoot:    workspaceRoot,
 		TopicID:          topicID,
@@ -2068,12 +2080,15 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 		disabledMCP:      disabledMCP,
 		mcpOrder:         mcpOrder,
 	}
-	tab.sink = &tabEventSink{tabID: tabID, app: a}
-	a.tabs[tabID] = tab
-	a.tabOrder = append(a.tabOrder, tabID)
-	a.activeTabID = tabID
+	tab.sink = &tabEventSink{tabID: newTabID, app: a}
+	a.tabs[newTabID] = tab
+	a.tabOrder = append(a.tabOrder, newTabID)
+	activateFork := a.activeTabID == sourceTab.ID
+	if activateFork {
+		a.activeTabID = newTabID
+	}
 	a.saveTabsLocked()
-	meta := a.tabMeta(tab, true)
+	meta := a.tabMeta(tab, activateFork)
 	a.mu.Unlock()
 
 	a.emitProjectTreeChanged()
@@ -2085,10 +2100,11 @@ func (a *App) Fork(turn int) (TabMeta, error) {
 // of turn into one summary (Claude Code's "summarize from/up to here"), keeping
 // code intact. The frontend re-reads History after this resolves.
 func (a *App) SummarizeFrom(turn int) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.SummarizeFromForTab("", turn)
+}
+
+func (a *App) SummarizeFromForTab(tabID string, turn int) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
@@ -2099,10 +2115,11 @@ func (a *App) SummarizeFrom(turn int) error {
 }
 
 func (a *App) SummarizeUpTo(turn int) error {
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	ctrl := a.activeCtrlLocked()
-	a.mu.RUnlock()
+	return a.SummarizeUpToForTab("", turn)
+}
+
+func (a *App) SummarizeUpToForTab(tabID string, turn int) error {
+	tab, ctrl := a.tabAndCtrlByID(tabID)
 	if a.tabIsReadOnly(tab) {
 		return readOnlyChannelErr()
 	}
