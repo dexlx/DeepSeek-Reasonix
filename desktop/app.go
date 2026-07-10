@@ -911,10 +911,6 @@ func (a *App) submitToTab(tabID, input string, fromBridge bool) error {
 	return nil
 }
 
-func (a *App) submitUserTurnToTab(tabID, input string) bool {
-	return a.submitUserTurnToTabWithSink(tabID, input, nil)
-}
-
 func (a *App) submitUserTurnToTabWithSink(tabID, input string, forwarder event.Sink) bool {
 	tab, ctrl, err := a.beginTabTurn(tabID, false)
 	if err != nil {
@@ -1025,13 +1021,6 @@ func (a *App) SteerForTab(tabID, text string) error {
 	}
 	ctrl.Steer(text)
 	return nil
-}
-
-func (a *App) tabReadOnly(tabID string) bool {
-	a.mu.RLock()
-	defer a.mu.RUnlock()
-	tab := a.tabByIDLocked(tabID)
-	return tab != nil && tab.ReadOnly
 }
 
 func (a *App) tabAndCtrlByID(tabID string) (*WorkspaceTab, control.SessionAPI) {
