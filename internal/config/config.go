@@ -530,6 +530,20 @@ type BotConfig struct {
 	Weixin             WeixinBotConfig       `toml:"weixin"`
 	Routes             []BotRouteConfig      `toml:"routes"`
 	Connections        []BotConnectionConfig `toml:"connections"`
+	// DesktopWatchers persists /desktop watch subscriptions so god-view
+	// notifications survive a desktop restart. Managed by the desktop bot
+	// bridge, not the settings UI.
+	DesktopWatchers []BotDesktopWatcherConfig `toml:"desktop_watchers"`
+}
+
+// BotDesktopWatcherConfig is one bot chat subscribed to desktop events
+// (/desktop watch on).
+type BotDesktopWatcherConfig struct {
+	Platform     string `toml:"platform"`
+	ConnectionID string `toml:"connection_id"`
+	Domain       string `toml:"domain"`
+	ChatType     string `toml:"chat_type"`
+	ChatID       string `toml:"chat_id"`
 }
 
 type BotSelfUserIDs struct {

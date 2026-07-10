@@ -521,6 +521,12 @@ func RenderTOMLForScope(c *Config, scope RenderScope) string {
 				renderBotRoute(&b, route)
 			}
 		}
+		if len(c.Bot.DesktopWatchers) > 0 {
+			for _, watcher := range c.Bot.DesktopWatchers {
+				b.WriteString("\n[[bot.desktop_watchers]]\n")
+				renderBotDesktopWatcher(&b, watcher)
+			}
+		}
 		b.WriteString("\n[bot.pairing]\n")
 		fmt.Fprintf(&b, "enabled = %v\n", c.Bot.Pairing.Enabled)
 		if c.Bot.Pairing.RequestTTLMinutes > 0 {
@@ -1611,6 +1617,24 @@ func renderBotRoute(b *strings.Builder, route BotRouteConfig) {
 	}
 	if strings.TrimSpace(route.WorkspaceRoot) != "" {
 		fmt.Fprintf(b, "workspace_root = %q\n", strings.TrimSpace(route.WorkspaceRoot))
+	}
+}
+
+func renderBotDesktopWatcher(b *strings.Builder, watcher BotDesktopWatcherConfig) {
+	if strings.TrimSpace(watcher.Platform) != "" {
+		fmt.Fprintf(b, "platform = %q\n", strings.TrimSpace(watcher.Platform))
+	}
+	if strings.TrimSpace(watcher.ConnectionID) != "" {
+		fmt.Fprintf(b, "connection_id = %q\n", strings.TrimSpace(watcher.ConnectionID))
+	}
+	if strings.TrimSpace(watcher.Domain) != "" {
+		fmt.Fprintf(b, "domain = %q\n", strings.TrimSpace(watcher.Domain))
+	}
+	if strings.TrimSpace(watcher.ChatType) != "" {
+		fmt.Fprintf(b, "chat_type = %q\n", strings.TrimSpace(watcher.ChatType))
+	}
+	if strings.TrimSpace(watcher.ChatID) != "" {
+		fmt.Fprintf(b, "chat_id = %q\n", strings.TrimSpace(watcher.ChatID))
 	}
 }
 

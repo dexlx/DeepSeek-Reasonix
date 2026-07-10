@@ -251,6 +251,13 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 		ToolApprovalMode: "ask",
 		WorkspaceRoot:    "/tmp/reasonix-route",
 	}}
+	orig.Bot.DesktopWatchers = []BotDesktopWatcherConfig{{
+		Platform:     "feishu",
+		ConnectionID: "feishu-lark",
+		Domain:       "lark",
+		ChatType:     "dm",
+		ChatID:       "oc_watcher",
+	}}
 	orig.Bot.Connections = []BotConnectionConfig{{
 		ID:               "feishu-lark",
 		Provider:         "feishu",
@@ -375,6 +382,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if len(got.Bot.Routes) != 1 || got.Bot.Routes[0].WorkspaceRoot != "/tmp/reasonix-route" || got.Bot.Routes[0].ChatID != "oc_group" {
 		t.Errorf("bot routes not preserved: %+v", got.Bot.Routes)
+	}
+	if len(got.Bot.DesktopWatchers) != 1 || got.Bot.DesktopWatchers[0].ChatID != "oc_watcher" || got.Bot.DesktopWatchers[0].Platform != "feishu" || got.Bot.DesktopWatchers[0].Domain != "lark" {
+		t.Errorf("bot desktop watchers not preserved: %+v", got.Bot.DesktopWatchers)
 	}
 	if len(got.Bot.Connections[0].SessionMappings) != 1 || got.Bot.Connections[0].SessionMappings[0].Scope != "project" || got.Bot.Connections[0].SessionMappings[0].WorkspaceRoot != "/tmp/reasonix-bot" {
 		t.Errorf("bot session mapping scope not preserved: %+v", got.Bot.Connections[0].SessionMappings)

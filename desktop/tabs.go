@@ -59,6 +59,7 @@ type WorkspaceTab struct {
 	buildGeneration     uint64             // identifies the current in-flight build
 	removed             bool               // set when the visible tab is pruned/closed before build completes
 	reconcileMu         sync.Mutex         // serializes stale controller workspace repair for this tab
+	turnStartMu         sync.Mutex         // serializes foreground turn admission for this tab
 
 	ActivityStatus string // transient project-tree status for the in-flight turn
 
@@ -921,6 +922,8 @@ type tabEventSink struct {
 	ctx           context.Context
 	runtimeEvents asyncRuntimeEmitter
 	botSink       event.Sink // optional: when set, events are also forwarded here
+	botSinkGen    uint64
+	turnInFlight  bool // stays true through the end of TurnDone fan-out
 }
 
 type closeableEventSink interface {
@@ -946,6 +949,11 @@ func (s *tabEventSink) setBinding(tabID string, app *App) {
 }
 
 func (s *tabEventSink) Emit(e event.Event) {
+	if e.Kind == event.TurnStarted {
+		s.mu.Lock()
+		s.turnInFlight = true
+		s.mu.Unlock()
+	}
 	tabID, app := s.binding()
 	if app != nil {
 		switch e.Kind {
@@ -990,31 +998,86 @@ func (s *tabEventSink) Emit(e event.Event) {
 	// Forward event to bot channels when a bot forwarder is attached.
 	// Read the sink under the read lock so SetBotSink can safely swap it
 	// from another goroutine.
-	s.mu.RLock()
-	bs := s.botSink
-	s.mu.RUnlock()
+	bs, botSinkGen := s.botSinkSnapshot()
 	if bs != nil {
 		bs.Emit(e)
 		// Detach the forwarder after TurnDone so subsequent turns on the
 		// same tab do not keep pushing to bot channels.
 		if e.Kind == event.TurnDone {
-			s.SetBotSink(nil)
+			s.clearBotSink(botSinkGen)
 		}
+	}
+	// Unlike the transient botSink above, the bridge observes every tab for
+	// its whole lifetime (god view: /desktop status, watch subscriptions,
+	// remote approvals). observe only does in-memory bookkeeping and queueing.
+	if app != nil && app.botBridge != nil {
+		app.botBridge.observe(tabID, e)
+	}
+	if e.Kind == event.TurnDone {
+		s.mu.Lock()
+		s.turnInFlight = false
+		s.mu.Unlock()
 	}
 }
 
 // SetBotSink atomically sets or clears the bot event forwarder on this sink.
 // It is safe to call concurrently with Emit.
-func (s *tabEventSink) SetBotSink(sink event.Sink) {
+func (s *tabEventSink) SetBotSink(sink event.Sink) uint64 {
 	s.mu.Lock()
 	old := s.botSink
 	s.botSink = sink
+	s.botSinkGen++
+	generation := s.botSinkGen
 	s.mu.Unlock()
 	if old != nil && old != sink {
 		if closer, ok := old.(closeableEventSink); ok {
 			closer.Close()
 		}
 	}
+	return generation
+}
+
+func (s *tabEventSink) botSinkSnapshot() (event.Sink, uint64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.botSink, s.botSinkGen
+}
+
+// clearBotSink clears only the forwarder generation observed by the finishing
+// turn. A delayed TurnDone must not detach a replacement installed meanwhile.
+func (s *tabEventSink) clearBotSink(generation uint64) {
+	s.mu.Lock()
+	if s.botSinkGen != generation {
+		s.mu.Unlock()
+		return
+	}
+	old := s.botSink
+	s.botSink = nil
+	s.botSinkGen++
+	s.mu.Unlock()
+	if closer, ok := old.(closeableEventSink); ok {
+		closer.Close()
+	}
+}
+
+// tryBeginTurn reserves the tab until its TurnDone has finished fan-out. The
+// controller clears RuntimeStatus().Running before it emits TurnDone, so the
+// controller status alone leaves a window where a new turn can inherit the old
+// turn's forwarder or have its replacement cleared by the old completion.
+func (s *tabEventSink) tryBeginTurn() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.turnInFlight {
+		return false
+	}
+	s.turnInFlight = true
+	return true
+}
+
+func (s *tabEventSink) cancelTurnStart() {
+	s.mu.Lock()
+	s.turnInFlight = false
+	s.mu.Unlock()
 }
 
 func (s *tabEventSink) setContext(ctx context.Context) {
@@ -1442,6 +1505,7 @@ type TabMeta struct {
 	Ready             bool                     `json:"ready"`
 	Running           bool                     `json:"running"`
 	PendingPrompt     bool                     `json:"pendingPrompt,omitempty"`
+	RemoteControlled  bool                     `json:"remoteControlled,omitempty"`
 	BackgroundJobs    int                      `json:"backgroundJobs,omitempty"`
 	CancelRequested   bool                     `json:"cancelRequested,omitempty"`
 	Cancellable       bool                     `json:"cancellable"`
@@ -1515,6 +1579,9 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		m.BackgroundJobs = status.BackgroundJobs
 		m.CancelRequested = status.CancelRequested
 		m.Cancellable = status.Cancellable
+	}
+	if a.botBridge != nil {
+		m.RemoteControlled = a.botBridge.remoteControlledTabs()[tab.ID]
 	}
 	if meta, ok, err := agent.LoadBranchMeta(tab.currentSessionPath()); err == nil && ok && meta.Recovered {
 		m.Recovered = true
@@ -3051,16 +3118,25 @@ func (a *App) reconcileTabWithPinnedSessionMeta(tab *WorkspaceTab) (string, bool
 	if tab == nil {
 		return "", false
 	}
+	a.mu.RLock()
+	current := a.tabs[tab.ID]
 	path := strings.TrimSpace(tab.SessionPath)
+	ctrl := tab.Ctrl
+	scope := tab.Scope
+	workspaceRoot := tab.WorkspaceRoot
+	a.mu.RUnlock()
+	if current != tab {
+		return "", false
+	}
 	if path != "" {
 		if resolved, ok := a.reconcileTabWithSessionPath(tab, path); ok {
 			return resolved, true
 		}
 	}
-	if tab.Ctrl == nil {
+	if ctrl == nil {
 		return "", false
 	}
-	path = strings.TrimSpace(tab.Ctrl.SessionPath())
+	path = strings.TrimSpace(ctrl.SessionPath())
 	if path == "" {
 		return "", false
 	}
@@ -3068,8 +3144,8 @@ func (a *App) reconcileTabWithPinnedSessionMeta(tab *WorkspaceTab) (string, bool
 	if !ok {
 		return "", false
 	}
-	if tab.Scope == "project" && binding.scope != "project" && normalizeProjectRoot(tab.WorkspaceRoot) != "" {
-		if root, ok := safeControllerWorkspaceRoot(tab.Ctrl); ok && sameProjectRoot(root, tab.WorkspaceRoot) {
+	if scope == "project" && binding.scope != "project" && normalizeProjectRoot(workspaceRoot) != "" {
+		if root, ok := safeControllerWorkspaceRoot(ctrl); ok && sameProjectRoot(root, workspaceRoot) {
 			return "", false
 		}
 	}

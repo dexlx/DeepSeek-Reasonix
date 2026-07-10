@@ -3311,6 +3311,51 @@ func TestRunGuardedPanicEmitsTurnDone(t *testing.T) {
 	}
 }
 
+func TestRunGuardedRejectsReplacementUntilTurnDoneReturns(t *testing.T) {
+	turnDoneEntered := make(chan struct{})
+	releaseTurnDone := make(chan struct{})
+	firstBodyDone := make(chan struct{})
+	secondBodyRan := make(chan struct{}, 1)
+	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
+		if e.Kind == event.TurnDone {
+			close(turnDoneEntered)
+			<-releaseTurnDone
+		}
+	})})
+
+	c.runGuarded(func(context.Context) error {
+		close(firstBodyDone)
+		return nil
+	})
+	<-firstBodyDone
+	select {
+	case <-turnDoneEntered:
+	case <-time.After(time.Second):
+		t.Fatal("TurnDone delivery did not start")
+	}
+	if !c.RuntimeStatus().Running {
+		t.Fatal("controller reported idle while TurnDone was still being delivered")
+	}
+	c.runGuarded(func(context.Context) error {
+		secondBodyRan <- struct{}{}
+		return nil
+	})
+	select {
+	case <-secondBodyRan:
+		t.Fatal("replacement turn started before TurnDone delivery completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(releaseTurnDone)
+	deadline := time.Now().Add(time.Second)
+	for c.RuntimeStatus().Running && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if c.RuntimeStatus().Running {
+		t.Fatal("controller remained busy after TurnDone returned")
+	}
+}
+
 func TestRunGuardedPanicDoesNotDoubleEmitTurnDone(t *testing.T) {
 	sess := agent.NewSession("sys")
 	var count int32
