@@ -693,12 +693,25 @@ export interface SkillView {
   scope: string;
   runAs: string;
   enabled: boolean;
+  model?: string;
+  effort?: string;
+  allowedTools?: string[];
+  color?: string;
+  invocation?: string;
+  body?: string;
+  configuredModel?: string;
+  configuredEffort?: string;
 }
 export interface SkillRootSkillView {
   name: string;
   description: string;
   scope: string;
   runAs: string;
+  model?: string;
+  effort?: string;
+  allowedTools?: string[];
+  color?: string;
+  invocation?: string;
 }
 export interface SkillRootView {
   dir: string;
@@ -720,6 +733,16 @@ export interface CapabilitiesView {
 export interface SkillsSettingsView {
   skills: SkillView[];
   skillRoots: SkillRootView[];
+}
+export interface SubagentProfileInput {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  color?: string;
+  model?: string;
+  effort?: string;
+  allowedTools?: string[];
+  scope?: "project" | "global";
 }
 export interface PluginView {
   name: string;
@@ -867,7 +890,7 @@ export interface MemoryView {
 }
 
 // SettingsTab is the top-level navigation item in the Settings Centre modal.
-export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
+export type SettingsTab = "general" | "models" | "providers" | "bots" | "mcp" | "skills" | "subagents" | "plugins" | "memory" | "hooks" | "shortcuts" | "permissions" | "sandbox" | "network" | "appearance" | "updates";
 
 // Settings panel payloads (desktop/settings_app.go).
 export interface ProviderView {

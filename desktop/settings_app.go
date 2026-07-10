@@ -1735,6 +1735,70 @@ func (a *App) SetSubagentEffort(level string) error {
 	})
 }
 
+// SetSubagentProfileModel sets (or clears) a per-name model override for a
+// subagent — the only way to influence a built-in subagent's model in the
+// Subagents settings page, since built-ins have no editable frontmatter file
+// to carry a `model:` line. Writes into the same cfg.Agent.SubagentModels map
+// internal/boot's subagentModelRef already reads at dispatch time.
+func (a *App) SetSubagentProfileModel(name, ref string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	return a.applyConfigChange(func(c *config.Config) error {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			delete(c.Agent.SubagentModels, name)
+			return nil
+		}
+		resolved, err := selectableDesktopModelRef(c, ref)
+		if err != nil {
+			return err
+		}
+		if c.Agent.SubagentModels == nil {
+			c.Agent.SubagentModels = map[string]string{}
+		}
+		c.Agent.SubagentModels[name] = resolved
+		return nil
+	})
+}
+
+// SetSubagentProfileEffort sets (or clears) a per-name effort override. See
+// SetSubagentProfileModel.
+func (a *App) SetSubagentProfileEffort(name, level string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return fmt.Errorf("name is required")
+	}
+	return a.applyConfigChange(func(c *config.Config) error {
+		level = strings.TrimSpace(level)
+		if level == "" || level == "auto" {
+			delete(c.Agent.SubagentEfforts, name)
+			return nil
+		}
+		model := strings.TrimSpace(c.Agent.SubagentModels[name])
+		if model == "" {
+			model = strings.TrimSpace(c.Agent.SubagentModel)
+		}
+		if model == "" {
+			model = c.DefaultModel
+		}
+		entry, ok := c.ResolveModel(model)
+		if !ok {
+			return fmt.Errorf("unknown subagent model %q", model)
+		}
+		effort, err := config.NormalizeEffort(entry, level)
+		if err != nil {
+			return err
+		}
+		if c.Agent.SubagentEfforts == nil {
+			c.Agent.SubagentEfforts = map[string]string{}
+		}
+		c.Agent.SubagentEfforts[name] = effort
+		return nil
+	})
+}
+
 func desktopMaxSubagentDepth(depth int) int {
 	if depth <= 0 {
 		return agent.DefaultMaxSubagentDepth

@@ -70,6 +70,16 @@ var readOnlySubagentWorkflowTools = []string{
 
 const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed only while max_subagent_depth leaves another delegation layer; unsupported background job tools (parallel_tasks, wait, bash_output, kill_shell) are excluded; bash is exposed as foreground-only inside subagents."
 
+// AlwaysHiddenSubagentTools returns the tool names excluded from every
+// subagent's registry regardless of an explicit allowlist or delegation
+// depth (unlike subagentRecursiveTools, which depends on remaining depth).
+// Host UIs offering a tool picker for a subagent profile's allowed-tools
+// should exclude these from the offered choices — selecting them would be
+// silently ignored at runtime.
+func AlwaysHiddenSubagentTools() []string {
+	return append([]string(nil), subagentAlwaysHiddenTools...)
+}
+
 // SubagentMetaTools returns the tool names that spawned agents should not inherit
 // from the parent registry unless a future call site deliberately opts into a
 // different boundary. They can spawn or author more agent work, so excluding them

@@ -816,6 +816,65 @@ func TestSkillRoutingMetadataParsesButStaysOutOfIndex(t *testing.T) {
 	}
 }
 
+func TestColorFrontmatterParses(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/tagged.md", "---\ndescription: has a color\ncolor: amber\n---\nbody")
+	sk, ok := New(Options{HomeDir: home, DisableBuiltins: true}).Read("tagged")
+	if !ok {
+		t.Fatal("skill not loaded")
+	}
+	if sk.Color != "amber" {
+		t.Fatalf("Color = %q, want amber", sk.Color)
+	}
+}
+
+func TestInvocationDefaultsToAutoForExistingSkills(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/plain.md", "---\ndescription: no invocation field\n---\nbody")
+	sk, ok := New(Options{HomeDir: home, DisableBuiltins: true}).Read("plain")
+	if !ok {
+		t.Fatal("skill not loaded")
+	}
+	if sk.Invocation != "auto" {
+		t.Fatalf("Invocation = %q, want auto (default)", sk.Invocation)
+	}
+	if sk.Color != "" {
+		t.Fatalf("Color = %q, want empty for a file with no color: key", sk.Color)
+	}
+}
+
+func TestManualInvocationSkillExcludedFromIndex(t *testing.T) {
+	home := t.TempDir()
+	writeSkill(t, home, ".reasonix/skills/private-agent.md", "---\ndescription: my private subagent\nrunAs: subagent\ninvocation: manual\n---\nbody")
+	writeSkill(t, home, ".reasonix/skills/public-agent.md", "---\ndescription: a discoverable subagent\nrunAs: subagent\n---\nbody")
+	store := New(Options{HomeDir: home, DisableBuiltins: true})
+	private, ok := store.Read("private-agent")
+	if !ok {
+		t.Fatal("private-agent not loaded")
+	}
+	if private.Invocation != "manual" {
+		t.Fatalf("Invocation = %q, want manual", private.Invocation)
+	}
+	public, ok := store.Read("public-agent")
+	if !ok {
+		t.Fatal("public-agent not loaded")
+	}
+
+	index := IndexBlock([]Skill{private, public})
+	if strings.Contains(index, "private-agent") {
+		t.Fatalf("manual-invocation skill leaked into index:\n%s", index)
+	}
+	if !strings.Contains(index, "public-agent") {
+		t.Fatalf("auto-invocation skill missing from index:\n%s", index)
+	}
+
+	// A read-only index built from only manual-invocation skills must render
+	// as empty, not a header wrapped around nothing.
+	if got := IndexBlock([]Skill{private}); got != "" {
+		t.Fatalf("IndexBlock of only manual-invocation skills = %q, want empty", got)
+	}
+}
+
 func TestApplyIndexTruncates(t *testing.T) {
 	var skills []Skill
 	for i := 0; i < 200; i++ {

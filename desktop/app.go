@@ -49,6 +49,7 @@ import (
 	"reasonix/internal/provider"
 	"reasonix/internal/skill"
 	"reasonix/internal/store"
+	"reasonix/internal/tool"
 )
 
 // eventChannel is the Wails runtime event name the frontend subscribes to for the
@@ -5759,20 +5760,42 @@ type ToolView struct {
 	ReadOnlyHint bool   `json:"readOnlyHint,omitempty"`
 }
 
-// SkillView is one discoverable skill for the drawer.
+// SkillView is one discoverable skill for the drawer. Also backs the
+// Subagents settings surface: the frontend filters this same list to
+// RunAs=="subagent" rather than calling a second, redundant endpoint.
 type SkillView struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Scope       string `json:"scope"`
-	RunAs       string `json:"runAs"`
-	Enabled     bool   `json:"enabled"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Scope        string   `json:"scope"`
+	RunAs        string   `json:"runAs"`
+	Enabled      bool     `json:"enabled"`
+	Model        string   `json:"model,omitempty"`
+	Effort       string   `json:"effort,omitempty"`
+	AllowedTools []string `json:"allowedTools,omitempty"`
+	Color        string   `json:"color,omitempty"`
+	Invocation   string   `json:"invocation,omitempty"`
+	// Body is the skill's full markdown body (post-frontmatter) — the
+	// subagent profile editor pre-fills its system-prompt field from this.
+	Body string `json:"body,omitempty"`
+	// ConfiguredModel/ConfiguredEffort are the per-name overrides from
+	// cfg.Agent.SubagentModels/SubagentEfforts (internal/boot's
+	// subagentModelRef/subagentEffortRef read the same map at dispatch time).
+	// This is the only lever for a built-in subagent's model/effort, since
+	// built-ins have no editable frontmatter file to carry Model/Effort.
+	ConfiguredModel  string `json:"configuredModel,omitempty"`
+	ConfiguredEffort string `json:"configuredEffort,omitempty"`
 }
 
 type SkillRootSkillView struct {
-	Name        string `json:"name"`
-	Description string `json:"description"`
-	Scope       string `json:"scope"`
-	RunAs       string `json:"runAs"`
+	Name         string   `json:"name"`
+	Description  string   `json:"description"`
+	Scope        string   `json:"scope"`
+	RunAs        string   `json:"runAs"`
+	Model        string   `json:"model,omitempty"`
+	Effort       string   `json:"effort,omitempty"`
+	AllowedTools []string `json:"allowedTools,omitempty"`
+	Color        string   `json:"color,omitempty"`
+	Invocation   string   `json:"invocation,omitempty"`
 }
 
 // SkillRootView is one skill discovery root for the drawer's Sources section.
@@ -5821,21 +5844,58 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 	}
 
 	disabled := map[string]bool{}
+	var configuredModels, configuredEfforts map[string]string
 	if cfg, err := config.Load(); err == nil {
 		for _, name := range cfg.Skills.DisabledSkills {
 			if key := config.SkillNameKey(name); key != "" {
 				disabled[key] = true
 			}
 		}
+		configuredModels = cfg.Agent.SubagentModels
+		configuredEfforts = cfg.Agent.SubagentEfforts
 	}
 	for _, s := range ctrl.AllSkills() {
 		out.Skills = append(out.Skills, SkillView{
 			Name: s.Name, Description: s.Description,
 			Scope: string(s.Scope), RunAs: string(s.RunAs),
-			Enabled: !disabled[config.SkillNameKey(s.Name)],
+			Enabled:          !disabled[config.SkillNameKey(s.Name)],
+			Model:            s.Model,
+			Effort:           s.Effort,
+			AllowedTools:     append([]string{}, s.AllowedTools...),
+			Color:            s.Color,
+			Invocation:       s.Invocation,
+			Body:             s.Body,
+			ConfiguredModel:  configuredModels[s.Name],
+			ConfiguredEffort: configuredEfforts[s.Name],
 		})
 	}
 	out.SkillRoots = a.cachedSkillRootsView()
+	return out
+}
+
+// AvailableSubagentTools lists the tool names a subagent profile's
+// "available tools" picker may offer. Scoped to compile-time builtins for
+// v1 — MCP/plugin tools are per-session/per-connection and would need a new
+// live-registry accessor on control.Capabilities to enumerate safely; a
+// profile's allowed-tools already degrades gracefully (FilterRegistry drops
+// unknown names silently) if extended to MCP names by hand later. Tools that
+// are always excluded from every subagent regardless of an explicit
+// allowlist (agent.AlwaysHiddenSubagentTools) are left out entirely — they'd
+// be a selectable no-op otherwise.
+func (a *App) AvailableSubagentTools() []ToolView {
+	hidden := map[string]bool{}
+	for _, name := range agent.AlwaysHiddenSubagentTools() {
+		hidden[name] = true
+	}
+	entries := tool.BuiltinContractEntries()
+	out := make([]ToolView, 0, len(entries))
+	for _, e := range entries {
+		if hidden[e.Name] {
+			continue
+		}
+		out = append(out, ToolView{Name: e.Name, Description: e.Description, ReadOnlyHint: e.ReadOnly})
+	}
+	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out
 }
 
@@ -6095,10 +6155,15 @@ func skillRootsViewFrom(cwd string, cfg, userCfg *config.Config) []SkillRootView
 		root := skillDisplayRoot(sk, roots)
 		counts[root]++
 		skillItems[root] = append(skillItems[root], SkillRootSkillView{
-			Name:        sk.Name,
-			Description: sk.Description,
-			Scope:       string(sk.Scope),
-			RunAs:       string(sk.RunAs),
+			Name:         sk.Name,
+			Description:  sk.Description,
+			Scope:        string(sk.Scope),
+			RunAs:        string(sk.RunAs),
+			Model:        sk.Model,
+			Effort:       sk.Effort,
+			AllowedTools: append([]string{}, sk.AllowedTools...),
+			Color:        sk.Color,
+			Invocation:   sk.Invocation,
 		})
 	}
 	for root := range skillItems {

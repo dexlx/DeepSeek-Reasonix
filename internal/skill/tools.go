@@ -500,7 +500,15 @@ func (t *installSkillTool) Execute(_ context.Context, args json.RawMessage) (str
 		runAs = RunSubagent
 	}
 
-	content := renderSkillFile(name, desc, p.Body, runAs, strings.TrimSpace(p.Model), strings.TrimSpace(p.Effort), p.AllowedTools)
+	content := RenderSkillFile(SkillFileOptions{
+		Name:         name,
+		Description:  desc,
+		Body:         p.Body,
+		RunAs:        runAs,
+		Model:        strings.TrimSpace(p.Model),
+		Effort:       strings.TrimSpace(p.Effort),
+		AllowedTools: p.AllowedTools,
+	})
 	path, err := t.store.CreateWithContent(name, scope, content)
 	if err != nil {
 		return "", err
@@ -519,21 +527,47 @@ func (t *installSkillTool) Execute(_ context.Context, args json.RawMessage) (str
 	return string(res), nil
 }
 
-// renderSkillFile assembles a skill file's frontmatter + body. Subagent-only
-// fields (model, allowed-tools) are emitted only when relevant.
-func renderSkillFile(name, desc, body string, runAs RunAs, model, effort string, allowedTools []string) string {
+// SkillFileOptions configures a rendered skill markdown file's frontmatter.
+// Shared by the model-facing install_skill tool and host-side authoring
+// surfaces (e.g. a desktop subagent-profile settings page) so both produce
+// identical, correctly-escaped frontmatter instead of hand-built YAML.
+type SkillFileOptions struct {
+	Name         string
+	Description  string
+	Body         string
+	RunAs        RunAs
+	Model        string // subagent-only; ignored when RunAs != RunSubagent
+	Effort       string // subagent-only; ignored when RunAs != RunSubagent
+	AllowedTools []string
+	Color        string // optional display tag; emitted regardless of RunAs
+	// Invocation, when "manual", keeps the written skill out of the pinned
+	// Skills index (see index.go) — invocable by name only, never
+	// model-discovered. Anything else (including empty) is the default "auto".
+	Invocation string
+}
+
+// RenderSkillFile assembles a skill file's frontmatter + body. Subagent-only
+// fields (model, effort, allowed-tools) are emitted only when RunAs=subagent;
+// color and invocation are independent of RunAs.
+func RenderSkillFile(opts SkillFileOptions) string {
 	var fm strings.Builder
-	fm.WriteString("---\nname: " + name + "\ndescription: " + desc + "\n")
-	if runAs == RunSubagent {
+	fm.WriteString("---\nname: " + opts.Name + "\ndescription: " + opts.Description + "\n")
+	if opts.Color != "" {
+		fm.WriteString("color: " + opts.Color + "\n")
+	}
+	if strings.EqualFold(strings.TrimSpace(opts.Invocation), "manual") {
+		fm.WriteString("invocation: manual\n")
+	}
+	if opts.RunAs == RunSubagent {
 		fm.WriteString("runAs: subagent\n")
-		if model != "" {
-			fm.WriteString("model: " + model + "\n")
+		if opts.Model != "" {
+			fm.WriteString("model: " + opts.Model + "\n")
 		}
-		if effort != "" {
-			fm.WriteString("effort: " + effort + "\n")
+		if opts.Effort != "" {
+			fm.WriteString("effort: " + opts.Effort + "\n")
 		}
 		var tools []string
-		for _, t := range allowedTools {
+		for _, t := range opts.AllowedTools {
 			if t = strings.TrimSpace(t); t != "" {
 				tools = append(tools, t)
 			}
@@ -543,7 +577,7 @@ func renderSkillFile(name, desc, body string, runAs RunAs, model, effort string,
 		}
 	}
 	fm.WriteString("---\n\n")
-	return fm.String() + strings.TrimRight(body, " \t\r\n") + "\n"
+	return fm.String() + strings.TrimRight(opts.Body, " \t\r\n") + "\n"
 }
 
 // --- shared helpers ---

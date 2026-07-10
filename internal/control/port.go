@@ -147,6 +147,9 @@ type Capabilities interface {
 	DisabledSkills() []skill.Skill
 	SkillEnabled(name string) bool
 	SetSkillEnabled(name string, enabled bool) error
+	CreateSkill(name string, scope skill.Scope, content string) (string, error)
+	UpdateSkill(name string, scope skill.Scope, content string) error
+	DeleteSkill(name string, scope skill.Scope) error
 	HookRunner() *hook.Runner
 	CustomCommand(input string) (sent string, found bool)
 	MCPPrompt(ctx context.Context, input string) (sent string, found bool, err error)

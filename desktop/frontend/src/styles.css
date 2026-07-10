@@ -11538,6 +11538,122 @@ body > .mermaid-diagram--fullscreen {
 .cap-skill-card__more:hover {
   color: var(--accent-strong);
 }
+.subagents-inherit-badge {
+  flex-shrink: 0;
+  padding: 2px 8px;
+  border: 1px dashed var(--border-soft);
+  border-radius: 999px;
+  color: var(--fg-faint);
+  font-size: 10px;
+  font-weight: 550;
+  line-height: 1.3;
+  cursor: default;
+}
+.subagents-color-dot {
+  flex: 0 0 auto;
+  width: 10px;
+  height: 10px;
+  margin-top: 3px;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--project-accent, var(--accent));
+  box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--bg-elev) 72%, transparent);
+}
+.subagents-color-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  padding: 2px 0 4px;
+}
+.subagents-color-swatch {
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 1px solid var(--border-soft);
+  border-radius: 999px;
+  background: var(--project-accent, var(--accent));
+  cursor: pointer;
+  transition: transform 0.12s, box-shadow 0.12s;
+}
+.subagents-color-swatch:hover {
+  transform: scale(1.08);
+}
+.subagents-color-swatch:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 2px;
+}
+.subagents-color-swatch--selected {
+  box-shadow: 0 0 0 2px var(--bg-soft), 0 0 0 4px var(--project-accent, var(--accent));
+}
+.subagents-tool-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
+  gap: 4px 10px;
+  padding: 6px 0 2px;
+}
+.subagents-tool-option {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--fg-dim);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.subagents-field-error {
+  margin-top: -4px;
+  color: var(--err);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.subagents-hint {
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.subagents-builtin-overrides {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0 33px;
+}
+.subagents-builtin-overrides__label {
+  flex-shrink: 0;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 550;
+  cursor: default;
+}
+.subagents-row-actions {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.subagents-tryit-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.subagents-tryit-row .mem-input {
+  flex: 1 1 auto;
+}
+.subagents-tryit-result {
+  margin: 0;
+  padding: 10px 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-soft) 76%, transparent);
+  color: var(--fg-dim);
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+}
 .cap-dot {
   flex-shrink: 0;
   width: 7px;

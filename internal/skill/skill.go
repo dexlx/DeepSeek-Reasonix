@@ -71,6 +71,13 @@ type Skill struct {
 	// command policy at execution time (frontmatter `read-only:`). This is a
 	// tool-boundary contract, not a prompt promise.
 	ReadOnly bool
+	Color    string // optional display tag for UI surfaces (frontmatter `color:`); no runtime effect
+	// Invocation gates whether this skill enters the pinned Skills index the
+	// model reads every turn. "auto" (default) behaves like every skill always
+	// has. "manual" keeps the skill invocable by name (/<name>, run_skill) but
+	// invisible to model-initiated discovery — for user-authored subagent
+	// profiles meant to be triggered deliberately, not autonomously.
+	Invocation string // auto | manual (frontmatter `invocation:`)
 	// Routing metadata is intentionally kept out of the cache-stable Skills
 	// index; it feeds per-turn capability hints only.
 	Triggers         []string
@@ -507,6 +514,8 @@ func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker bo
 		AutoUse:        parseAutoUse(fm[skillFrontmatterAutoUse]),
 		NeedsFreshData: parseBoolFrontmatter(fm[skillFrontmatterNeedsFreshData]),
 		Cost:           parseCost(fm[skillFrontmatterCost]),
+		Color:          strings.TrimSpace(fm[skillFrontmatterColor]),
+		Invocation:     parseInvocation(fm[skillFrontmatterInvocation]),
 	}, true
 }
 
@@ -525,6 +534,8 @@ const (
 	skillFrontmatterAutoUse          = "auto-use"
 	skillFrontmatterNeedsFreshData   = "needs-fresh-data"
 	skillFrontmatterCost             = "cost"
+	skillFrontmatterColor            = "color"
+	skillFrontmatterInvocation       = "invocation"
 )
 
 var skillMarkerFrontmatterKeys = []string{
@@ -542,6 +553,8 @@ var skillMarkerFrontmatterKeys = []string{
 	skillFrontmatterAutoUse,
 	skillFrontmatterNeedsFreshData,
 	skillFrontmatterCost,
+	skillFrontmatterColor,
+	skillFrontmatterInvocation,
 }
 
 func hasSkillMarker(content string, fm map[string]string) bool {
@@ -632,6 +645,52 @@ func (s *Store) CreateWithContent(name string, scope Scope, content string) (str
 		return "", err
 	}
 	return folder, nil
+}
+
+// UpdateContent overwrites an existing user-authored skill's file contents in
+// place. Refuses built-ins and a scope mismatch, mirroring Delete's rules —
+// see Delete for why a mismatch must refuse rather than silently target the
+// wrong file.
+func (s *Store) UpdateContent(name string, scope Scope, content string) error {
+	if scope == ScopeBuiltin {
+		return fmt.Errorf("skill %q is built in and cannot be edited", name)
+	}
+	sk, ok := s.Read(name)
+	if !ok {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if sk.Scope != scope {
+		return fmt.Errorf("skill %q resolves at scope %q, not %q — refusing to edit a different scope's file", name, sk.Scope, scope)
+	}
+	if sk.Path == "" || sk.Path == "(builtin)" {
+		return fmt.Errorf("skill %q has no file to update", name)
+	}
+	return os.WriteFile(sk.Path, []byte(content), 0o644)
+}
+
+// Delete removes a user-authored skill. Refuses built-ins (no file backs
+// them) and refuses when the resolved skill's actual scope doesn't match the
+// requested one — e.g. a project-scope delete for a name that only resolves
+// at global scope, which would otherwise silently no-op against the wrong
+// file while a same-named project-scope shadow kept showing up in List().
+func (s *Store) Delete(name string, scope Scope) error {
+	if scope == ScopeBuiltin {
+		return fmt.Errorf("skill %q is built in and cannot be deleted", name)
+	}
+	sk, ok := s.Read(name)
+	if !ok {
+		return fmt.Errorf("skill %q not found", name)
+	}
+	if sk.Scope != scope {
+		return fmt.Errorf("skill %q resolves at scope %q, not %q — refusing to delete a different scope's file", name, sk.Scope, scope)
+	}
+	if sk.Path == "" || sk.Path == "(builtin)" {
+		return fmt.Errorf("skill %q has no file to delete", name)
+	}
+	if filepath.Base(sk.Path) == SkillFile {
+		return os.RemoveAll(filepath.Dir(sk.Path)) // directory-layout skill: <name>/SKILL.md + siblings
+	}
+	return os.Remove(sk.Path) // legacy flat <name>.md skill
 }
 
 func (s *Store) globalSkillsRoot() string {
@@ -772,6 +831,15 @@ func parseCost(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// parseInvocation maps frontmatter to an invocation mode. Anything other than
+// "manual" (including absent) is "auto" — the existing, universal behavior.
+func parseInvocation(raw string) string {
+	if strings.EqualFold(strings.TrimSpace(raw), "manual") {
+		return "manual"
+	}
+	return "auto"
 }
 
 // parseRunAs maps frontmatter to a run mode. An unknown value defaults to the

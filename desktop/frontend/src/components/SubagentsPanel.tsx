@@ -1,0 +1,532 @@
+import { useCallback, useEffect, useMemo, useState, type CSSProperties } from "react";
+
+import { app } from "../lib/bridge";
+import { useT } from "../lib/i18n";
+import { PROJECT_COLOR_OPTIONS, projectColorValue, type ProjectColorKey } from "../lib/projectColors";
+import type { MCPToolView, SettingsView, SkillView, SubagentProfileInput } from "../lib/types";
+
+import { InlineConfirmButton } from "./InlineConfirmButton";
+import { allRefs, EFFORT_PRESETS, ModelPicker, toRef } from "./SettingsPanel";
+import { Tooltip } from "./Tooltip";
+
+const NAME_PATTERN = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+
+function subagentScopeLabel(scope: string, t: ReturnType<typeof useT>): string {
+  switch (scope) {
+    case "builtin":
+      return t("caps.skillScopeBuiltin");
+    case "project":
+      return t("caps.skillScopeProject");
+    case "custom":
+      return t("caps.skillScopeCustom");
+    case "global":
+      return t("caps.skillScopeGlobal");
+    default:
+      return scope;
+  }
+}
+
+function toolsSummaryLabel(allowedTools: string[] | undefined, t: ReturnType<typeof useT>): string {
+  if (!allowedTools || allowedTools.length === 0) return t("subagents.allTools");
+  return t("subagents.toolCount", { n: allowedTools.length });
+}
+
+// SubagentsSettingsPage is a self-contained subagent-profile management page
+// embedded inside the settings centre. A "subagent profile" is a skill file
+// with runAs=subagent + invocation=manual (see internal/skill): it stays
+// invocable by name but is excluded from the pinned Skills index, so the
+// model never discovers or auto-invokes a profile the user configured for
+// their own deliberate use. This reads the same app.SkillsSettings() list
+// the Skills tab uses and filters client-side — the underlying file is the
+// same, just shown through a different lens — rather than adding a
+// redundant, parallel backend list endpoint.
+export function SubagentsSettingsPage({ s }: { s: SettingsView }) {
+  const t = useT();
+  const [skills, setSkills] = useState<SkillView[] | null>(null);
+  const [tools, setTools] = useState<MCPToolView[]>([]);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const [query, setQuery] = useState("");
+  const [adding, setAdding] = useState(false);
+  const [editingSkill, setEditingSkill] = useState<SkillView | null>(null);
+
+  const reload = useCallback(async () => {
+    const [settingsView, availableTools] = await Promise.all([
+      app.SkillsSettings().catch(() => ({ skills: [], skillRoots: [] })),
+      app.AvailableSubagentTools().catch(() => []),
+    ]);
+    setSkills(settingsView.skills.filter((sk) => sk.runAs === "subagent"));
+    setTools(availableTools);
+  }, []);
+  useEffect(() => { void reload(); }, [reload]);
+
+  const mutate = async (fn: () => Promise<unknown>) => {
+    setBusy(true);
+    setErr(null);
+    try {
+      await fn();
+      await reload();
+      return true;
+    } catch (e) {
+      setErr(String((e as Error)?.message ?? e));
+      return false;
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const filtered = useMemo(() => {
+    if (!skills) return [];
+    const q = query.trim().toLowerCase();
+    if (!q) return skills;
+    return skills.filter((sk) => `${sk.name} ${sk.description}`.toLowerCase().includes(q));
+  }, [skills, query]);
+
+  const builtins = useMemo(() => filtered.filter((sk) => sk.scope === "builtin"), [filtered]);
+  const custom = useMemo(() => filtered.filter((sk) => sk.scope !== "builtin"), [filtered]);
+
+  if (!skills) return <div className="empty">{t("caps.loading")}</div>;
+
+  return (
+    <section className="mem-section">
+      {err && <div className="banner banner--error">{err}</div>}
+      <div className="cap-search">
+        <input
+          className="mem-input"
+          type="search"
+          placeholder={t("subagents.search")}
+          value={query}
+          onChange={(e) => setQuery(e.target.value)}
+        />
+        <button
+          className="btn btn--small"
+          type="button"
+          disabled={busy || adding}
+          onClick={() => { setEditingSkill(null); setAdding(true); }}
+        >
+          {t("subagents.new")}
+        </button>
+        <button className="btn btn--small" type="button" disabled={busy} onClick={() => void mutate(() => app.RefreshSkills())}>
+          {t("caps.refreshSkills")}
+        </button>
+      </div>
+
+      {adding && (
+        <SubagentProfileForm
+          s={s}
+          tools={tools}
+          existingNames={skills.map((sk) => sk.name)}
+          busy={busy}
+          onCancel={() => setAdding(false)}
+          onSave={(input) =>
+            mutate(() => app.CreateSubagentProfile(input)).then((ok) => {
+              if (ok) setAdding(false);
+            })
+          }
+        />
+      )}
+
+      {editingSkill && (
+        <SubagentProfileForm
+          s={s}
+          tools={tools}
+          existingNames={skills.map((sk) => sk.name)}
+          busy={busy}
+          editingSkill={editingSkill}
+          onCancel={() => setEditingSkill(null)}
+          onSave={(input) =>
+            mutate(() => app.UpdateSubagentProfile(editingSkill.name, editingSkill.scope, input)).then((ok) => {
+              if (ok) setEditingSkill(null);
+            })
+          }
+        />
+      )}
+
+      <div className="cap-skills-head">
+        <div className="cap-skills-head__copy">
+          <div className="cap-skills-head__title">{t("subagents.builtinTitle")}</div>
+          <div className="cap-skills-head__summary">{t("subagents.builtinHint")}</div>
+        </div>
+      </div>
+      {builtins.length > 0 && (
+        <div className="cap-skills">
+          {builtins.map((sk) => (
+            <BuiltinSubagentRow
+              key={sk.name}
+              skill={sk}
+              s={s}
+              busy={busy}
+              onSetModel={(ref) => void mutate(() => app.SetSubagentProfileModel(sk.name, ref))}
+              onSetEffort={(level) => void mutate(() => app.SetSubagentProfileEffort(sk.name, level))}
+            />
+          ))}
+        </div>
+      )}
+
+      <div className="cap-skills-head">
+        <div className="cap-skills-head__copy">
+          <div className="cap-skills-head__title">{t("subagents.customTitle")}</div>
+        </div>
+      </div>
+      {custom.length === 0 ? (
+        <div className="mem-empty">{query.trim() ? t("subagents.noMatches") : t("subagents.noCustom")}</div>
+      ) : (
+        <div className="cap-skills">
+          {custom.map((sk) => (
+            <CustomSubagentRow
+              key={sk.name}
+              skill={sk}
+              busy={busy}
+              onEdit={() => { setAdding(false); setEditingSkill(sk); }}
+              onDelete={() => void mutate(() => app.DeleteSubagentProfile(sk.name, sk.scope))}
+            />
+          ))}
+        </div>
+      )}
+    </section>
+  );
+}
+
+function BuiltinSubagentRow({
+  skill,
+  s,
+  busy,
+  onSetModel,
+  onSetEffort,
+}: {
+  skill: SkillView;
+  s: SettingsView;
+  busy: boolean;
+  onSetModel: (ref: string) => void;
+  onSetEffort: (level: string) => void;
+}) {
+  const t = useT();
+  const toolsLabel = toolsSummaryLabel(skill.allowedTools, t);
+  return (
+    <div className="cap-skill-card">
+      <div className="cap-skill-card__top">
+        <span className="cap-skill-card__head">
+          <span className="cap-skill-card__icon">/</span>
+          <span className="cap-skill-card__main">
+            <span className="cap-skill-card__command">{skill.name}</span>
+            <span className="cap-skill-card__badges">
+              <span className="cap-skill-badge cap-skill-badge--builtin">{t("caps.skillScopeBuiltin")}</span>
+              <Tooltip label={(skill.allowedTools ?? []).join(", ") || t("subagents.allTools")}>
+                <span className="cap-skill-badge">{toolsLabel}</span>
+              </Tooltip>
+            </span>
+          </span>
+        </span>
+      </div>
+      <div className="cap-skill-card__desc">{skill.description}</div>
+      <div className="subagents-builtin-overrides">
+        <Tooltip label={t("subagents.builtinReadOnlyHint")}>
+          <span className="subagents-builtin-overrides__label">{t("subagents.builtinOverrideLabel")}</span>
+        </Tooltip>
+        <ModelPicker
+          s={s}
+          refs={allRefs(s)}
+          value={toRef(skill.configuredModel ?? "", s)}
+          disabled={busy}
+          emptyOptionLabel={t("settings.subagentModelDefault")}
+          emptyOptionHint={t("common.auto")}
+          onPick={onSetModel}
+        />
+        <select
+          className="mem-select"
+          value={skill.configuredEffort ?? ""}
+          disabled={busy}
+          onChange={(e) => onSetEffort(e.target.value)}
+        >
+          <option value="">{t("settings.subagentEffortDefault")}</option>
+          {EFFORT_PRESETS.map((level) => (
+            <option key={level} value={level}>
+              {level}
+            </option>
+          ))}
+        </select>
+      </div>
+    </div>
+  );
+}
+
+function CustomSubagentRow({
+  skill,
+  busy,
+  onEdit,
+  onDelete,
+}: {
+  skill: SkillView;
+  busy: boolean;
+  onEdit: () => void;
+  onDelete: () => void;
+}) {
+  const t = useT();
+  const toolsLabel = toolsSummaryLabel(skill.allowedTools, t);
+  const accent = projectColorValue(skill.color);
+  return (
+    <div className="cap-skill-card">
+      <div className="cap-skill-card__top">
+        <span className="cap-skill-card__head">
+          {accent && <span className="subagents-color-dot" style={{ "--project-accent": accent } as CSSProperties} aria-hidden="true" />}
+          <span className="cap-skill-card__main">
+            <span className="cap-skill-card__command">{skill.name}</span>
+            <span className="cap-skill-card__badges">
+              <span className={`cap-skill-badge cap-skill-badge--${skill.scope}`}>{subagentScopeLabel(skill.scope, t)}</span>
+              {skill.model && <span className="cap-skill-badge">{skill.model}</span>}
+              <Tooltip label={(skill.allowedTools ?? []).join(", ") || t("subagents.allTools")}>
+                <span className="cap-skill-badge">{toolsLabel}</span>
+              </Tooltip>
+            </span>
+          </span>
+        </span>
+        <span className="subagents-row-actions">
+          <button className="btn btn--small" type="button" disabled={busy} onClick={onEdit}>
+            {t("common.edit")}
+          </button>
+          <InlineConfirmButton
+            label={t("common.delete")}
+            confirmLabel={t("subagents.confirmDelete")}
+            cancelLabel={t("common.cancel")}
+            disabled={busy}
+            danger
+            onConfirm={onDelete}
+          />
+        </span>
+      </div>
+      <div className="cap-skill-card__desc">{skill.description}</div>
+    </div>
+  );
+}
+
+function ColorSwatchPicker({ value, onChange }: { value: ProjectColorKey; onChange: (key: ProjectColorKey) => void }) {
+  const t = useT();
+  return (
+    <div className="subagents-color-grid" role="group" aria-label={t("subagents.color")}>
+      {PROJECT_COLOR_OPTIONS.filter((opt) => opt.key !== "").map((opt) => (
+        <button
+          key={opt.key}
+          type="button"
+          className={`subagents-color-swatch${value === opt.key ? " subagents-color-swatch--selected" : ""}`}
+          style={{ "--project-accent": opt.value } as CSSProperties}
+          aria-pressed={value === opt.key}
+          aria-label={opt.key}
+          onClick={() => onChange(value === opt.key ? "" : opt.key)}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ToolMultiSelect({
+  tools,
+  selected,
+  onChange,
+}: {
+  tools: MCPToolView[];
+  selected: Set<string>;
+  onChange: (next: Set<string>) => void;
+}) {
+  const toggle = (name: string, checked: boolean) => {
+    const next = new Set(selected);
+    if (checked) next.add(name);
+    else next.delete(name);
+    onChange(next);
+  };
+  return (
+    <div className="subagents-tool-grid">
+      {tools.map((tool) => (
+        <Tooltip key={tool.name} label={tool.description}>
+          <label className="subagents-tool-option">
+            <input type="checkbox" checked={selected.has(tool.name)} onChange={(e) => toggle(tool.name, e.target.checked)} />
+            <span>{tool.name}</span>
+          </label>
+        </Tooltip>
+      ))}
+    </div>
+  );
+}
+
+function SubagentProfileForm({
+  s,
+  tools,
+  existingNames,
+  busy,
+  editingSkill,
+  onCancel,
+  onSave,
+}: {
+  s: SettingsView;
+  tools: MCPToolView[];
+  existingNames: string[];
+  busy: boolean;
+  editingSkill?: SkillView;
+  onCancel: () => void;
+  onSave: (input: SubagentProfileInput) => Promise<unknown>;
+}) {
+  const t = useT();
+  const isEditing = Boolean(editingSkill);
+  const [name, setName] = useState(editingSkill?.name ?? "");
+  const [description, setDescription] = useState(editingSkill?.description ?? "");
+  const [color, setColor] = useState<ProjectColorKey>((editingSkill?.color as ProjectColorKey) ?? "");
+  const [model, setModel] = useState(editingSkill?.model ?? "");
+  const [effort, setEffort] = useState(editingSkill?.effort ?? "");
+  const [toolMode, setToolMode] = useState<"all" | "custom">(
+    editingSkill?.allowedTools && editingSkill.allowedTools.length > 0 ? "custom" : "all",
+  );
+  const [selectedTools, setSelectedTools] = useState<Set<string>>(() => new Set(editingSkill?.allowedTools ?? []));
+  const [systemPrompt, setSystemPrompt] = useState(editingSkill?.body ?? "");
+  const [scope, setScope] = useState<"global" | "project">(editingSkill?.scope === "project" ? "project" : "global");
+  const [tryTask, setTryTask] = useState("");
+  const [tryRunning, setTryRunning] = useState(false);
+  const [tryResult, setTryResult] = useState<string | null>(null);
+  const [tryError, setTryError] = useState<string | null>(null);
+
+  const trimmedName = name.trim();
+  // Editing keeps its own name fixed, so it can never collide with itself.
+  const otherNames = isEditing ? existingNames.filter((n) => n !== editingSkill?.name) : existingNames;
+  const nameTaken = trimmedName !== "" && otherNames.some((n) => n.toLowerCase() === trimmedName.toLowerCase());
+  const nameValid = trimmedName === "" || NAME_PATTERN.test(trimmedName);
+  const promptReady = systemPrompt.trim() !== "";
+  const ready = trimmedName !== "" && nameValid && !nameTaken && description.trim() !== "" && promptReady;
+
+  const currentInput = (): SubagentProfileInput => ({
+    name: trimmedName,
+    description: description.trim(),
+    systemPrompt: systemPrompt.trim(),
+    color: color || undefined,
+    model,
+    effort,
+    allowedTools: toolMode === "custom" ? Array.from(selectedTools) : [],
+    scope,
+  });
+
+  const submit = () => {
+    void onSave(currentInput());
+  };
+
+  const runTry = async () => {
+    setTryRunning(true);
+    setTryError(null);
+    setTryResult(null);
+    try {
+      setTryResult(await app.TrySubagentProfile(currentInput(), tryTask.trim()));
+    } catch (e) {
+      setTryError(String((e as Error)?.message ?? e));
+    } finally {
+      setTryRunning(false);
+    }
+  };
+
+  return (
+    <div className="prov-card prov-card--edit">
+      <div className="cap-skills-head__title">{isEditing ? t("subagents.editTitle") : t("subagents.newTitle")}</div>
+      <label className="set-label">{t("subagents.name")}</label>
+      <input
+        className="mem-input"
+        placeholder={t("subagents.namePlaceholder")}
+        value={name}
+        disabled={isEditing}
+        onChange={(e) => setName(e.target.value)}
+      />
+      {trimmedName !== "" && !nameValid && <div className="subagents-field-error">{t("subagents.nameInvalid")}</div>}
+      {nameTaken && <div className="subagents-field-error">{t("subagents.nameBuiltinCollision")}</div>}
+
+      <label className="set-label">{t("subagents.color")}</label>
+      <ColorSwatchPicker value={color} onChange={setColor} />
+
+      <label className="set-label">{t("settings.subagentModel")}</label>
+      <ModelPicker
+        s={s}
+        refs={allRefs(s)}
+        value={toRef(model, s)}
+        disabled={busy}
+        emptyOptionLabel={t("settings.subagentModelDefault")}
+        emptyOptionHint={t("common.auto")}
+        onPick={(ref) => setModel(ref)}
+      />
+
+      <label className="set-label">{t("settings.subagentEffort")}</label>
+      <select className="mem-select set-grow" value={effort} disabled={busy} onChange={(e) => setEffort(e.target.value)}>
+        <option value="">{t("settings.subagentEffortDefault")}</option>
+        {EFFORT_PRESETS.map((level) => (
+          <option key={level} value={level}>
+            {level}
+          </option>
+        ))}
+      </select>
+
+      <label className="set-label">{t("subagents.description")}</label>
+      <input
+        className="mem-input"
+        placeholder={t("subagents.descriptionPlaceholder")}
+        value={description}
+        onChange={(e) => setDescription(e.target.value)}
+      />
+
+      <label className="set-label">{t("subagents.tools")}</label>
+      <select
+        className="mem-select set-grow"
+        value={toolMode}
+        disabled={busy}
+        onChange={(e) => setToolMode(e.target.value === "custom" ? "custom" : "all")}
+      >
+        <option value="all">{t("subagents.allToolsOption")}</option>
+        <option value="custom">{t("subagents.customToolsOption")}</option>
+      </select>
+      {toolMode === "custom" && <ToolMultiSelect tools={tools} selected={selectedTools} onChange={setSelectedTools} />}
+
+      <label className="set-label">{t("subagents.systemPrompt")}</label>
+      <textarea
+        className="mem-textarea"
+        rows={6}
+        placeholder={t("subagents.systemPromptPlaceholder")}
+        value={systemPrompt}
+        onChange={(e) => setSystemPrompt(e.target.value)}
+      />
+
+      <label className="set-label">{t("subagents.tryIt")}</label>
+      <div className="subagents-tryit-row">
+        <input
+          className="mem-input"
+          placeholder={t("subagents.tryItPlaceholder")}
+          value={tryTask}
+          disabled={tryRunning}
+          onChange={(e) => setTryTask(e.target.value)}
+        />
+        <button
+          className="btn btn--small"
+          type="button"
+          onClick={() => void runTry()}
+          disabled={tryRunning || !promptReady || tryTask.trim() === ""}
+        >
+          {tryRunning ? t("subagents.running") : t("subagents.run")}
+        </button>
+      </div>
+      {tryError && <div className="banner banner--error">{tryError}</div>}
+      {tryResult && <pre className="subagents-tryit-result">{tryResult}</pre>}
+
+      <label className="set-label">{t("subagents.scope")}</label>
+      <select
+        className="mem-select set-grow"
+        value={scope}
+        disabled={busy || isEditing}
+        onChange={(e) => setScope(e.target.value === "project" ? "project" : "global")}
+      >
+        <option value="global">{t("caps.skillScopeGlobal")}</option>
+        <option value="project">{t("caps.skillScopeProject")}</option>
+      </select>
+
+      <div className="subagents-hint">{t("subagents.manualInvocationHint", { name: trimmedName || "…" })}</div>
+
+      <div className="prov-card__actions">
+        <button className="btn btn--small" onClick={onCancel} disabled={busy}>
+          {t("common.cancel")}
+        </button>
+        <button className="btn btn--primary btn--small" onClick={submit} disabled={busy || !ready}>
+          {t("common.save")}
+        </button>
+      </div>
+    </div>
+  );
+}

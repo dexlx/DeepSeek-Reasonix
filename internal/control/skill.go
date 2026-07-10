@@ -60,3 +60,14 @@ func (s *skillSet) byName(name string) (skill.Skill, bool) {
 func (s *skillSet) discovered() []skill.Skill {
 	return s.enabled
 }
+
+// writer returns the live store to use for authoring (create/delete), preferring
+// allStore since management surfaces must resolve disabled and builtin skills
+// too (e.g. a create-time name-collision check). nil when this session has no
+// reloadable store (e.g. a construction-time-only test snapshot).
+func (s *skillSet) writer() *skill.Store {
+	if s.allStore != nil {
+		return s.allStore
+	}
+	return s.store
+}

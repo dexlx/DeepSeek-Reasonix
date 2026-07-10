@@ -266,6 +266,102 @@ func TestCreateDirectoryLayoutSkill(t *testing.T) {
 	}
 }
 
+func TestUpdateContentOverwritesExistingSkill(t *testing.T) {
+	home := t.TempDir()
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, err := st.CreateWithContent("editable", ScopeGlobal, "---\ndescription: v1\n---\nold body"); err != nil {
+		t.Fatalf("CreateWithContent: %v", err)
+	}
+	if err := st.UpdateContent("editable", ScopeGlobal, "---\ndescription: v2\n---\nnew body"); err != nil {
+		t.Fatalf("UpdateContent: %v", err)
+	}
+	sk, ok := st.Read("editable")
+	if !ok {
+		t.Fatal("skill missing after update")
+	}
+	if sk.Description != "v2" || sk.Body != "new body" {
+		t.Fatalf("update did not apply: description=%q body=%q", sk.Description, sk.Body)
+	}
+}
+
+func TestUpdateContentRefusesBuiltin(t *testing.T) {
+	st := New(Options{HomeDir: t.TempDir()})
+	if err := st.UpdateContent("explore", ScopeBuiltin, "---\ndescription: x\n---\nbody"); err == nil {
+		t.Error("updating a builtin should error")
+	}
+}
+
+func TestUpdateContentRefusesMissingSkill(t *testing.T) {
+	st := New(Options{HomeDir: t.TempDir(), DisableBuiltins: true})
+	if err := st.UpdateContent("does-not-exist", ScopeGlobal, "---\ndescription: x\n---\nbody"); err == nil {
+		t.Error("updating a nonexistent skill should error")
+	}
+}
+
+func TestUpdateContentRefusesScopeMismatch(t *testing.T) {
+	home := t.TempDir()
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, err := st.CreateWithContent("scoped2", ScopeGlobal, "---\ndescription: v1\n---\nbody"); err != nil {
+		t.Fatalf("CreateWithContent: %v", err)
+	}
+	if err := st.UpdateContent("scoped2", ScopeProject, "---\ndescription: v2\n---\nbody"); err == nil {
+		t.Error("updating with the wrong scope should error")
+	}
+	sk, ok := st.Read("scoped2")
+	if !ok || sk.Description != "v1" {
+		t.Fatalf("skill should be unchanged after a refused scope-mismatched update, got description=%q ok=%v", sk.Description, ok)
+	}
+}
+
+func TestDeleteRemovesDirectoryLayoutSkill(t *testing.T) {
+	home := t.TempDir()
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	path, err := st.CreateWithContent("throwaway", ScopeGlobal, "---\ndescription: x\n---\nbody")
+	if err != nil {
+		t.Fatalf("CreateWithContent: %v", err)
+	}
+	if err := st.Delete("throwaway", ScopeGlobal); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok := st.Read("throwaway"); ok {
+		t.Fatal("skill should be gone after Delete")
+	}
+	if _, err := os.Stat(filepath.Dir(path)); !os.IsNotExist(err) {
+		t.Fatalf("skill directory should be removed, stat err=%v", err)
+	}
+}
+
+func TestDeleteRefusesBuiltin(t *testing.T) {
+	st := New(Options{HomeDir: t.TempDir()})
+	if err := st.Delete("explore", ScopeBuiltin); err == nil {
+		t.Error("deleting a builtin should error")
+	}
+}
+
+func TestDeleteRefusesMissingSkill(t *testing.T) {
+	st := New(Options{HomeDir: t.TempDir(), DisableBuiltins: true})
+	if err := st.Delete("does-not-exist", ScopeGlobal); err == nil {
+		t.Error("deleting a nonexistent skill should error")
+	}
+}
+
+func TestDeleteRefusesScopeMismatch(t *testing.T) {
+	home := t.TempDir()
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, err := st.CreateWithContent("scoped", ScopeGlobal, "---\ndescription: x\n---\nbody"); err != nil {
+		t.Fatalf("CreateWithContent: %v", err)
+	}
+	// The skill actually lives at ScopeGlobal; a ScopeProject delete request
+	// for the same name must refuse rather than silently no-op or, worse,
+	// resolve to an unrelated file.
+	if err := st.Delete("scoped", ScopeProject); err == nil {
+		t.Error("deleting with the wrong scope should error")
+	}
+	if _, ok := st.Read("scoped"); !ok {
+		t.Fatal("skill should survive a refused scope-mismatched delete")
+	}
+}
+
 // --- New edge cases ---
 
 func TestNewWithCustomPaths(t *testing.T) {

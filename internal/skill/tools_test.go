@@ -423,6 +423,49 @@ func TestInstallSkill(t *testing.T) {
 	}
 }
 
+func TestRenderSkillFileEmitsColorAndInvocationWhenSet(t *testing.T) {
+	content := RenderSkillFile(SkillFileOptions{
+		Name:        "my-agent",
+		Description: "a private helper",
+		Body:        "be helpful",
+		RunAs:       RunSubagent,
+		Color:       "amber",
+		Invocation:  "manual",
+	})
+	for _, want := range []string{"color: amber\n", "invocation: manual\n", "runAs: subagent\n"} {
+		if !strings.Contains(content, want) {
+			t.Errorf("rendered content missing %q:\n%s", want, content)
+		}
+	}
+
+	home := t.TempDir()
+	st := New(Options{HomeDir: home, DisableBuiltins: true})
+	if _, err := st.CreateWithContent("my-agent", ScopeGlobal, content); err != nil {
+		t.Fatalf("CreateWithContent: %v", err)
+	}
+	sk, ok := st.Read("my-agent")
+	if !ok {
+		t.Fatal("skill not readable after CreateWithContent")
+	}
+	if sk.Color != "amber" || sk.Invocation != "manual" {
+		t.Errorf("round-trip mismatch: color=%q invocation=%q", sk.Color, sk.Invocation)
+	}
+}
+
+func TestRenderSkillFileOmitsColorAndInvocationByDefault(t *testing.T) {
+	content := RenderSkillFile(SkillFileOptions{
+		Name:        "plain-inline",
+		Description: "no extras",
+		Body:        "body text",
+		RunAs:       RunInline,
+	})
+	for _, unwanted := range []string{"color:", "invocation:", "runAs:"} {
+		if strings.Contains(content, unwanted) {
+			t.Errorf("rendered content should omit %q when unset:\n%s", unwanted, content)
+		}
+	}
+}
+
 func TestReadSkillLoadsInlineAndIsReadOnly(t *testing.T) {
 	home := t.TempDir()
 	writeSkill(t, home, ".reasonix/skills/note.md", "---\ndescription: take a note\n---\nDo the thing.")

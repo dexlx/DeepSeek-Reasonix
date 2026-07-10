@@ -56,7 +56,7 @@ import { getSuccessPreference, setSuccessPreference, getAttentionPreference, set
 import { ModalCloseButton } from "./ModalCloseButton";
 import { ShortcutComboDisplay } from "./ShortcutComboDisplay";
 
-const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
+const SETTINGS_TABS: SettingsTab[] = ["general", "models", "bots", "mcp", "skills", "subagents", "plugins", "memory", "hooks", "shortcuts", "permissions", "sandbox", "network", "appearance", "updates"];
 export type SettingsInitialFocus = { target: "bot-allowlist"; connectionId?: string };
 type DesktopPlatform = "darwin" | "windows" | "linux";
 
@@ -64,6 +64,7 @@ const MCPServersSettingsPage = lazy(() => import("./CapabilitiesPanel").then((mo
 const SkillsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.SkillsSettingsPage })));
 const PluginsSettingsPage = lazy(() => import("./CapabilitiesPanel").then((module) => ({ default: module.PluginsSettingsPage })));
 const MemorySettingsPage = lazy(() => import("./MemoryPanel").then((module) => ({ default: module.MemorySettingsPage })));
+const SubagentsSettingsPage = lazy(() => import("./SubagentsPanel").then((module) => ({ default: module.SubagentsSettingsPage })));
 const QRCodeSVG = lazy(() => import("qrcode.react").then((module) => ({ default: module.QRCodeSVG })));
 
 // SettingsPanel is the desktop settings centre — a centred modal with left
@@ -207,7 +208,7 @@ export function SettingsPanel({
   // sandbox, appearance, updates) need SettingsView loaded. MCP, Skills, Plugins,
   // and Memory
   // load their own data and render regardless.
-  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
+  const needsSettings = tab === "general" || tab === "models" || tab === "bots" || tab === "subagents" || tab === "network" || tab === "permissions" || tab === "sandbox" || tab === "appearance" || tab === "updates";
   const lazySettingsPageFallback = <div className="empty">{t("settings.loading")}</div>;
 
   return (
@@ -249,6 +250,7 @@ export function SettingsPanel({
                 {tab === "bots" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><BotsSection s={s} busy={busy} apply={apply} initialFocus={initialFocus} /></SettingsPageShell>}
                 {tab === "mcp" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MCPServersSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "skills" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SkillsSettingsPage /></Suspense></SettingsPageShell>}
+                {tab === "subagents" && s && <SettingsPageShell key={tab} s={s} tab={tab} busy={busy} apply={apply}><Suspense fallback={lazySettingsPageFallback}><SubagentsSettingsPage s={s} /></Suspense></SettingsPageShell>}
                 {tab === "plugins" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><PluginsSettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "memory" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><Suspense fallback={lazySettingsPageFallback}><MemorySettingsPage /></Suspense></SettingsPageShell>}
                 {tab === "hooks" && <SettingsPageShell key={tab} s={s} tab={tab} busy={false} apply={apply}><HooksSection onChanged={onChanged} /></SettingsPageShell>}
@@ -345,6 +347,7 @@ function settingsPageKind(tab: SettingsTab): "form" | "manager" {
     case "models":
     case "mcp":
     case "skills":
+    case "subagents":
     case "plugins":
     case "memory":
       return "manager";
@@ -460,6 +463,8 @@ function settingsTabLabel(id: SettingsTab, t: ReturnType<typeof useT>): string {
       return t("settings.tab.mcp");
     case "skills":
       return t("settings.tab.skills");
+    case "subagents":
+      return t("settings.tab.subagents");
     case "plugins":
       return t("settings.tab.plugins");
     case "memory":
@@ -495,6 +500,8 @@ function settingsTabMeta(id: SettingsTab, s: SettingsView, t: ReturnType<typeof 
       return t("caps.connectorsTab");
     case "skills":
       return t("caps.skillsTab");
+    case "subagents":
+      return t("subagents.tabHint");
     case "plugins":
       return t("settings.tabSub.plugins");
     case "memory":
@@ -640,7 +647,7 @@ function ShortcutsSection() {
 }
 
 // allRefs flattens providers into "provider/model" refs for the model selectors.
-function allRefs(s: SettingsView): string[] {
+export function allRefs(s: SettingsView): string[] {
   const out: string[] = [];
   for (const p of s.providers) {
     if (!p.added || !providerIsConfigured(p)) continue;
@@ -651,7 +658,7 @@ function allRefs(s: SettingsView): string[] {
 
 // toRef normalises a stored model id (a provider name, a bare model, or a ref) to
 // a "provider/model" ref so a <select> of refs can show it selected.
-function toRef(model: string, s: SettingsView): string {
+export function toRef(model: string, s: SettingsView): string {
   if (!model) return "";
   if (model.includes("/")) return model;
   const byName = s.providers.find((p) => p.name === model);
@@ -666,7 +673,7 @@ const PROXY_MODES = ["auto", "custom", "off"] as const;
 // EFFORT_PRESETS is the canonical union of /effort levels the kernel recognises.
 // The settings UI uses it for subagent defaults; provider-specific levels are
 // inferred by the backend or edited in TOML for rare gateways.
-const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
+export const EFFORT_PRESETS: readonly string[] = ["low", "medium", "high", "xhigh", "max"];
 const REASONING_PROTOCOLS: readonly string[] = ["", "deepseek", "openai", "none"];
 const THINKING_MODES: readonly string[] = ["", "enabled", "disabled", "adaptive"];
 const PROXY_TYPES = ["http", "https", "socks5", "socks5h"] as const;
@@ -4177,7 +4184,7 @@ type ModelPickerOption = {
   providerView?: ProviderView;
 };
 
-function ModelPicker({
+export function ModelPicker({
   s,
   refs,
   value,
