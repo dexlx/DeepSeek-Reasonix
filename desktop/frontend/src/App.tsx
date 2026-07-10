@@ -3460,18 +3460,20 @@ export default function App() {
               </div>
               </>
               )}
-              <Tooltip label={t("workspace.changedTab")}>
-                <button
-                  className="topicbar__action-btn topicbar__action-btn--label"
-                  type="button"
-                  aria-label={t("workspace.changedTab")}
-                  aria-pressed={workspacePanelRenderable && rightDockMode === "changed"}
-                  onClick={() => openRightDockMode("changed")}
-                >
-                  <GitBranch size={14} />
-                  <span>{t("workspace.changedTab")}</span>
-                </button>
-              </Tooltip>
+              {!sidebarCreation && (
+                <Tooltip label={t("workspace.changedTab")}>
+                  <button
+                    className="topicbar__action-btn topicbar__action-btn--label"
+                    type="button"
+                    aria-label={t("workspace.changedTab")}
+                    aria-pressed={workspacePanelRenderable && rightDockMode === "changed"}
+                    onClick={() => openRightDockMode("changed")}
+                  >
+                    <GitBranch size={14} />
+                    <span>{t("workspace.changedTab")}</span>
+                  </button>
+                </Tooltip>
+              )}
               <Tooltip label={t("shortcuts.cheatsheetTitle")}>
                 <button
                   className="topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
@@ -3488,13 +3490,17 @@ export default function App() {
               </Tooltip>
               <Tooltip label={t("topicBar.command")}>
                 <button
-                  className="topicbar__action-btn topicbar__action-btn--label topicbar__action-btn--accent"
+                  className={
+                    sidebarCreation
+                      ? "topicbar__action-btn topicbar__action-btn--icon topicbar__action-btn--utility"
+                      : "topicbar__action-btn topicbar__action-btn--label topicbar__action-btn--accent"
+                  }
                   type="button"
                   aria-label={t("topicBar.command")}
                   onClick={() => void openPalette()}
                 >
                   <Command size={14} />
-                  <span>{t("topicBar.command")}</span>
+                  {!sidebarCreation && <span>{t("topicBar.command")}</span>}
                 </button>
               </Tooltip>
               {sidebarCreation && (

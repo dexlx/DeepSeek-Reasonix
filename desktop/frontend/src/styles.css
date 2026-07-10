@@ -26964,6 +26964,35 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
 }
 
+/* Creation topicbar: quiet utility chrome (copy/export/help/command). */
+.app--creation .topicbar__actions .topicbar__action-btn--utility,
+:root[data-theme-style] .app--creation .topicbar__actions .topicbar__action-btn--utility {
+  color: color-mix(in srgb, var(--fg-faint) 58%, transparent);
+  opacity: 0.72;
+}
+
+.app--creation .topicbar:hover .topicbar__actions .topicbar__action-btn--utility,
+.app--creation .topicbar__actions .topicbar__action-btn--utility:hover:not(:disabled),
+.app--creation .topicbar__actions .topicbar__action-btn--utility:focus-visible:not(:disabled),
+.app--creation .topicbar__export--open .topicbar__action-btn--utility,
+:root[data-theme-style] .app--creation .topicbar:hover .topicbar__actions .topicbar__action-btn--utility,
+:root[data-theme-style] .app--creation .topicbar__actions .topicbar__action-btn--utility:hover:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__actions .topicbar__action-btn--utility:focus-visible:not(:disabled),
+:root[data-theme-style] .app--creation .topicbar__export--open .topicbar__action-btn--utility {
+  color: color-mix(in srgb, var(--fg-dim) 88%, transparent);
+  opacity: 1;
+}
+
+.app--creation .topicbar__actions .topicbar__chrome-btn--workspace,
+:root[data-theme-style] .app--creation .topicbar__actions .topicbar__chrome-btn--workspace {
+  color: color-mix(in srgb, var(--fg-dim) 78%, transparent);
+}
+
+.app--creation .topicbar__actions .topicbar__chrome-btn--workspace.topicbar__chrome-btn--active,
+:root[data-theme-style] .app--creation .topicbar__actions .topicbar__chrome-btn--workspace.topicbar__chrome-btn--active {
+  color: var(--fg);
+}
+
 .app--creation .footer,
 :root[data-theme-style] .app--creation .footer {
   border-top: 0;
@@ -29391,6 +29420,223 @@ body > .mermaid-diagram--fullscreen {
   right: 28%;
   bottom: 0;
   height: 1px;
+}
+
+/* Creation workspace tree — align with left project-tree language.
+   Virtualized rows estimate 24px (WorkspacePanel useVirtualizer); keep row
+   height at/near that value so scroll math does not drift. */
+.app--creation .workbench-dock .workspace-search,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-search {
+  height: 32px;
+  margin: 6px 10px 8px;
+  padding: 0 10px;
+  gap: 8px;
+  border-color: color-mix(in srgb, var(--fg-faint) 10%, transparent);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-elev) 14%, transparent);
+  color: color-mix(in srgb, var(--fg-faint) 82%, transparent);
+  box-shadow: none;
+}
+
+.app--creation .workbench-dock .workspace-search:focus-within,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-search:focus-within {
+  border-color: color-mix(in srgb, var(--accent) 24%, transparent);
+  background: color-mix(in srgb, var(--bg-elev) 20%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-search input,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-search input {
+  font-size: 12px;
+  font-weight: 500;
+}
+
+.app--creation .workbench-dock .workspace-search input::placeholder,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-search input::placeholder {
+  color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-files__scope,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-files__scope {
+  margin: 0 10px 8px;
+  padding: 5px 6px 5px 9px;
+  border-color: color-mix(in srgb, var(--fg-faint) 8%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-elev) 10%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-tree,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree {
+  padding: 0 6px 10px;
+}
+
+.app--creation .workbench-dock .workspace-tree__row,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row {
+  height: 24px;
+  min-height: 24px;
+  gap: 5px;
+  border-radius: 7px;
+  color: color-mix(in srgb, var(--fg-dim) 78%, var(--fg-faint));
+  font-size: 12px;
+  font-weight: 500;
+  background: transparent;
+}
+
+.app--creation .workbench-dock .workspace-tree__row:hover,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row:hover {
+  background: color-mix(in srgb, var(--fg-faint) 5%, transparent);
+  color: var(--fg);
+}
+
+.app--creation .workbench-dock .workspace-tree__row--active,
+.app--creation .workbench-dock .workspace-tree__row--active:hover,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--active,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--active:hover {
+  background: transparent;
+  color: var(--fg);
+}
+
+.app--creation .workbench-dock .workspace-tree__row--active::before,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--active::before {
+  top: 5px;
+  bottom: 5px;
+  width: 2px;
+  border-radius: 999px;
+  background: var(--tree-row-marker, var(--accent));
+}
+
+.app--creation .workbench-dock .workspace-tree__row--search,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--search {
+  height: auto;
+  min-height: 34px;
+  padding-top: 5px;
+  padding-bottom: 5px;
+}
+
+.app--creation .workbench-dock .workspace-tree__chev,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__chev {
+  color: color-mix(in srgb, var(--fg-faint) 70%, transparent);
+  opacity: 0.78;
+}
+
+.app--creation .workbench-dock .workspace-tree__icon,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__icon {
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-tree__icon--dir,
+.app--creation .workbench-dock .workspace-tree__row--active .workspace-tree__icon--dir,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__icon--dir,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--active .workspace-tree__icon--dir {
+  color: color-mix(in srgb, var(--accent) 86%, var(--fg-dim));
+}
+
+.app--creation .workbench-dock .workspace-tree__row--active .workspace-tree__icon,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--active .workspace-tree__icon {
+  color: color-mix(in srgb, var(--fg-dim) 80%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-tree__name,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__name {
+  font-size: 12px;
+  font-weight: 500;
+  letter-spacing: 0.005em;
+}
+
+.app--creation .workbench-dock .workspace-tree__result-name,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__result-name {
+  color: color-mix(in srgb, var(--fg-dim) 88%, var(--fg));
+  font-size: 12px;
+  font-weight: 520;
+}
+
+.app--creation .workbench-dock .workspace-tree__result-dir,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__result-dir {
+  color: color-mix(in srgb, var(--fg-faint) 82%, transparent);
+  font-size: 10.5px;
+}
+
+.app--creation .workbench-dock .workspace-tree__row--search:hover .workspace-tree__result-name,
+.app--creation .workbench-dock .workspace-tree__row--search.workspace-tree__row--active .workspace-tree__result-name,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--search:hover .workspace-tree__result-name,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-tree__row--search.workspace-tree__row--active .workspace-tree__result-name {
+  color: var(--fg);
+}
+
+.app--creation .workbench-dock .workspace-change,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change {
+  min-height: 42px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  color: color-mix(in srgb, var(--fg-dim) 82%, transparent);
+  background: transparent;
+}
+
+.app--creation .workbench-dock .workspace-change:hover,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change:hover {
+  background: color-mix(in srgb, var(--fg-faint) 5%, transparent);
+  color: var(--fg);
+}
+
+.app--creation .workbench-dock .workspace-change--active,
+.app--creation .workbench-dock .workspace-change--active:hover,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change--active,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change--active:hover {
+  background: color-mix(in srgb, var(--fg-faint) 6%, transparent);
+  color: var(--fg);
+}
+
+.app--creation .workbench-dock .workspace-change__name,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change__name {
+  font-size: 12px;
+  font-weight: 540;
+}
+
+.app--creation .workbench-dock .workspace-change__path,
+.app--creation .workbench-dock .workspace-change__detail,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change__path,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change__detail {
+  color: color-mix(in srgb, var(--fg-faint) 84%, transparent);
+  font-size: 11px;
+}
+
+.app--creation .workbench-dock .workspace-change__badge,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change__badge {
+  height: 17px;
+  padding: 0 5px;
+  border-color: color-mix(in srgb, var(--fg-faint) 12%, transparent);
+  border-radius: 5px;
+  color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
+  font-size: 10px;
+  background: transparent;
+}
+
+.app--creation .workbench-dock .workspace-change__badge--git,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change__badge--git {
+  color: color-mix(in srgb, var(--accent) 82%, var(--fg-dim));
+  border-color: color-mix(in srgb, var(--accent) 22%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-change-scope__head,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-change-scope__head {
+  border-color: color-mix(in srgb, var(--fg-faint) 8%, transparent);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--bg-elev) 10%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-iconbtn,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-iconbtn {
+  border-color: transparent;
+  background: transparent;
+  color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
+  box-shadow: none;
+}
+
+.app--creation .workbench-dock .workspace-iconbtn:hover,
+.app--creation .workbench-dock .workspace-iconbtn--on,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-iconbtn:hover,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-iconbtn--on {
+  background: color-mix(in srgb, var(--fg-faint) 6%, transparent);
+  color: var(--fg);
 }
 
 .app--creation .context-panel {
