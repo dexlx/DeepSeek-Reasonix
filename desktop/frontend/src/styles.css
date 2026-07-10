@@ -2038,6 +2038,12 @@ a[href] {
   overflow: hidden;
 }
 
+/* Windows window movement belongs to the dedicated chrome surfaces. Keep the
+   navigation sidebar and its adjacent resize handle out of the native drag path. */
+.app--windows .sidebar {
+  --wails-draggable: no-drag;
+}
+
 .app--darwin .sidebar {
   transform: translateX(0);
   opacity: 1;
@@ -4157,28 +4163,64 @@ a[href] {
   from { background-position: -40% 0; }
   to { background-position: 140% 0; }
 }
+.reasoning {
+  margin: 2px 0 4px;
+}
 .reasoning__head {
   display: inline-flex;
   align-items: center;
-  gap: 4px;
-  padding: 3px 8px;
+  gap: 6px;
+  min-height: 24px;
+  padding: 2px 7px;
   border: none;
   background: none;
   cursor: pointer;
   font-size: 13px;
+  font-weight: 560;
   color: var(--fg-faint);
-  border-radius: 4px;
+  border-radius: 6px;
   -webkit-app-region: no-drag;
 }
 .reasoning__head:hover {
   color: var(--fg);
+  background: color-mix(in srgb, var(--fg) 5%, transparent);
+}
+.reasoning__head > svg:first-child {
+  color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
+}
+.reasoning__meta {
+  color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
+  font-weight: 500;
 }
 .reasoning__chevron {
   flex: 0 0 auto;
+  color: color-mix(in srgb, var(--fg-faint) 76%, transparent);
   transition: transform 0.2s;
 }
 .reasoning__chevron--open {
   transform: rotate(90deg);
+}
+
+.turn-collapse__reasoning-phase {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+}
+
+.turn-collapse__reasoning-head {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  min-height: 24px;
+  color: var(--fg-faint);
+  font-size: 13px;
+  font-weight: 560;
+  line-height: 1.4;
+}
+
+.turn-collapse__reasoning-head > svg:first-child {
+  color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
 }
 
 .msg-memory-citations {
@@ -4248,7 +4290,8 @@ a[href] {
 
 /* ── Shimmer sweep for running items ──────────────────────────────── */
 .tool__head[data-running],
-.reasoning__head[data-running] {
+.reasoning__head[data-running],
+.turn-collapse__reasoning-head[data-running] {
   background: linear-gradient(
     105deg,
     var(--fg-faint) 0%,
@@ -4268,7 +4311,8 @@ a[href] {
 .tool__head[data-running] .tool__chevron,
 .tool__head[data-running] .tool__duration,
 .reasoning__head[data-running] svg,
-.reasoning__head[data-running] .reasoning__meta {
+.reasoning__head[data-running] .reasoning__meta,
+.turn-collapse__reasoning-head[data-running] svg {
   color: var(--fg-faint);
 }
 .tool__head[data-running]:hover,
@@ -4435,15 +4479,17 @@ a[href] {
   color: var(--fg-faint);
   background: var(--fg-faint);
 }
-.reasoning__body {
+.reasoning__body,
+.turn-collapse__inline-reasoning {
   overflow: hidden;
-  border-left: 2px solid var(--border);
+  margin: 2px 0 6px 8px;
+  border-left: 2px solid color-mix(in srgb, var(--border) 82%, transparent);
   padding-left: 12px;
-  color: var(--fg-dim);
+  color: color-mix(in srgb, var(--fg-dim) 78%, transparent);
   font-family: var(--font-content-family);
   font-size: var(--font-control);
-  font-style: italic;
-  line-height: 1.7;
+  font-style: normal;
+  line-height: 1.72;
   white-space: pre-wrap;
 }
 /* ── markdown prose ──────────────────────────────────────────────────────── */
@@ -14081,6 +14127,18 @@ body > .mermaid-diagram--fullscreen {
   font-weight: 500;
   line-height: 1.35;
 }
+.settings-readonly-field {
+  min-height: 44px;
+  display: flex;
+  align-items: center;
+  padding: 0 12px;
+  border: 1px solid var(--border-soft);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev-1) 72%, transparent);
+  color: var(--fg);
+  font-size: var(--font-control);
+  font-weight: 650;
+}
 .provider-models-row {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -15645,6 +15703,7 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: 220px minmax(0, 1fr);
   gap: 18px;
   align-items: center;
+  min-width: 0;
   border: 1px solid var(--border);
   border-radius: 8px;
   background: var(--bg-elev);
@@ -15654,6 +15713,7 @@ body > .mermaid-diagram--fullscreen {
   grid-template-columns: 180px minmax(0, 1fr);
   gap: 16px;
   align-items: center;
+  min-width: 0;
   padding: 12px;
 }
 .bot-connect-panel__qr {
@@ -16954,6 +17014,14 @@ body > .mermaid-diagram--fullscreen {
   }
 }
 
+/* QR 扫码面板：在 1080px 提前切换单列，防止右侧文字/按钮溢出容器 */
+@media (max-width: 1080px) {
+  .bot-connect-panel,
+  .bot-connect-panel--phone {
+    grid-template-columns: 1fr;
+  }
+}
+
 @media (max-width: 980px) {
   .settings-center {
     grid-template-columns: minmax(176px, 220px) minmax(0, 1fr);
@@ -16998,11 +17066,6 @@ body > .mermaid-diagram--fullscreen {
   .provider-access-card__actions,
   .set-rules__add {
     flex-wrap: wrap;
-  }
-
-  .bot-connect-panel,
-  .bot-connect-panel--phone {
-    grid-template-columns: 1fr;
   }
 
   .bot-simple-hero {
@@ -17230,12 +17293,6 @@ body > .mermaid-diagram--fullscreen {
   .bot-phone-connect__switch {
     justify-content: space-between;
     width: 100%;
-  }
-  .bot-connect-panel {
-    grid-template-columns: 1fr;
-  }
-  .bot-connect-panel--phone {
-    grid-template-columns: 1fr;
   }
   .bot-connection-table__header {
     display: none;
@@ -20840,6 +20897,23 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 
+.context-menu__shortcut {
+  margin-left: 16px;
+  color: var(--fg-muted);
+  font-size: 11px;
+  font-family: inherit;
+  pointer-events: none;
+}
+
+.context-menu__item:hover .context-menu__shortcut,
+.context-menu__item:focus-visible .context-menu__shortcut {
+  color: var(--fg-normal);
+}
+
+.context-menu--composer-input .context-menu__item {
+  padding: 0 12px;
+}
+
 .context-menu__label-with-check {
   display: flex;
   align-items: center;
@@ -22381,6 +22455,27 @@ body > .mermaid-diagram--fullscreen {
   --fg: #121722;
   --fg-dim: #4d5666;
   --fg-faint: #8791a1;
+}
+
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) {
+    --bg: #e9edf3;
+    --bg-soft: #f0f3f8;
+    --bg-elev: #ffffff;
+    --bg-elev-2: #eef2f7;
+    --sidebar-bg: #f3f6fa;
+    --sidebar-hover: #e7edf5;
+    --sidebar-active: color-mix(in srgb, var(--accent) 9%, #ffffff);
+    --chat-bg: #f8fafc;
+    --workspace-preview-bg: #f8fafc;
+    --workspace-files-bg: #f1f4f8;
+    --workspace-files-hover: #e8edf5;
+    --border: #d5dde8;
+    --border-soft: #e3e9f1;
+    --fg: #121722;
+    --fg-dim: #4d5666;
+    --fg-faint: #8791a1;
+  }
 }
 
 .layout {
@@ -26488,6 +26583,21 @@ body > .mermaid-diagram--fullscreen {
   border-top-color: color-mix(in srgb, var(--border-soft) 72%, transparent);
 }
 
+/* 机器人详情卡片内 settings-field 不受 Creation 全局覆盖 — 保持紧凑布局（仅复位溢出相关的 grid 属性） */
+.app--creation .bot-detail-card .settings-field,
+:root[data-theme-style] .app--creation .bot-detail-card .settings-field {
+  grid-template-columns: minmax(112px, 138px) minmax(0, 1fr);
+  gap: 12px;
+}
+
+@media (max-width: 980px) {
+  .app--creation .bot-detail-card .settings-field,
+  :root[data-theme-style] .app--creation .bot-detail-card .settings-field {
+    grid-template-columns: 1fr;
+    gap: 8px;
+  }
+}
+
 .app--creation .settings-field__label,
 :root[data-theme-style] .app--creation .settings-field__label {
   font-size: 11.5px;
@@ -27664,9 +27774,7 @@ body > .mermaid-diagram--fullscreen {
   --project-tree-row-radius: 9px;
   padding: 38px 12px 14px;
   border-right: 0;
-  background:
-    radial-gradient(110% 70% at 18% 0%, color-mix(in srgb, var(--accent) 5%, transparent) 0%, transparent 52%),
-    color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
 }
 
 .app--creation .sidebar__brand,
@@ -28294,6 +28402,12 @@ body > .mermaid-diagram--fullscreen {
   color: color-mix(in srgb, var(--fg) 90%, var(--bg));
 }
 
+@media (prefers-color-scheme: light) {
+  :root:not([data-theme]) .app--creation .msg--assistant .msg__body {
+    color: color-mix(in srgb, var(--fg) 90%, var(--bg));
+  }
+}
+
 .app--creation .md,
 :root[data-theme-style] .app--creation .md {
   font-family: "Source Han Sans CN", "Source Han Sans SC", "Noto Sans CJK SC",
@@ -28744,7 +28858,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--creation .reasoning__body,
-:root[data-theme-style] .app--creation .reasoning__body {
+.app--creation .turn-collapse__inline-reasoning,
+:root[data-theme-style] .app--creation .reasoning__body,
+:root[data-theme-style] .app--creation .turn-collapse__inline-reasoning {
   font-family: "Source Han Sans CN", "Source Han Sans SC", "Noto Sans CJK SC",
     "Source Han Sans", "思源黑体", "Source Han Sans HC", "Microsoft YaHei UI",
     "Microsoft YaHei", sans-serif;
@@ -29196,6 +29312,22 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .context-panel__body {
   scrollbar-width: none;
   scrollbar-gutter: auto;
+}
+
+.app--creation .workbench-dock,
+:root[data-theme-style] .app--creation .workbench-dock {
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+}
+
+.app--creation .workbench-dock .workspace-panel,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-panel,
+.app--creation .workbench-dock .workspace-files,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-files,
+.app--creation .workbench-dock .workspace-preview,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-preview,
+.app--creation .workbench-dock .workspace-preview__body,
+:root[data-theme-style] .app--creation .workbench-dock .workspace-preview__body {
+  background: transparent;
 }
 
 .app--creation .workbench-dock,
@@ -29699,4 +29831,61 @@ body > .mermaid-diagram--fullscreen {
     grid-column: 1 !important;
     min-width: 0;
   }
+}
+
+/* ============================================================================
+   Windows + Creation: Vertical alignment for titlebar elements
+   ========================================================================= */
+
+/* Align sidebar logo with Windows titlebar center line */
+.app--windows.app--creation .sidebar__brand,
+:root[data-theme-style] .app--windows.app--creation .sidebar__brand {
+  margin-top: -29px !important;
+}
+
+/* Align topicbar (replaces app-chrome in Creation mode) with Windows controls */
+.app--windows.app--creation .topicbar {
+  transform: translateY(-4px) !important;
+}
+
+/* Align topicbar identity (session title) with Windows controls */
+.app--windows.app--creation .topicbar__identity {
+  transform: translateY(-2px) !important;
+}
+
+/* Reduce session title font size and weight. The rename input replaces the h1
+   while editing (App.tsx topicbarEditing), so it must carry the same size or
+   entering rename mode visibly jumps back to the 10px Creation default. */
+.app--windows.app--creation .topicbar__title-row h1,
+.app--windows.app--creation .topicbar__title-input {
+  font-size: 13.5px !important;
+  font-weight: 520 !important;
+}
+
+/* Align action buttons (not chrome buttons) */
+.app--windows.app--creation .topicbar__action-btn:not(.topicbar__chrome-btn) {
+  transform: translateY(-2px) !important;
+  align-self: center !important;
+}
+
+/* Align topicbar chrome buttons separately (they're also in actions container) */
+.app--windows.app--creation .topicbar__chrome-btn {
+  transform: translateY(-2px) !important;
+  align-self: center !important;
+}
+
+/* The alignment offset above owns the transform slot, which would otherwise
+   erase the .topicbar__chrome-btn--pressed { scale(0.94) } press feedback —
+   recombine both here. */
+.app--windows.app--creation .topicbar__chrome-btn.topicbar__chrome-btn--pressed {
+  transform: translateY(-2px) scale(0.94) !important;
+}
+
+/* Windows 控制框在 Creation 下默认用 --bg-elev（近纯白），与右侧 workbench-dock
+   的统一底色（sidebar-bg 88%）有明显色差。改用相同底色，让控制框与右侧面板连成一片。 */
+.app--windows.app--creation .windows-window-controls,
+:root[data-theme-style] .app--windows.app--creation .windows-window-controls {
+  background: color-mix(in srgb, var(--sidebar-bg) 88%, transparent);
+  border-left-color: transparent;
+  box-shadow: none;
 }
