@@ -35,6 +35,17 @@ type SessionSource struct {
 	ThreadID     string   `json:"thread_id,omitempty"`
 }
 
+// InboundMedia is an authenticated inbound attachment. Adapters may provide
+// Data directly, or a lazy Load callback for platform resources that must not
+// be fetched until the gateway has admitted the sender through its allowlist.
+type InboundMedia struct {
+	Name        string                                        `json:"name,omitempty"`
+	MIME        string                                        `json:"mime,omitempty"`
+	Data        []byte                                        `json:"-"`
+	Load        func(context.Context) ([]byte, string, error) `json:"-"`
+	FailureText string                                        `json:"-"`
+}
+
 // InboundMessage 是从任一平台收到的入站消息。
 type InboundMessage struct {
 	Platform     Platform `json:"platform"`
@@ -45,12 +56,16 @@ type InboundMessage struct {
 	UserID       string   `json:"user_id"`
 	UserName     string   `json:"user_name"`
 	// OperatorID, when set, is the authenticated actor gated by the allowlist; UserID stays routing-only.
-	OperatorID string   `json:"operator_id,omitempty"`
-	Text       string   `json:"text"`
-	MessageID  string   `json:"message_id"`
-	ThreadID   string   `json:"thread_id,omitempty"`
-	MediaURLs  []string `json:"media_urls,omitempty"`
-	Raw        any      `json:"-"`
+	OperatorID string         `json:"operator_id,omitempty"`
+	Text       string         `json:"text"`
+	MessageID  string         `json:"message_id"`
+	ThreadID   string         `json:"thread_id,omitempty"`
+	MediaURLs  []string       `json:"media_urls,omitempty"`
+	Media      []InboundMedia `json:"-"`
+	// ResolveUserName performs optional platform enrichment after admission.
+	// UserName remains the safe fallback when the callback is nil or fails.
+	ResolveUserName func(context.Context) string `json:"-"`
+	Raw             any                          `json:"-"`
 }
 
 // Session derives the SessionSource from this message.
