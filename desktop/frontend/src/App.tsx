@@ -114,6 +114,8 @@ import {
   type RestorableToolApprovalMode,
 } from "./lib/toolApprovalMode";
 import {
+  CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH,
+  CREATION_RIGHT_DOCK_TREE_MIN_WIDTH,
   CREATION_SIDEBAR_MIN_WIDTH,
   RIGHT_DOCK_MAX_WIDTH,
   RIGHT_DOCK_MIN_RENDER_WIDTH,
@@ -124,10 +126,13 @@ import {
   type RightDockMode,
   SIDEBAR_MAX_WIDTH,
   SIDEBAR_MIN_WIDTH,
+  clampCreationRightDockTreeWidth,
   clampCreationSidebarWidth,
   clampRightDockPreviewWidth,
   clampRightDockTreeWidth,
   clampSidebarWidth,
+  defaultCreationRightDockTreeWidth,
+  defaultCreationSidebarWidth,
   defaultRightDockTreeWidth,
   defaultSidebarWidth,
   saveRightDockPreviewWidth,
@@ -1361,7 +1366,12 @@ export default function App() {
   const commitThenSendRef = useRef<(tabId: string, displayText: string, submitText?: string) => Promise<void>>(async () => {});
   const rightDockDetailActive = rightDockMode !== "context" && workspacePreviewActive;
   const preferredWorkspacePanelWidth = rightDockDetailActive ? rightDockPreviewWidth : rightDockTreeWidth;
-  const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
+  const rightDockTreeMinWidth = desktopLayoutStyle === "creation" ? CREATION_RIGHT_DOCK_TREE_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH;
+  const rightDockTreeWidthClamp = desktopLayoutStyle === "creation" ? clampCreationRightDockTreeWidth : clampRightDockTreeWidth;
+  const rightDockMinRenderWidth = desktopLayoutStyle === "creation" && !rightDockDetailActive
+    ? CREATION_RIGHT_DOCK_MIN_RENDER_WIDTH
+    : RIGHT_DOCK_MIN_RENDER_WIDTH;
+  const workspacePanelMinWidth = rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : rightDockTreeMinWidth;
   const chatReservedWidth = workspacePanelOpen && !workspacePanelMaximized ? CHAT_COMFORT_MIN_WIDTH : CHAT_MIN_WIDTH;
   const workspacePanelAvailableWidth = availableWorkspacePanelWidth({
     viewportWidth,
@@ -1382,7 +1392,7 @@ export default function App() {
   const storedWorkspacePanelRenderWidth = workspacePanelMaximized ? preferredWorkspacePanelWidth : resolvedWorkspacePanelWidth;
   const workspacePanelRenderWidth = liveWorkspacePanelRenderWidth ?? storedWorkspacePanelRenderWidth;
   const workspacePanelRenderable =
-    workspacePanelOpen && (workspacePanelMaximized || workspacePanelRenderWidth >= RIGHT_DOCK_MIN_RENDER_WIDTH);
+    workspacePanelOpen && (workspacePanelMaximized || workspacePanelRenderWidth >= rightDockMinRenderWidth);
   const workspacePanelGridOpen = workspacePanelRenderable && !workspacePanelMaximized;
   const resolveLiveWorkspacePanelRenderWidth = useCallback(
     (preferredWidth: number, nextSidebarWidth = sidebarWidth) =>
@@ -2049,6 +2059,26 @@ export default function App() {
     saveSidebarWidth(SIDEBAR_MIN_WIDTH);
   }, [desktopLayoutStyle, sidebarWidth]);
 
+  useEffect(() => {
+    if (desktopLayoutStyle === "creation") {
+      if (rightDockTreeWidth >= CREATION_RIGHT_DOCK_TREE_MIN_WIDTH) return;
+      setRightDockTreeWidth(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH);
+      saveRightDockTreeWidth(CREATION_RIGHT_DOCK_TREE_MIN_WIDTH);
+      return;
+    }
+    if (rightDockTreeWidth >= RIGHT_DOCK_TREE_MIN_WIDTH) return;
+    setRightDockTreeWidth(RIGHT_DOCK_TREE_MIN_WIDTH);
+    saveRightDockTreeWidth(RIGHT_DOCK_TREE_MIN_WIDTH);
+  }, [desktopLayoutStyle, rightDockTreeWidth]);
+
+  // Creation no longer exposes the overview tab. If a previous session left
+  // rightDockMode on "context", coerce it to files so 文件 stays selected.
+  useEffect(() => {
+    if (desktopLayoutStyle !== "creation") return;
+    if (rightDockMode !== "context") return;
+    setRightDockMode("files");
+  }, [desktopLayoutStyle, rightDockMode, setRightDockMode]);
+
   const setExpandedSidebarWidth = useCallback((width: number) => {
     closeTransientOverlays();
     const next = sidebarWidthClamp(width);
@@ -2130,11 +2160,11 @@ export default function App() {
         saveRightDockPreviewWidth(next);
         return;
       }
-      const next = clampRightDockTreeWidth(width);
+      const next = rightDockTreeWidthClamp(width);
       setRightDockTreeWidth(next);
       saveRightDockTreeWidth(next);
     },
-    [closeTransientOverlays, rightDockDetailActive],
+    [closeTransientOverlays, rightDockDetailActive, rightDockTreeWidthClamp],
   );
 
   const ensureWorkspacePanelWidth = useCallback(
@@ -2171,7 +2201,7 @@ export default function App() {
         if (rightDockDetailActive) {
           nextDockWidth = clampRightDockPreviewWidth(nextDockWidth);
         } else {
-          nextDockWidth = clampRightDockTreeWidth(nextDockWidth);
+          nextDockWidth = rightDockTreeWidthClamp(nextDockWidth);
         }
         liveResize.schedule(resolveLiveWorkspacePanelRenderWidth(nextDockWidth));
       };
@@ -2192,7 +2222,7 @@ export default function App() {
       window.addEventListener("pointerup", onDone);
       window.addEventListener("pointercancel", onDone);
     },
-    [closeTransientOverlays, resolveLiveWorkspacePanelRenderWidth, rightDockDetailActive, setSavedWorkspacePanelWidth, workspacePanelOpen, workspacePanelRenderWidth],
+    [closeTransientOverlays, resolveLiveWorkspacePanelRenderWidth, rightDockDetailActive, rightDockTreeWidthClamp, setSavedWorkspacePanelWidth, workspacePanelOpen, workspacePanelRenderWidth],
   );
 
   const resizeWorkspacePanelWithKeyboard = useCallback(
@@ -2202,13 +2232,13 @@ export default function App() {
         setSavedWorkspacePanelWidth(workspacePanelRenderWidth + (event.key === "ArrowLeft" ? 16 : -16));
       } else if (event.key === "Home") {
         event.preventDefault();
-        setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : RIGHT_DOCK_TREE_MIN_WIDTH);
+        setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_PREVIEW_MIN_WIDTH : rightDockTreeMinWidth);
       } else if (event.key === "End") {
         event.preventDefault();
         setSavedWorkspacePanelWidth(rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH);
       }
     },
-    [rightDockDetailActive, setSavedWorkspacePanelWidth, workspacePanelRenderWidth],
+    [rightDockDetailActive, rightDockTreeMinWidth, setSavedWorkspacePanelWidth, workspacePanelRenderWidth],
   );
 
   const openWorkspacePanel = useCallback(
@@ -2252,8 +2282,14 @@ export default function App() {
       closeWorkspacePanel();
       return;
     }
+    // Creation hides the overview tab; never reopen into the invisible "context"
+    // mode or neither 文件/改动 will show an active selection.
+    if (desktopLayoutStyle === "creation") {
+      openWorkspacePanel(rightDockMode === "changed" ? "changed" : "files");
+      return;
+    }
     openWorkspacePanel("context");
-  }, [closeWorkspacePanel, openWorkspacePanel, pulseWorkspaceToggle, workspacePanelRenderable]);
+  }, [closeWorkspacePanel, desktopLayoutStyle, openWorkspacePanel, pulseWorkspaceToggle, rightDockMode, workspacePanelRenderable]);
 
   const openRightDockMode = useCallback(
     (mode: RightDockMode) => {
@@ -3049,7 +3085,9 @@ export default function App() {
   const guidanceQueueMockItems = isGuidanceMockScenario(browserMockScenario) ? GUIDANCE_QUEUE_MOCK_ITEMS : undefined;
   const workspacePanelResetWidth = rightDockDetailActive
     ? RIGHT_DOCK_PREVIEW_DEFAULT_WIDTH
-    : defaultRightDockTreeWidth();
+    : desktopLayoutStyle === "creation"
+      ? defaultCreationRightDockTreeWidth()
+      : defaultRightDockTreeWidth();
   const workspacePanelResizeMinWidth = workspacePanelAriaMinWidth(workspacePanelMinWidth, workspacePanelRenderWidth);
   const workspacePanelMaxWidth = rightDockDetailActive ? RIGHT_DOCK_MAX_WIDTH : RIGHT_DOCK_TREE_MAX_WIDTH;
   const sidebarCreation = desktopLayoutStyle === "creation";
@@ -3390,7 +3428,7 @@ export default function App() {
           aria-valuenow={sidebarRenderWidth}
           onPointerDown={startSidebarResize}
           onKeyDown={resizeSidebarWithKeyboard}
-          onDoubleClick={() => setExpandedSidebarWidth(defaultSidebarWidth())}
+          onDoubleClick={() => setExpandedSidebarWidth(desktopLayoutStyle === "creation" ? defaultCreationSidebarWidth() : defaultSidebarWidth())}
         />
         {sidebarCreation && (
           <button
