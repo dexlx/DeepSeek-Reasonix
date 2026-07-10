@@ -5369,8 +5369,24 @@ var legacyMigrationMu sync.Mutex
 // It is stamped only when the pass left nothing deferred (an empty legacy
 // session that could gain content later keeps the dir unmarked), so the gate
 // never hides a session that should still be migrated.
-const topicMigrationMarker = ".topics-migrated"
-const topicIndexRepairMarker = ".topic-indexes-repaired"
+// v2 re-evaluates recovery-named sessions that v1 skipped solely by filename.
+// The old marker cannot safely suppress this one-time data-preservation pass.
+const topicMigrationMarker = ".topics-migrated-v2"
+const topicIndexRepairMarker = ".topic-indexes-repaired-v2"
+
+func invalidateTopicDirMarkers(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return nil
+	}
+	var errs []error
+	for _, marker := range []string{topicMigrationMarker, topicIndexRepairMarker} {
+		if err := os.Remove(filepath.Join(dir, marker)); err != nil && !os.IsNotExist(err) {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
 
 func topicDirMarkerDone(dir, marker string) bool {
 	dir = strings.TrimSpace(dir)
@@ -5470,7 +5486,7 @@ func migrateLegacySessionsIntoGlobalTopics(dir string) []string {
 	// unmarked so the next render retries instead of the gate hiding it forever.
 	deferred := false
 	for _, info := range infos {
-		if sessionOrderInfoIsAutomaticRecovery(info) {
+		if sessionOrderInfoIsUnmodifiedRecoveryCopy(info, dir) {
 			continue
 		}
 		if strings.TrimSpace(info.TopicID) != "" {
@@ -5650,7 +5666,7 @@ func repairIndexedSessionTopics(dir string) []string {
 	sourcesChanged := false
 	deferred := false
 	for _, info := range infos {
-		if sessionOrderInfoIsAutomaticRecovery(info) {
+		if sessionOrderInfoIsUnmodifiedRecoveryCopy(info, dir) {
 			continue
 		}
 		topicID := strings.TrimSpace(info.TopicID)
@@ -5759,6 +5775,16 @@ func sessionInfoIsAutomaticRecovery(info agent.SessionInfo) bool {
 	return info.Recovered ||
 		strings.TrimSpace(info.RecoveryDigest) != "" ||
 		isAutomaticRecoverySessionPath(info.Path)
+}
+
+func sessionOrderInfoIsUnmodifiedRecoveryCopy(info agent.SessionOrderInfo, parentDir string) bool {
+	return sessionOrderInfoIsAutomaticRecovery(info) &&
+		agent.RecoveryBranchCoveredByParent(info.Path, parentDir)
+}
+
+func sessionInfoIsUnmodifiedRecoveryCopy(info agent.SessionInfo, parentDir string) bool {
+	return sessionInfoIsAutomaticRecovery(info) &&
+		agent.RecoveryBranchCoveredByParent(info.Path, parentDir)
 }
 
 func isAutomaticRecoverySessionPath(path string) bool {
@@ -6526,10 +6552,19 @@ func (a *App) topicTrashTargets(topicID string) ([]topicTrashTarget, error) {
 // topicSummary is used by ListProjectTree and mergeSessionInfos to track
 // per-topic turn count and last activity.
 type topicSummary struct {
-	turns            int
-	lastActivityAt   int64
-	hasNormalSession bool
-	hasRecoveryOnly  bool
+	turns                int
+	adoptedRecoveryTurns int
+	lastActivityAt       int64
+	hasNormalSession     bool
+	hasRecoveryOnly      bool
+	hasAdoptedRecovery   bool
+}
+
+func (s topicSummary) displayTurns() int {
+	if s.adoptedRecoveryTurns > s.turns {
+		return s.adoptedRecoveryTurns
+	}
+	return s.turns
 }
 
 // runtimeSessionStatus is one open or detached runtime session, as shown in
@@ -6556,7 +6591,7 @@ type runtimeSessionStatus struct {
 // reports open/running only for single-session topics, so it must not gate
 // topic existence.
 func topicHiddenAsRecoveryOnly(summary topicSummary, pinned bool, runtimeSessions []runtimeSessionStatus) bool {
-	if !summary.hasRecoveryOnly || summary.hasNormalSession || pinned {
+	if !summary.hasRecoveryOnly || summary.hasNormalSession || summary.hasAdoptedRecovery || pinned {
 		return false
 	}
 	for _, session := range runtimeSessions {
@@ -6776,7 +6811,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Label:          title,
 				TopicID:        id,
 				ProjectColor:   globalColor,
-				Turns:          summary.turns,
+				Turns:          summary.displayTurns(),
 				CreatedAt:      topicCreatedAtForTree(globalCreatedMap, id),
 				LastActivityAt: summary.lastActivityAt,
 				Open:           open,
@@ -6858,7 +6893,7 @@ func (a *App) ListProjectTree() []ProjectNode {
 				Root:           p.Root,
 				TopicID:        tid,
 				ProjectColor:   p.Color,
-				Turns:          summary.turns,
+				Turns:          summary.displayTurns(),
 				CreatedAt:      topicCreatedAtForTree(createdMap, tid),
 				LastActivityAt: summary.lastActivityAt,
 				Open:           open,
@@ -7926,12 +7961,16 @@ func mergeSessionInfos(dir string, infos []agent.SessionInfo, titles map[string]
 		summary := topicSummaries[key]
 		lastActivityAt := info.LastActivityAt.UnixMilli()
 		if sessionInfoIsAutomaticRecovery(info) {
-			// A conflict copy duplicates its original, so its turns would
-			// double-count — but its activity is real: once a tab adopts the
-			// copy as its live transcript, all new work lands here, and
-			// skipping it would freeze the topic's recency, unread state, and
-			// time filters at the original's last save.
-			summary.hasRecoveryOnly = true
+			// A covered conflict copy duplicates its parent, so its turns must not
+			// be added. Any branch with unique content keeps the topic visible.
+			if sessionInfoIsUnmodifiedRecoveryCopy(info, dir) {
+				summary.hasRecoveryOnly = true
+			} else {
+				summary.hasAdoptedRecovery = true
+				if info.Turns > summary.adoptedRecoveryTurns {
+					summary.adoptedRecoveryTurns = info.Turns
+				}
+			}
 			if lastActivityAt > summary.lastActivityAt {
 				summary.lastActivityAt = lastActivityAt
 			}

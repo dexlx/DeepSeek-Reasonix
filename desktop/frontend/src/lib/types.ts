@@ -416,7 +416,8 @@ export interface SessionMeta {
   userId?: string;
   threadId?: string;
   sessionSource?: string;
-  recovered?: boolean; // conflict-recovery copy of another session
+  recovered?: boolean; // created by conflict recovery, including a continued branch
+  recoveryCopy?: boolean; // actual branch content is unchanged and covered by its parent
 }
 
 // SessionReference is a session selected via @ past:chats for context injection.

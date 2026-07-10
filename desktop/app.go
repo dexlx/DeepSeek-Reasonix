@@ -1846,6 +1846,9 @@ func removeDesktopSessionArtifacts(path string) error {
 		return err
 	}
 	defer guard.Release()
+	if err := invalidateTopicDirMarkers(filepath.Dir(path)); err != nil {
+		return err
+	}
 	defer invalidateTopicSessionIndexForPath(path)
 	for _, p := range sessionOwnedArtifactPaths(path) {
 		if strings.TrimSpace(p) == "" {
@@ -2153,7 +2156,8 @@ type SessionMeta struct {
 	UserID         string `json:"userId,omitempty"`
 	ThreadID       string `json:"threadId,omitempty"`
 	SessionSource  string `json:"sessionSource,omitempty"`
-	Recovered      bool   `json:"recovered,omitempty"` // conflict-recovery copy of another session
+	Recovered      bool   `json:"recovered,omitempty"`    // created by conflict recovery, including an adopted/continued branch
+	RecoveryCopy   bool   `json:"recoveryCopy,omitempty"` // actual branch content is unchanged and covered by its parent
 }
 
 type channelSessionRoute struct {
@@ -2248,7 +2252,7 @@ func (a *App) ListSessions() []SessionMeta {
 		if title == "" {
 			title = titles[filepath.Base(s.Path)]
 		}
-		meta := sessionMetaFromInfo(s, title, s.Path == active, isOpen, 0)
+		meta := sessionMetaFromInfo(s, title, s.Path == active, isOpen, 0, dir)
 		if route, ok := channelRoutes[sessionRuntimeKey(s.Path)]; ok {
 			applyChannelSessionRoute(&meta, route)
 		}
@@ -2277,7 +2281,7 @@ func (a *App) ListTrashedSessions() []SessionMeta {
 			if title == "" {
 				title = titles[filepath.Base(path)]
 			}
-			out = append(out, sessionMetaFromInfo(infos[0], title, false, false, deletedAt))
+			out = append(out, sessionMetaFromInfo(infos[0], title, false, false, deletedAt, dir))
 		}
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -2308,7 +2312,7 @@ func (a *App) sessionDirForPath(path string) (string, string, error) {
 	return "", "", fmt.Errorf("session path outside known session dirs: %s", path)
 }
 
-func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, deletedAt int64) SessionMeta {
+func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, deletedAt int64, parentDir string) SessionMeta {
 	return SessionMeta{
 		Path:           s.Path,
 		Preview:        s.Preview,
@@ -2325,6 +2329,7 @@ func sessionMetaFromInfo(s agent.SessionInfo, title string, current, open bool, 
 		TopicID:        s.TopicID,
 		TopicTitle:     s.TopicTitle,
 		Recovered:      sessionInfoIsAutomaticRecovery(s),
+		RecoveryCopy:   sessionInfoIsUnmodifiedRecoveryCopy(s, parentDir),
 	}
 }
 
@@ -2427,10 +2432,19 @@ func channelDisplayName(provider, domain string) string {
 // has an in-process runtime, the runtime is cancelled and removed first so
 // autosave cannot recreate or append to the deleted file later.
 func (a *App) DeleteSession(path string) error {
-	return friendlySessionFileError(a.deleteSession(path))
+	return friendlySessionFileError(a.deleteSession(path, false))
 }
 
-func (a *App) deleteSession(path string) error {
+// DeleteRecoveryCopy is the guarded bulk-cleanup path. The frontend's copy
+// marker is only a hint; the backend re-reads the branch and parent immediately
+// before changing runtime state or moving any files.
+func (a *App) DeleteRecoveryCopy(path string) error {
+	return friendlySessionFileError(a.deleteSession(path, true))
+}
+
+var errRecoveryCopyNotRedundant = errors.New("recovery session contains content not preserved by its parent")
+
+func (a *App) deleteSession(path string, requireRedundantRecovery bool) error {
 	dir := a.activeSessionDir()
 	sessionPath, key, err := validateSessionPath(dir, path)
 	if err != nil {
@@ -2447,6 +2461,9 @@ func (a *App) deleteSession(path string) error {
 	if err := func() error {
 		a.sessionRemovalMu.Lock()
 		defer a.sessionRemovalMu.Unlock()
+		if requireRedundantRecovery && !agent.RecoveryBranchCoveredByParent(sessionPath, dir) {
+			return errRecoveryCopyNotRedundant
+		}
 
 		removed, nextFallback := a.removeSessionRuntimeBindings(dir, sessionPath)
 		fallback = nextFallback
@@ -2974,13 +2991,36 @@ func (a *App) sessionOpen(dir, sessionPath string) bool {
 // PurgeTrashedSession permanently removes a trashed session and its title/display
 // sidecars.
 func (a *App) PurgeTrashedSession(path string) error {
-	return friendlySessionFileError(a.purgeTrashedSession(path))
+	return friendlySessionFileError(a.purgeTrashedSession(path, false))
 }
 
-func (a *App) purgeTrashedSession(path string) error {
+// PurgeRecoveryCopy is the guarded permanent-cleanup path. A trashed branch is
+// rechecked against its live parent; missing, stale, or divergent data is kept.
+func (a *App) PurgeRecoveryCopy(path string) error {
+	return friendlySessionFileError(a.purgeTrashedSession(path, true))
+}
+
+func (a *App) purgeTrashedSession(path string, requireRedundantRecovery bool) error {
 	dir, err := a.trashedSessionDir(path)
 	if err != nil {
 		return err
+	}
+	a.sessionRemovalMu.Lock()
+	defer a.sessionRemovalMu.Unlock()
+	var parentGuard *agent.SessionRemovalGuard
+	if requireRedundantRecovery {
+		parentGuard, err = agent.TryAcquireRecoveryParentGuard(path, dir)
+		if err != nil {
+			switch {
+			case errors.Is(err, agent.ErrRecoveryBranchNotCovered):
+				return errRecoveryCopyNotRedundant
+			case errors.Is(err, agent.ErrSessionLeaseHeld):
+				return errSessionBusyElsewhere
+			default:
+				return err
+			}
+		}
+		defer parentGuard.Release()
 	}
 	if err := purgeTrashedSessionFile(dir, path); err != nil {
 		return err
