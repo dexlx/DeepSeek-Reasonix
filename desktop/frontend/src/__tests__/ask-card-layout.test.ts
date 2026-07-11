@@ -110,29 +110,88 @@ console.log("\nask card layout");
   eq(computed.textOverflow, "clip", "ask question does not render as an ellipsis-only preview");
   eq(computed.overflowWrap, "anywhere", "long unspaced ask questions can break within the shelf");
   ok(card.getAttribute("role") === "dialog", "ask prompt shelf keeps dialog semantics");
-
-  // Detail preview row: shows the first described option by default, follows
-  // hover, and each option carries a native-title fallback for truncation.
-  const detail = document.querySelector(".ask-shelf__detail") as HTMLElement | null;
-  if (!detail) throw new Error("ask detail preview row did not render");
-  eq(
-    detail.querySelector(".ask-shelf__detail-text")?.textContent,
-    ask.questions[0].options[0].description,
-    "detail row previews the first described option by default",
-  );
+  ok(document.querySelector(".prompt-shelf--decision") != null, "ask uses the unified decision surface layout");
 
   const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
-  eq(optionButtons[1]?.getAttribute("title"), ask.questions[0].options[1].description, "options carry a native title fallback");
+  // options + custom + skip
+  eq(optionButtons.length, 4, "ask renders options plus custom and skip rows");
+  ok(
+    optionButtons[0]?.textContent?.includes("Reuse the archive flow") === true,
+    "option descriptions render inline on each decision row",
+  );
 
   await act(async () => {
-    optionButtons[1].dispatchEvent(new window.MouseEvent("mouseover", { bubbles: true }));
+    optionButtons[1].click();
+    await flushTimers(200);
+  });
+  eq(answers.length, 0, "single-select click only selects and does not auto-advance/submit");
+
+  await act(async () => {
+    (document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement).click();
     await flushTimers();
   });
-  eq(
-    document.querySelector(".ask-shelf__detail-text")?.textContent,
-    ask.questions[0].options[1].description,
-    "detail row follows the hovered option",
-  );
+  eq(answers.length, 1, "confirm submits the selected single-select answer");
+  eq(answers[0]?.[0]?.selected?.[0], "Minimal repair", "submitted answer matches the selected option");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Multi-select requires at least one choice before confirm advances.
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const answers: QuestionAnswer[][] = [];
+  const ask: WireAsk = {
+    id: "ask-multi",
+    questions: [
+      {
+        id: "picks",
+        prompt: "Pick at least one",
+        multi: true,
+        options: [
+          { label: "A", description: "Option A" },
+          { label: "B", description: "Option B" },
+        ],
+      },
+    ],
+  };
+
+  await act(async () => {
+    root.render(
+      React.createElement(LocaleProvider, null,
+        React.createElement(AskCard, {
+          ask,
+          onAnswer: (_id: string, next: QuestionAnswer[]) => answers.push(next),
+          onDismiss: () => undefined,
+          onStop: () => undefined,
+        }),
+      ),
+    );
+    await flushTimers();
+  });
+
+  const confirm = document.querySelector(".decision-confirm-bar__confirm") as HTMLButtonElement;
+  eq(confirm.disabled, true, "multi-select confirm stays disabled until an option is chosen");
+
+  const optionButtons = [...document.querySelectorAll(".prompt-shelf__actions .prompt-action")] as HTMLElement[];
+  await act(async () => {
+    optionButtons[0].click();
+    await flushTimers();
+  });
+  eq(confirm.disabled, false, "multi-select confirm enables after selecting one option");
+  eq(answers.length, 0, "multi-select click does not submit");
+
+  await act(async () => {
+    confirm.click();
+    await flushTimers();
+  });
+  eq(answers.length, 1, "multi-select confirm submits once");
+  eq(JSON.stringify(answers[0]?.[0]?.selected), JSON.stringify(["A"]), "multi-select keeps chosen labels");
 
   await act(async () => {
     root.unmount();

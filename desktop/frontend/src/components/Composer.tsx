@@ -510,6 +510,7 @@ export function Composer({
   turnStartAt,
   turnTokens,
   retry,
+  suspendedByDecision = false,
   pendingApprovalLabel,
   pendingAsk = false,
   transientDismissSignal,
@@ -563,9 +564,12 @@ export function Composer({
   turnStartAt?: number;
   turnTokens?: number;
   retry?: { attempt: number; max: number };
-  // Resolved label of the tool waiting for approval (null/undefined when none);
-  // shifts the run strip into its waiting state so the ticking spinner does not
-  // claim the model is working while a prompt is blocked on the user.
+  // True while a footer decision surface (approval / ask / clear context) owns
+  // the UI. Pauses the model-work ticker without rendering a "waiting approval"
+  // run strip (the decision card already conveys that state).
+  suspendedByDecision?: boolean;
+  // Legacy strip labels kept for isolated unit tests; App prefers
+  // suspendedByDecision so the decision card is not duplicated in the strip.
   pendingApprovalLabel?: string | null;
   pendingAsk?: boolean;
   transientDismissSignal?: number;
@@ -860,10 +864,12 @@ export function Composer({
   // during a tab switch React still renders once with the previous queue, and
   // that stale render must never submit through the new session's onSend.
   useEffect(() => {
-    if (guidanceDraftKey !== draftKey || running || submitDisabled) return;
+    // Never auto-send guidance while a decision surface owns the footer —
+    // the draft must stay intact until the user finishes the decision.
+    if (guidanceDraftKey !== draftKey || running || submitDisabled || suspendedByDecision) return;
     const next = pendingGuidance[0];
     if (next) void sendQueuedGuidance(next, draftKey);
-  }, [draftKey, guidanceDraftKey, running, submitDisabled, pendingGuidance]);
+  }, [draftKey, guidanceDraftKey, running, submitDisabled, pendingGuidance, suspendedByDecision]);
 
   useEffect(() => {
     if (guidanceDraftKey !== draftKey || !running || !guidanceQueuePreviewKey) return;
@@ -2469,36 +2475,50 @@ export function Composer({
     });
   };
   // Run-strip state machine: retry > waiting-approval > waiting-ask > streaming.
-  // The waiting states replace the whimsical ticker — while a prompt is blocked
-  // on the user, the strip must say so instead of counting "working" seconds.
-  const waitingPrompt = pendingApprovalLabel ? "approval" : pendingAsk ? "ask" : null;
-  // The pending approval itself disables the composer; keep the approval bar
-  // usable in exactly that case so the mode can still be changed mid-prompt.
-  const approvalBarDisabled = Boolean(disabled) && !pendingApprovalLabel;
-  // Waiting on the user (approval/ask) is not model work: pause the ticker's
-  // clock while a prompt is blocked so the elapsed time means "model time",
-  // matching what the waiting strip promises. Retries keep counting — they are
-  // system time, not user time. Accumulated in state via the effect cleanup so
+  // Decision surfaces own the "waiting on user" UI; while suspendedByDecision
+  // is true we still pause the work clock but do not render a waiting strip.
+  const waitingPrompt = suspendedByDecision
+    ? null
+    : pendingApprovalLabel
+      ? "approval"
+      : pendingAsk
+        ? "ask"
+        : null;
+  const pauseWorkClock = suspendedByDecision || Boolean(waitingPrompt);
+  // Decision surfaces hide the whole composer, so mode controls stay disabled.
+  // Legacy tests that pass pendingApprovalLabel without suspendedByDecision
+  // still keep the approval bar usable mid-prompt.
+  const approvalBarDisabled = Boolean(disabled) && !(pendingApprovalLabel && !suspendedByDecision);
+  // Waiting on the user (approval/ask/decision) is not model work: pause the
+  // ticker clock so elapsed time means "model time". Retries keep counting —
+  // they are system time, not user time. Accumulated via effect cleanup so
   // leaving the waiting state re-renders with the corrected time immediately.
   const [waitAccumMs, setWaitAccumMs] = useState(0);
   useEffect(() => {
     setWaitAccumMs(0);
   }, [turnStartAt]);
   useEffect(() => {
-    if (!waitingPrompt) return;
+    if (!pauseWorkClock) return;
     const since = Date.now();
     return () => setWaitAccumMs((total) => total + (Date.now() - since));
-  }, [waitingPrompt]);
+  }, [pauseWorkClock]);
+  // Close menus/popovers while a decision surface owns the footer.
+  useEffect(() => {
+    if (!suspendedByDecision) return;
+    setDismissed(true);
+    closeIntentMenu();
+    closeMoreMenu();
+  }, [suspendedByDecision, closeIntentMenu, closeMoreMenu]);
   const runStateText = retry
     ? t("status.retrying", { attempt: retry.attempt, max: retry.max })
     : waitingPrompt === "approval"
       ? t("composer.runWaitingApproval", { tool: pendingApprovalLabel ?? "" })
       : waitingPrompt === "ask"
         ? t("composer.runWaitingAsk")
-        : running
+        : running && !suspendedByDecision
           ? t("composer.runAnnounceRunning")
           : null;
-  const runTicker = !retry && !waitingPrompt && running && turnStartAt
+  const runTicker = !retry && !pauseWorkClock && running && turnStartAt
     ? (() => {
         const elapsedMs = Math.max(0, now - turnStartAt - waitAccumMs);
         const words = SPINNER_WORDS[locale];

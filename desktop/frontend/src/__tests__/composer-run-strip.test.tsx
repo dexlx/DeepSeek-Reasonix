@@ -272,6 +272,29 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
+// Decision surface suspension pauses the clock without a waiting strip.
+{
+  const dom = installDom();
+  const start = Date.now() - 15000;
+  const { root, rerender } = await renderComposer({ running: true, turnStartAt: start });
+
+  await rerender({ suspendedByDecision: true, disabled: true });
+  eq(document.querySelector(".composer-run-strip--waiting"), null, "decision suspension does not render a waiting strip");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+  });
+  await rerender({ suspendedByDecision: false, disabled: false });
+
+  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  ok(/ 15s| 16s/.test(ticker), `suspendedByDecision excludes wait time from model clock (got "${ticker}")`);
+  ok(!/ 17s| 18s/.test(ticker), "suspended wait is not counted as model work");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 // Resize consistency: --composer-height always carries the logical height in
 // every writer (React render, live drag, keyboard), with the run strip's
 // reservation isolated in a CSS calc — so dragging a resized composer during a
