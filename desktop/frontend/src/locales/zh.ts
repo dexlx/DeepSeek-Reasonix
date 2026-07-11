@@ -1976,6 +1976,12 @@ export const zh: Record<DictKey, string> = {
   "slash.plugin": "插件 · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
+  "slash.subagent": "子智能体",
+  "slash.group.actions": "快捷操作",
+  "slash.group.management": "更多命令",
+  "slash.group.subagents": "子智能体",
+  "slash.group.skills": "技能与项目命令",
+  "slash.group.integrations": "集成",
 
   // 助手消息
   "msg.thinking": "思考过程",

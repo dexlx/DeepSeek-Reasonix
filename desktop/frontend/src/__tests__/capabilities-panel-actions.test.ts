@@ -4,7 +4,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { MCPServersSettingsPage, PluginsSettingsPage } from "../components/CapabilitiesPanel";
-import { slashCommandKindTag } from "../components/SlashMenu";
+import { slashCommandGroup, slashCommandKindTag, sortSlashCommandsForMenu } from "../components/SlashMenu";
 import { selectToolsOnFirstCustomUse } from "../components/SubagentsPanel";
 import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider, t } from "../lib/i18n";
@@ -146,6 +146,22 @@ function setInputValue(input: HTMLInputElement, value: string) {
 ok(
   slashCommandKindTag({ name: "pwf:plan", description: "Plugin planning prompt.", kind: "custom", plugin: "pwf" }, t) === "plugin · pwf",
   "slash menu identifies the canonical plugin command source",
+);
+ok(
+  slashCommandGroup({ name: "explore", description: "Explore in isolation.", kind: "subagent" }) === "subagents",
+  "slash menu groups isolated skills as subagents",
+);
+ok(
+  slashCommandGroup({ name: "plugins", description: "Manage plugins.", kind: "builtin", group: "management" }) === "management",
+  "slash menu honors backend-provided command groups",
+);
+ok(
+  sortSlashCommandsForMenu([
+    { name: "plugins", description: "Manage plugins.", kind: "builtin", group: "management" },
+    { name: "explore", description: "Explore in isolation.", kind: "subagent", group: "subagents" },
+    { name: "new", description: "New session.", kind: "builtin", group: "actions" },
+  ]).map((command) => command.name).join(",") === "new,explore,plugins",
+  "slash menu keyboard order follows the visible group order",
 );
 
 console.log("capabilities panel MCP actions");

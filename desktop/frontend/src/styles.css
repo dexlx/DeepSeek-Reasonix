@@ -5620,7 +5620,7 @@ body > .mermaid-diagram--fullscreen {
   bottom: calc(100% + 6px);
   left: 0;
   right: 0;
-  max-height: 280px;
+  max-height: min(360px, 50vh);
   overflow-y: auto;
   background: var(--bg-elev);
   border: 1px solid var(--border);
@@ -5638,6 +5638,15 @@ body > .mermaid-diagram--fullscreen {
   top: 0;
   left: 0;
   width: 100%;
+}
+.slashmenu__group {
+  display: flex;
+  align-items: flex-end;
+  height: 26px;
+  padding: 0 9px 4px;
+  color: var(--fg-faint);
+  font-size: 11px;
+  font-weight: 600;
 }
 .slashmenu__item {
   display: flex;

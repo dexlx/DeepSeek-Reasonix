@@ -587,7 +587,8 @@ export interface CommandInfo {
   name: string; // without the leading slash
   description: string;
   hint?: string;
-  kind: "builtin" | "custom" | "mcp" | "skill";
+  kind: "builtin" | "custom" | "mcp" | "skill" | "subagent";
+  group?: "actions" | "management" | "subagents" | "skills" | "integrations";
   plugin?: string;
 }
 

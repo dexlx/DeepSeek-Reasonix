@@ -19,7 +19,7 @@ import {
   readWorkspaceReferenceDrag,
   WORKSPACE_REF_DRAG_TYPE,
 } from "../lib/workspaceDrag";
-import { SlashMenu } from "./SlashMenu";
+import { SlashMenu, sortSlashCommandsForMenu } from "./SlashMenu";
 import { ArgMenu } from "./ArgMenu";
 import { ANCHORED_POPOVER_CLOSE_MS, AnchoredPopover } from "./AnchoredPopover";
 import { EffortSwitcher } from "./EffortSwitcher";
@@ -912,7 +912,9 @@ export function Composer({
     return text.slice(1).toLowerCase();
   }, [text]);
   const slashMatches = useMemo(
-    () => (slashQuery === null ? [] : commands.filter((c) => c.name.toLowerCase().includes(slashQuery))),
+    () => slashQuery === null
+      ? []
+      : sortSlashCommandsForMenu(commands.filter((c) => c.name.toLowerCase().includes(slashQuery))),
     [slashQuery, commands],
   );
 

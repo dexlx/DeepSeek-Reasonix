@@ -1974,6 +1974,12 @@ export const en = {
   "slash.plugin": "plugin · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
+  "slash.subagent": "subagent",
+  "slash.group.actions": "Quick actions",
+  "slash.group.management": "More commands",
+  "slash.group.subagents": "Subagents",
+  "slash.group.skills": "Skills & project commands",
+  "slash.group.integrations": "Integrations",
 
   // assistant message
   "msg.thinking": "thinking",

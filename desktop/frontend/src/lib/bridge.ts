@@ -2574,14 +2574,14 @@ function makeMockApp(): AppBindings {
         },
     async Commands() {
       const commands: CommandInfo[] = [
-        { name: "new", description: "start new session; save transcript", kind: "builtin" as const },
-        { name: "clear", description: "discard current context", kind: "builtin" as const },
-        { name: "compact", description: "Summarize older history to free up context", kind: "builtin" as const },
-        { name: "model", description: "Switch model", kind: "builtin" as const },
-        { name: "effort", description: "Set reasoning effort", kind: "builtin" as const },
-        { name: "skill", description: "List skills", kind: "builtin" as const },
-        { name: "plugins", description: "Manage plugin packages", kind: "builtin" as const },
-        { name: "review", description: "Review the staged diff", hint: "[focus]", kind: "custom" as const },
+        { name: "new", description: "start new session; save transcript", kind: "builtin" as const, group: "actions" },
+        { name: "clear", description: "discard current context", kind: "builtin" as const, group: "actions" },
+        { name: "compact", description: "Summarize older history to free up context", kind: "builtin" as const, group: "actions" },
+        { name: "model", description: "Switch model", kind: "builtin" as const, group: "actions" },
+        { name: "effort", description: "Set reasoning effort", kind: "builtin" as const, group: "actions" },
+        { name: "skill", description: "List skills", kind: "builtin" as const, group: "management" },
+        { name: "plugins", description: "Manage plugin packages", kind: "builtin" as const, group: "management" },
+        { name: "review", description: "Review the staged diff", hint: "[focus]", kind: "custom" as const, group: "skills" },
       ];
       const seen = new Set(commands.map((command) => command.name));
       for (const skill of capSkills) {
@@ -2589,7 +2589,12 @@ function makeMockApp(): AppBindings {
         const name = (skill.invocation || `/${skill.name}`).replace(/^\/+/, "");
         if (!name || seen.has(name)) continue;
         seen.add(name);
-        commands.push({ name, description: skill.description, kind: "skill" });
+        commands.push({
+          name,
+          description: skill.description,
+          kind: skill.runAs === "subagent" ? "subagent" : "skill",
+          group: skill.runAs === "subagent" ? "subagents" : "skills",
+        });
       }
       return commands;
     },

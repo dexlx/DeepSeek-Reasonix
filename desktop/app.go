@@ -5591,8 +5591,9 @@ func (a *App) SetToolApprovalModeForTab(tabID, mode string) {
 type CommandInfo struct {
 	Name        string `json:"name"` // without the leading slash
 	Description string `json:"description"`
-	Hint        string `json:"hint,omitempty"` // argument hint, if any
-	Kind        string `json:"kind"`           // "builtin" | "custom" | "mcp"
+	Hint        string `json:"hint,omitempty"`  // argument hint, if any
+	Kind        string `json:"kind"`            // "builtin" | "custom" | "mcp" | "skill" | "subagent"
+	Group       string `json:"group,omitempty"` // menu group; older frontends can ignore it
 	Plugin      string `json:"plugin,omitempty"`
 }
 
@@ -5601,22 +5602,22 @@ type CommandInfo struct {
 // autocomplete menu.
 func (a *App) Commands() []CommandInfo {
 	out := []CommandInfo{
-		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin"},
-		{Name: "clear", Description: i18n.M.CmdClear, Kind: "builtin"},
-		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin"},
-		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin"},
-		{Name: "provider", Description: i18n.M.CmdProvider, Kind: "builtin"},
-		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin"},
-		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin"},
-		{Name: "migrate", Description: i18n.M.CmdMigrate, Kind: "builtin"},
-		{Name: "goal", Description: i18n.M.CmdGoal, Kind: "builtin"},
-		{Name: "remember", Description: i18n.M.CmdRemember, Kind: "builtin"},
-		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin"},
-		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin"},
-		{Name: "plugins", Description: i18n.M.CmdPlugins, Kind: "builtin"},
-		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin"},
-		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin"},
-		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin"},
+		{Name: "new", Description: i18n.M.CmdNew, Kind: "builtin", Group: "actions"},
+		{Name: "clear", Description: i18n.M.CmdClear, Kind: "builtin", Group: "actions"},
+		{Name: "compact", Description: i18n.M.CmdCompact, Kind: "builtin", Group: "actions"},
+		{Name: "model", Description: i18n.M.CmdModel, Kind: "builtin", Group: "actions"},
+		{Name: "provider", Description: i18n.M.CmdProvider, Kind: "builtin", Group: "management"},
+		{Name: "effort", Description: i18n.M.CmdEffort, Kind: "builtin", Group: "actions"},
+		{Name: "memory", Description: i18n.M.CmdMemory, Kind: "builtin", Group: "management"},
+		{Name: "migrate", Description: i18n.M.CmdMigrate, Kind: "builtin", Group: "management"},
+		{Name: "goal", Description: i18n.M.CmdGoal, Kind: "builtin", Group: "actions"},
+		{Name: "remember", Description: i18n.M.CmdRemember, Kind: "builtin", Group: "management"},
+		{Name: "mcp", Description: i18n.M.CmdMcp, Kind: "builtin", Group: "management"},
+		{Name: "hooks", Description: i18n.M.CmdHooks, Kind: "builtin", Group: "management"},
+		{Name: "plugins", Description: i18n.M.CmdPlugins, Kind: "builtin", Group: "management"},
+		{Name: "theme", Description: i18n.M.CmdTheme, Kind: "builtin", Group: "management"},
+		{Name: "skill", Description: i18n.M.CmdSkill, Kind: "builtin", Group: "management"},
+		{Name: "reload-cmd", Description: i18n.M.CmdReloadCmd, Kind: "builtin", Group: "management"},
 	}
 	a.mu.RLock()
 	ctrl := a.activeCtrlLocked()
@@ -5629,17 +5630,25 @@ func (a *App) Commands() []CommandInfo {
 	// composer's slash menu; selecting one submits its displayed slash name, which the controller
 	// resolves via RunSkill.
 	for _, s := range ctrl.SlashSkills() {
-		out = append(out, CommandInfo{Name: s.SlashName(), Description: s.Description, Kind: "skill", Plugin: s.Plugin})
+		kind := "skill"
+		if s.RunAs == skill.RunSubagent {
+			kind = "subagent"
+		}
+		group := "skills"
+		if kind == "subagent" {
+			group = "subagents"
+		}
+		out = append(out, CommandInfo{Name: s.SlashName(), Description: s.Description, Kind: kind, Group: group, Plugin: s.Plugin})
 	}
 	for _, c := range ctrl.Commands() {
 		if c.Hidden {
 			continue
 		}
-		out = append(out, CommandInfo{Name: c.Name, Description: c.Description, Hint: c.ArgHint, Kind: "custom", Plugin: c.Plugin})
+		out = append(out, CommandInfo{Name: c.Name, Description: c.Description, Hint: c.ArgHint, Kind: "custom", Group: "skills", Plugin: c.Plugin})
 	}
 	if h := ctrl.Host(); h != nil {
 		for _, p := range h.Prompts() {
-			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp"})
+			out = append(out, CommandInfo{Name: p.Name, Description: p.Description, Kind: "mcp", Group: "integrations"})
 		}
 	}
 	return out

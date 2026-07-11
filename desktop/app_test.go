@@ -31,6 +31,7 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/skill"
 	"reasonix/internal/store"
 	"reasonix/internal/tool"
 )
@@ -220,6 +221,35 @@ func TestCommandsIncludesEffortNotThinking(t *testing.T) {
 	}
 	if hasCommand(cmds, "thinking") {
 		t.Fatalf("Commands() should not include thinking: %+v", cmds)
+	}
+}
+
+func TestCommandsClassifiesSubagentSkills(t *testing.T) {
+	ctrl := control.New(control.Options{Skills: []skill.Skill{
+		{Name: "init", Description: "inline skill", RunAs: skill.RunInline},
+		{Name: "explore", Description: "isolated skill", RunAs: skill.RunSubagent},
+	}})
+	defer ctrl.Close()
+	app := NewApp()
+	app.setTestCtrl(ctrl, "")
+
+	kinds := map[string]string{}
+	groups := map[string]string{}
+	for _, cmd := range app.Commands() {
+		kinds[cmd.Name] = cmd.Kind
+		groups[cmd.Name] = cmd.Group
+	}
+	if kinds["init"] != "skill" {
+		t.Fatalf("inline skill kind = %q, want skill", kinds["init"])
+	}
+	if kinds["explore"] != "subagent" {
+		t.Fatalf("subagent skill kind = %q, want subagent", kinds["explore"])
+	}
+	if groups["new"] != "actions" {
+		t.Fatalf("new command group = %q, want actions", groups["new"])
+	}
+	if groups["plugins"] != "management" {
+		t.Fatalf("plugins command group = %q, want management", groups["plugins"])
 	}
 }
 

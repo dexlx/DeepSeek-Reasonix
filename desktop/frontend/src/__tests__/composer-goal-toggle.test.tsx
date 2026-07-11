@@ -1038,6 +1038,7 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   let commandsCalls = 0;
   let availableCommands: CommandInfo[] = [
+    { name: "explore", description: "Investigate the codebase", kind: "subagent" },
     { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     { name: "toolbox:writing-plans", description: "Write another plan", kind: "skill", plugin: "toolbox" },
     { name: "superpowers:brainstorming", description: "Explore an idea", kind: "skill", plugin: "superpowers" },
@@ -1060,7 +1061,7 @@ console.log("\ncomposer goal toggle");
 
   availableCommands = [
     ...availableCommands,
-    { name: "my-formatter", description: "Formats code the way I like it", kind: "skill" },
+    { name: "my-formatter", description: "Formats code the way I like it", kind: "subagent" },
   ];
   const initialCommandsCalls = commandsCalls;
   await rerender({ workspaceScopeKey: "runtime-1" });
@@ -1071,7 +1072,7 @@ console.log("\ncomposer goal toggle");
   await waitFor("qualified plugin skill menu", () => Boolean(document.querySelector(".slashmenu")));
 
   const menuSizer = document.querySelector<HTMLElement>(".slashmenu__sizer");
-  eq(menuSizer?.style.height, "68px", "short skill query keeps both matching plugin names and hides unrelated skills");
+  eq(menuSizer?.style.height, "94px", "short skill query keeps one group heading and both matching plugin names");
   const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
   if (!textarea) throw new Error("composer textarea did not render");
   await act(async () => {

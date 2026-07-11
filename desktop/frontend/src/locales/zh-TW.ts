@@ -1283,6 +1283,12 @@ export const zhTW: Record<DictKey, string> = {
   "slash.plugin": "外掛 · {name}",
   "slash.mcp": "mcp",
   "slash.skill": "skill",
+  "slash.subagent": "子智能體",
+  "slash.group.actions": "快速操作",
+  "slash.group.management": "更多命令",
+  "slash.group.subagents": "子智能體",
+  "slash.group.skills": "技能與專案命令",
+  "slash.group.integrations": "整合",
 
   // 助手訊息
   "msg.thinking": "思考過程",
