@@ -272,6 +272,84 @@ console.log("\ncomposer run strip");
   dom.window.close();
 }
 
+// Decision surface suspension pauses the clock without a waiting strip.
+{
+  const dom = installDom();
+  const start = Date.now() - 15000;
+  const { root, rerender } = await renderComposer({ running: true, turnStartAt: start });
+
+  await rerender({ suspendedByDecision: true, disabled: true });
+  eq(document.querySelector(".composer-run-strip--waiting"), null, "decision suspension does not render a waiting strip");
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+  });
+  await rerender({ suspendedByDecision: false, disabled: false });
+
+  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  ok(/ 15s| 16s/.test(ticker), `suspendedByDecision excludes wait time from model clock (got "${ticker}")`);
+  ok(!/ 17s| 18s/.test(ticker), "suspended wait is not counted as model work");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+// Background user-wait is controller-scoped: B already waited ~3s off-screen
+// while A was foregrounded. Model work for B must stay ~5s (8s turn − 3s wait),
+// and tab A's local pause must never be subtracted from B.
+{
+  const dom = installDom();
+  const tabAStart = Date.now() - 60_000;
+  const tabBStart = Date.now() - 8_000;
+  const tabBWaitStarted = Date.now() - 3_000;
+  const { root, rerender } = await renderComposer({
+    running: true,
+    turnStartAt: tabAStart,
+    sessionKey: "tab-a",
+    suspendedByDecision: true,
+    disabled: true,
+  });
+
+  // A stays locally suspended for a while (clear-context style / no controller wait).
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 2400));
+  });
+
+  // Switch to B, already awaiting approval since tabBWaitStarted (background).
+  await rerender({
+    sessionKey: "tab-b",
+    turnStartAt: tabBStart,
+    turnWaitAccumMs: 0,
+    promptWaitStartedAt: tabBWaitStarted,
+    suspendedByDecision: true,
+    disabled: true,
+  });
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 300));
+  });
+
+  // Controller closes the open wait into turnWaitAccumMs on resolve.
+  const closedWaitMs = Date.now() - tabBWaitStarted;
+  await rerender({
+    suspendedByDecision: false,
+    disabled: false,
+    promptWaitStartedAt: undefined,
+    turnWaitAccumMs: closedWaitMs,
+  });
+
+  const ticker = document.querySelector(".composer-run-strip__text")?.textContent ?? "";
+  // 8s turn age − ~3.3s user wait ≈ 5s model work (not ~8s wall, not ~0–2s from A leak).
+  ok(/ 4s| 5s| 6s/.test(ticker), `tab B excludes background user-wait from model clock (got "${ticker}")`);
+  ok(!/ 7s| 8s| 9s| 10s| 11s/.test(ticker), "background suspension is not counted as model work");
+  ok(!/ 5[5-9]s| 6[0-9]s/.test(ticker), "tab B does not show tab A's ~60s turn age as model time");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 // Resize consistency: --composer-height always carries the logical height in
 // every writer (React render, live drag, keyboard), with the run strip's
 // reservation isolated in a CSS calc — so dragging a resized composer during a

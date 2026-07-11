@@ -228,17 +228,17 @@ func pluginShowCommand(args []string) int {
 		fmt.Fprintln(os.Stderr, err)
 		return 1
 	}
-	skills, hooks, mcp := pkg.CapabilityCounts()
-	fmt.Printf("name: %s\nversion: %s\nenabled: %t\nkind: %s\nroot: %s\nsource: %s\nskills: %d\nhooks: %d\nmcpServers: %d\n",
-		p.Name, p.Version, p.Enabled, p.ManifestKind, root, p.Source, skills, hooks, mcp)
-	printPluginInventory(pkg.Inventory())
+	skills, commands, hooks, mcp := pkg.CapabilityCounts()
+	fmt.Printf("name: %s\nversion: %s\nenabled: %t\nkind: %s\nroot: %s\nsource: %s\nskills: %d\ncommands: %d\nhooks: %d\nmcpServers: %d\n",
+		p.Name, p.Version, p.Enabled, p.ManifestKind, root, p.Source, skills, commands, hooks, mcp)
+	printPluginInventory(p.Name, pkg.Inventory())
 	for _, warning := range warnings {
 		fmt.Println("warning:", warning)
 	}
 	return 0
 }
 
-func printPluginInventory(inv pluginpkg.Inventory) {
+func printPluginInventory(pluginName string, inv pluginpkg.Inventory) {
 	if len(inv.Skills) > 0 {
 		fmt.Println("usage:")
 		fmt.Println("  skills are available in interactive sessions; run /skills to browse them, or invoke a skill directly with /<name>.")
@@ -254,6 +254,21 @@ func printPluginInventory(inv pluginpkg.Inventory) {
 			}
 			if sk.RunAs != "" {
 				fmt.Printf("  %s\t%s\t%s\n", invocation, sk.RunAs, desc)
+			} else {
+				fmt.Printf("  %s\t%s\n", invocation, desc)
+			}
+		}
+	}
+	if len(inv.Commands) > 0 {
+		fmt.Println("commands:")
+		for _, cmd := range inv.Commands {
+			desc := cmd.Description
+			if desc == "" {
+				desc = "(no description)"
+			}
+			invocation := "/" + pluginName + ":" + cmd.Name
+			if cmd.ArgHint != "" {
+				fmt.Printf("  %s %s\t%s\n", invocation, cmd.ArgHint, desc)
 			} else {
 				fmt.Printf("  %s\t%s\n", invocation, desc)
 			}
@@ -312,6 +327,12 @@ func pluginDoctorCommand(args []string) int {
 	for _, skillRoot := range pkg.SkillRoots() {
 		if st, err := os.Stat(skillRoot); err != nil || !st.IsDir() {
 			fmt.Fprintf(os.Stderr, "missing skill root: %s\n", skillRoot)
+			return 1
+		}
+	}
+	for _, commandRoot := range pkg.CommandRoots() {
+		if st, err := os.Stat(commandRoot); err != nil || !st.IsDir() {
+			fmt.Fprintf(os.Stderr, "missing command root: %s\n", commandRoot)
 			return 1
 		}
 	}
