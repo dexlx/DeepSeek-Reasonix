@@ -146,15 +146,7 @@ func (t *installSourceTool) applyInstallPluginPackage(ctx context.Context, req r
 			return err
 		}
 	} else {
-		if err := replaceCopiedPlugin(sourceRoot, target, req.Replace); err != nil {
-			return err
-		}
-		// Fail closed when the copied tree resolves to a different capability
-		// set than the plan the user approved — e.g. a symlink copyDir could
-		// not materialize safely. A silent gap here would install less than
-		// what was reviewed.
-		if err := verifyCopiedCapabilities(pkg, target); err != nil {
-			_ = os.RemoveAll(target)
+		if err := installCopiedPlugin(pkg, sourceRoot, target, req.Replace); err != nil {
 			return err
 		}
 	}
@@ -263,19 +255,58 @@ func checkoutPluginCommit(ctx context.Context, cloneRoot, commit string) error {
 	return nil
 }
 
-func replaceCopiedPlugin(sourceRoot, target string, replace bool) error {
-	if _, err := os.Lstat(target); err == nil {
-		if !replace {
-			return newErr(ErrAlreadyExists, "plugin package already exists at %s; retry with replace=true to update it", target)
-		}
-		if err := os.RemoveAll(target); err != nil {
-			return err
-		}
+// installCopiedPlugin copies sourceRoot into a staging directory next to
+// target, verifies the staged tree resolves to the capability set the plan
+// approved, and only then swaps it into place with a backup-protected rename.
+// Any failure before the swap — copy error, capability mismatch — leaves an
+// existing installation completely intact, so a bad update can never destroy
+// the working version it was meant to replace.
+func installCopiedPlugin(pkg pluginpkg.Package, sourceRoot, target string, replace bool) error {
+	if _, err := os.Lstat(target); err == nil && !replace {
+		return newErr(ErrAlreadyExists, "plugin package already exists at %s; retry with replace=true to update it", target)
 	}
 	if err := os.MkdirAll(filepath.Dir(target), 0o755); err != nil {
 		return err
 	}
-	return copyDir(sourceRoot, target)
+	staging, err := os.MkdirTemp(filepath.Dir(target), "."+filepath.Base(target)+".staging-")
+	if err != nil {
+		return err
+	}
+	defer os.RemoveAll(staging)
+	if err := copyDir(sourceRoot, staging); err != nil {
+		return err
+	}
+	// Fail closed when the copied tree resolves to a different capability set
+	// than the plan the user approved — e.g. a symlink copyDir could not
+	// materialize safely. A silent gap here would install less than reviewed.
+	if err := verifyCopiedCapabilities(pkg, staging); err != nil {
+		return err
+	}
+	if err := os.Chmod(staging, 0o755); err != nil { // MkdirTemp creates 0700
+		return err
+	}
+	// Swap staged tree into place. The backup rename keeps the previous
+	// install restorable until the new tree has landed; both renames stay on
+	// one filesystem (same parent dir), so each is atomic.
+	backup := target + ".pre-replace"
+	_ = os.RemoveAll(backup) // stale leftover from an interrupted prior swap
+	hadOld := false
+	if _, err := os.Lstat(target); err == nil {
+		hadOld = true
+		if err := os.Rename(target, backup); err != nil {
+			return err
+		}
+	}
+	if err := os.Rename(staging, target); err != nil {
+		if hadOld {
+			_ = os.Rename(backup, target) // restore the previous install
+		}
+		return err
+	}
+	if hadOld {
+		_ = os.RemoveAll(backup)
+	}
+	return nil
 }
 
 func replaceSymlink(target, sourceRoot string, replace bool) error {

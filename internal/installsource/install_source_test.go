@@ -1832,3 +1832,78 @@ func TestCopyRefusesUnmaterializableSymlinkCommands(t *testing.T) {
 		t.Fatal("failed install must not be registered")
 	}
 }
+
+// TestFailedReplaceKeepsExistingPluginInstall pins the update-safety contract:
+// when a replace=true update fails capability verification (e.g. the new
+// version ships an unmaterializable symlink), the previously installed
+// version must survive on disk and stay registered — a failed update may
+// never leave an enabled plugin pointing at a missing or gutted root.
+func TestFailedReplaceKeepsExistingPluginInstall(t *testing.T) {
+	v1 := t.TempDir()
+	writeFile(t, filepath.Join(v1, ".claude-plugin", "plugin.json"), `{"name": "pwf", "version": "1.0.0"}`)
+	writeFile(t, filepath.Join(v1, "commands", "plan.md"), "---\ndescription: plan\n---\nPlan")
+	outside := t.TempDir()
+	writeFile(t, filepath.Join(outside, "evil.md"), "---\ndescription: evil\n---\nEvil")
+	v2 := t.TempDir()
+	writeFile(t, filepath.Join(v2, ".claude-plugin", "plugin.json"), `{"name": "pwf", "version": "2.0.0"}`)
+	writeFile(t, filepath.Join(v2, "commands", "plan.md"), "---\ndescription: plan\n---\nPlan")
+	if err := os.Symlink(filepath.Join(outside, "evil.md"), filepath.Join(v2, "commands", "evil.md")); err != nil {
+		t.Skipf("symlinks unavailable on this platform: %v", err)
+	}
+
+	project := t.TempDir()
+	home := t.TempDir()
+	tl := NewTool(Options{ProjectRoot: project, HomeDir: home})
+	tool := tl.(*installSourceTool)
+	current, commit := v1, "cafe0001"
+	tool.preparePlugin = func(ctx context.Context, source, mode string) (string, string, func(), error) {
+		return current, commit, func() {}, nil
+	}
+
+	install := execInstall(t, tl, map[string]any{
+		"source": "https://github.com/acme/pwf",
+		"kind":   "plugin",
+		"apply":  true,
+	})
+	if !install.OK || install.Status != "done" {
+		t.Fatalf("initial install = %+v", install)
+	}
+
+	current, commit = v2, "cafe0002"
+	update := execInstall(t, tl, map[string]any{
+		"source":  "https://github.com/acme/pwf",
+		"kind":    "plugin",
+		"apply":   true,
+		"replace": true,
+	})
+	if update.OK || update.Status != "failed" {
+		t.Fatalf("update = %+v, want a failed apply for the unmaterializable symlink", update)
+	}
+
+	installedRoot := filepath.Join(home, ".reasonix", "plugins", "pwf")
+	if _, err := os.Stat(filepath.Join(installedRoot, "commands", "plan.md")); err != nil {
+		t.Fatalf("previous install must survive a failed update: %v", err)
+	}
+	pkg, _, err := pluginpkg.ParseDir(installedRoot)
+	if err != nil {
+		t.Fatalf("ParseDir installed: %v", err)
+	}
+	if pkg.Manifest.Version != "1.0.0" {
+		t.Fatalf("installed version = %q, want the previous 1.0.0 kept", pkg.Manifest.Version)
+	}
+	if p, ok, _ := pluginpkg.FindInstalled(filepath.Join(home, ".reasonix"), "pwf"); !ok || !p.Enabled {
+		t.Fatal("previous registration must survive a failed update")
+	}
+	if _, err := os.Stat(installedRoot + ".pre-replace"); !os.IsNotExist(err) {
+		t.Fatal("failed update must not leave a backup tree behind")
+	}
+	entries, err := os.ReadDir(filepath.Dir(installedRoot))
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range entries {
+		if strings.Contains(e.Name(), ".staging-") {
+			t.Fatalf("failed update must not leave staging dir %q behind", e.Name())
+		}
+	}
+}
