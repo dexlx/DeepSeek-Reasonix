@@ -7087,6 +7087,15 @@ body > .mermaid-diagram--fullscreen {
     transform: translateY(10px);
   }
 }
+/* Composer host under a decision surface: stays mounted for draft caches. */
+.composer-decision-host {
+  display: block;
+  min-width: 0;
+}
+.composer-decision-host--hidden,
+.composer-decision-host[hidden] {
+  display: none !important;
+}
 .prompt-shelf__card {
   display: grid;
   gap: 8px;
@@ -7144,6 +7153,16 @@ body > .mermaid-diagram--fullscreen {
   font-size: 11px;
   font-weight: 600;
   line-height: 1.2;
+}
+.prompt-shelf__badge--amber {
+  border-color: color-mix(in srgb, var(--warn, #f59e0b) 42%, var(--border-soft));
+  background: color-mix(in srgb, var(--warn, #f59e0b) 14%, var(--bg-soft));
+  color: color-mix(in srgb, var(--warn, #f59e0b) 72%, var(--fg));
+}
+.prompt-shelf__badge--danger {
+  border-color: color-mix(in srgb, var(--err) 36%, var(--border-soft));
+  background: color-mix(in srgb, var(--err) 10%, var(--bg-soft));
+  color: color-mix(in srgb, var(--err) 70%, var(--fg));
 }
 .prompt-shelf__meta {
   color: var(--fg-dim);
@@ -7241,6 +7260,96 @@ body > .mermaid-diagram--fullscreen {
 .prompt-action--selected:hover {
   border-color: var(--accent);
   background: color-mix(in srgb, var(--accent) 18%, var(--bg-elev));
+}
+/* Keyboard cursor only — not a committed multi-select answer. */
+.prompt-action--active:not(.prompt-action--selected) {
+  border-color: color-mix(in srgb, var(--accent) 40%, var(--border));
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 35%, transparent);
+}
+.prompt-action--active.prompt-action--selected {
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 50%, transparent);
+}
+.prompt-action--danger:not(.prompt-action--selected) {
+  border-color: color-mix(in srgb, var(--err) 22%, var(--border-soft));
+}
+.prompt-action--danger.prompt-action--selected {
+  border-color: color-mix(in srgb, var(--err) 50%, var(--border));
+  background: color-mix(in srgb, var(--err) 12%, var(--bg-elev));
+}
+.prompt-action--danger.prompt-action--selected .prompt-action__key {
+  border-color: var(--err);
+  background: var(--err);
+  color: #fff;
+}
+.prompt-shelf__footer {
+  border-top: 1px solid var(--border-soft);
+  padding-top: 8px;
+  margin-top: 2px;
+}
+.decision-confirm-bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+.decision-confirm-bar__hint {
+  min-width: 0;
+  flex: 1;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.35;
+}
+.decision-confirm-bar__confirm {
+  flex: 0 0 auto;
+  min-width: 88px;
+}
+/* Unified decision surface: vertical full-width options, sticky footer,
+   content scrolls within 55vh. Never collapses to horizontal pills. */
+.prompt-shelf--decision .prompt-shelf__card {
+  gap: 8px;
+  padding: 10px 12px;
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+}
+.prompt-shelf--decision .prompt-shelf__header {
+  align-items: flex-start;
+}
+.prompt-shelf--decision .prompt-shelf__meta {
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+.prompt-shelf--decision .prompt-shelf__body {
+  max-height: min(55vh, 420px);
+  overflow: auto;
+  padding-right: 2px;
+}
+.prompt-shelf--decision .prompt-shelf__actions {
+  display: grid !important;
+  grid-template-columns: 1fr !important;
+  gap: 6px;
+  max-height: min(40vh, 320px);
+  overflow: auto;
+  padding-right: 2px;
+}
+.prompt-shelf--decision .prompt-action {
+  width: 100% !important;
+  min-height: 40px;
+  align-items: flex-start;
+  border-radius: 8px !important;
+  padding: 8px 10px;
+  white-space: normal !important;
+}
+.prompt-shelf--decision .prompt-action__copy {
+  display: grid !important;
+  gap: 2px;
+}
+.prompt-shelf--decision .prompt-action__label,
+.prompt-shelf--decision .prompt-action__desc {
+  white-space: normal !important;
+  overflow: visible;
+  text-overflow: clip;
 }
 .prompt-action--quiet {
   width: auto;
@@ -26081,6 +26190,28 @@ body > .mermaid-diagram--fullscreen {
 
 .sidebar--workbench .project-tree__topic-state--waiting_confirmation {
   background: var(--warn);
+  /* Waiting is paused-for-user: never spin like thinking/streaming. */
+  animation: none;
+}
+.project-tree__topic-waiting-pill,
+.sidebar--workbench .project-tree__topic-waiting-pill,
+.app--creation .project-tree__topic-waiting-pill {
+  display: inline-flex;
+  align-items: center;
+  flex: 0 0 auto;
+  max-width: 7.5em;
+  min-height: 18px;
+  padding: 0 7px;
+  border: 1px solid color-mix(in srgb, var(--warn, #f59e0b) 46%, var(--border-soft));
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--warn, #f59e0b) 16%, var(--bg-soft));
+  color: color-mix(in srgb, var(--warn, #f59e0b) 78%, var(--fg));
+  font-size: 10.5px;
+  font-weight: 650;
+  line-height: 1.2;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .sidebar--workbench .project-tree__topic-state--paused {

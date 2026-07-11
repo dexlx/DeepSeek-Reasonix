@@ -45,10 +45,13 @@ import { clearAttentionChimeKeys, playAttentionChime, playSuccessChime, shouldPl
 import { Transcript } from "./components/Transcript";
 import { Composer } from "./components/Composer";
 import { TodoPanel } from "./components/TodoPanel";
-import { ApprovalModal, approvalToolLabel } from "./components/ApprovalModal";
+import { ApprovalModal } from "./components/ApprovalModal";
 import { AskCard } from "./components/AskCard";
 import { UndoRewindBanner } from "./components/UndoRewindBanner";
 import { ClearContextCard } from "./components/ClearContextCard";
+
+/** Footer decision surface kinds. Priority: tool/plan approval > ask > clear context. */
+type DecisionSurfaceKind = "tool_approval" | "plan_approval" | "ask" | "clear_context";
 import { StatusBar } from "./components/StatusBar";
 import { CommandPalette, type PaletteItem } from "./components/CommandPalette";
 import { UpdateBanner } from "./components/UpdateBanner";
@@ -1173,6 +1176,8 @@ export default function App() {
   const [workspaceTogglePressed, setWorkspaceTogglePressed] = useState(false);
   const [clearContextPending, setClearContextPending] = useState(false);
   const topicRenameSkipCommitRef = useRef(false);
+  const prevDecisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
+  const decisionSurfaceRef = useRef<DecisionSurfaceKind | null>(null);
   const topicRenameCommitHandledRef = useRef(false);
   const appRef = useRef<HTMLDivElement>(null);
   const layoutRef = useRef<HTMLDivElement>(null);
@@ -1469,6 +1474,38 @@ export default function App() {
   const toolApprovalMode = composerProfile.toolApprovalMode;
   const tokenMode: TokenMode = composerProfile.tokenMode;
   const controllerReady = state.meta?.ready === true && !state.backendActivationPending;
+  // Single footer decision surface. Composer stays mounted underneath and is
+  // only visually/a11y-hidden so per-session draft caches survive.
+  const decisionSurface = useMemo((): DecisionSurfaceKind | null => {
+    if (state.approval) {
+      return state.approval.tool === "exit_plan_mode" ? "plan_approval" : "tool_approval";
+    }
+    if (state.ask) return "ask";
+    if (clearContextPending) return "clear_context";
+    return null;
+  }, [clearContextPending, state.approval, state.ask]);
+  decisionSurfaceRef.current = decisionSurface;
+  useEffect(() => {
+    // Close composer menus/popovers when a decision takes over the footer.
+    if (decisionSurface) {
+      closeTransientOverlays();
+      prevDecisionSurfaceRef.current = decisionSurface;
+      return;
+    }
+    // Restore composer focus on the next frame only if the tab did not switch
+    // and no new decision arrived (remote resolution / rapid consecutive prompts).
+    const hadDecision = prevDecisionSurfaceRef.current != null;
+    prevDecisionSurfaceRef.current = null;
+    if (!hadDecision) return;
+    const tabAtRelease = activeTabId;
+    const frame = requestAnimationFrame(() => {
+      if (decisionSurfaceRef.current != null) return;
+      if (activeTabIdRef.current !== tabAtRelease) return;
+      const input = document.getElementById("composer-input") as HTMLTextAreaElement | null;
+      input?.focus({ preventScroll: true });
+    });
+    return () => cancelAnimationFrame(frame);
+  }, [activeTabId, closeTransientOverlays, decisionSurface]);
   const patchActiveComposerProfile = useCallback(
     (patch: Partial<Omit<ComposerProfile, "pending">>, pendingFields: ComposerProfileField[]) => {
       if (!activeTabId) return;
@@ -3687,7 +3724,8 @@ export default function App() {
                 }}
               />
             )}
-            {state.approval && (
+            {decisionSurface === "tool_approval" || decisionSurface === "plan_approval"
+              ? state.approval && (
               <ApprovalModal
                 key={`${activeTabId ?? ""}:${state.approval.id}`}
                 approval={state.approval}
@@ -3718,8 +3756,9 @@ export default function App() {
                 }}
                 toolApprovalMode={toolApprovalMode}
               />
-            )}
-            {state.ask && (
+              )
+            : decisionSurface === "ask"
+              ? state.ask && (
               <AskCard
                 key={`${activeTabId ?? ""}:${state.ask.id}`}
                 ask={state.ask}
@@ -3729,15 +3768,23 @@ export default function App() {
                   cancel();
                 }}
               />
-            )}
-            {clearContextPending && (
+              )
+            : decisionSurface === "clear_context" ? (
               <ClearContextCard
                 onCancel={cancelClearContext}
                 onConfirm={() => {
                   void confirmClearContext();
                 }}
               />
-            )}
+            ) : null}
+            {/* Composer stays mounted under a decision so per-session draft
+                caches (text, attachments, paste blocks, guidance) survive. */}
+            <div
+              className={decisionSurface ? "composer-decision-host composer-decision-host--hidden" : "composer-decision-host"}
+              hidden={Boolean(decisionSurface) || undefined}
+              inert={decisionSurface ? true : undefined}
+              aria-hidden={decisionSurface ? true : undefined}
+            >
             <Composer
               running={state.running || rewindCommitting}
               collaborationMode={collaborationMode}
@@ -3763,15 +3810,16 @@ export default function App() {
               onSetTokenMode={applyTokenMode}
               insertRequest={composerInsertRequest}
               readOnly={Boolean(activeTab?.readOnly)}
-              disabled={rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
+              disabled={rewindCommitting || state.messageAction != null || Boolean(decisionSurface)}
               submitDisabled={!controllerReady}
-              decisionPending={rewindCommitting || state.messageAction != null || state.approval != null || state.ask != null || clearContextPending}
+              decisionPending={rewindCommitting || state.messageAction != null || Boolean(decisionSurface)}
               ready={controllerReady}
               turnStartAt={state.turnStartAt}
+              turnWaitAccumMs={state.turnWaitAccumMs}
+              promptWaitStartedAt={state.promptWaitStartedAt}
               turnTokens={state.turnTokens}
               retry={state.retry}
-              pendingApprovalLabel={state.approval ? approvalToolLabel(state.approval.tool, t) : null}
-              pendingAsk={state.ask != null}
+              suspendedByDecision={Boolean(decisionSurface)}
               transientDismissSignal={transientOverlayDismissSignal}
               sessionKey={composerSessionKey}
               workspaceScopeKey={workspaceScopeKey}
@@ -3786,6 +3834,7 @@ export default function App() {
               cacheMissTokens={state.usage?.cacheMissTokens}
               balance={state.balance}
             />
+            </div>
             <StatusBar
               context={state.context}
               usage={state.usage}
