@@ -11698,16 +11698,61 @@ body > .mermaid-diagram--fullscreen {
 .subagents-tool-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(140px, 1fr));
-  gap: 4px 10px;
-  padding: 6px 0 2px;
+  gap: 6px 10px;
+  padding: 10px;
+  border: 1px solid var(--border-soft);
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--bg-soft) 72%, transparent);
 }
 .subagents-tool-option {
   display: flex;
   align-items: center;
   gap: 6px;
+  min-height: 30px;
+  padding: 4px 8px;
+  border-radius: 7px;
   color: var(--fg-dim);
   font-size: 12px;
   line-height: 1.4;
+}
+.subagents-tool-option:hover {
+  background: var(--list-row-hover-bg);
+  color: var(--fg);
+}
+.subagents-tool-scope-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.subagents-tool-scope-row .mem-select {
+  flex: 0 1 220px;
+}
+.subagents-tool-scope-row span {
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.subagents-form-back {
+  align-self: flex-start;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-faint);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.subagents-form-back:hover {
+  color: var(--fg);
+}
+.subagents-form-back:focus-visible {
+  outline: 2px solid color-mix(in srgb, var(--accent) 52%, transparent);
+  outline-offset: 3px;
+  border-radius: 3px;
+}
+.subagents-form-back:disabled {
+  cursor: default;
+  opacity: 0.55;
 }
 .subagents-field-error {
   margin-top: -4px;
@@ -11800,6 +11845,15 @@ body > .mermaid-diagram--fullscreen {
   .subagents-builtin-overrides__status {
     min-height: 0;
     justify-content: flex-start;
+  }
+  .subagents-tool-scope-row {
+    align-items: stretch;
+    flex-direction: column;
+    gap: 5px;
+  }
+  .subagents-tool-scope-row .mem-select {
+    flex-basis: auto;
+    width: 100%;
   }
 }
 .cap-dot {
