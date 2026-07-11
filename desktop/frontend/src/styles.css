@@ -5868,6 +5868,56 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
 }
 
+.composer-meta__control--content {
+  flex: 0 0 40px;
+  width: 40px;
+}
+
+.composer-content-trigger {
+  --wails-draggable: no-drag;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  padding: 0;
+  border: 1px solid transparent;
+  border-radius: var(--composer-control-radius);
+  background: transparent;
+  color: var(--fg-dim);
+  transition: color 0.12s, border-color 0.12s, background 0.12s, box-shadow 0.12s;
+}
+
+.composer-content-trigger svg {
+  transition: transform var(--dur-base) var(--ease-out);
+}
+
+.composer-content-trigger:hover:not(:disabled),
+.composer-content-trigger:focus-visible,
+.composer-content-trigger--open {
+  outline: none;
+  color: var(--fg);
+  border-color: var(--border);
+  background: var(--bg-soft);
+}
+
+.composer-content-trigger:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.composer-content-trigger--open svg {
+  transform: rotate(45deg);
+}
+
+.composer-content-trigger:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.composer-content-file-input {
+  display: none;
+}
+
 .composer-meta__divider {
   flex: 0 0 1px;
   width: 1px;
@@ -6336,6 +6386,11 @@ body > .mermaid-diagram--fullscreen {
     gap: 4px;
   }
 
+  .composer-meta__control--content {
+    flex-basis: 34px;
+    width: 34px;
+  }
+
   .app--creation .composer-meta .composer-meta__params,
   :root[data-theme-style] .app--creation .composer-meta .composer-meta__params {
     gap: 4px;
@@ -6457,6 +6512,36 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 10px;
   background: var(--bg-elev);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
+}
+
+.composer-content-menu {
+  width: min(292px, calc(100vw - 16px));
+}
+
+.composer-content-menu__item {
+  min-height: 50px;
+  height: auto;
+  padding-block: 7px;
+}
+
+.composer-content-menu__item > kbd {
+  flex: 0 0 auto;
+  min-width: 20px;
+  padding: 2px 5px;
+  border: 1px solid var(--border-soft);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--fg-faint);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 15px;
+  text-align: center;
+}
+
+.composer-content-menu__divider {
+  height: 1px;
+  margin: 4px 8px;
+  background: var(--border-soft);
 }
 .composer-access-menu__section {
   display: flex;
@@ -27531,6 +27616,18 @@ body > .mermaid-diagram--fullscreen {
   max-width: none;
 }
 
+.app--creation .composer-meta__control--content,
+:root[data-theme-style] .app--creation .composer-meta__control--content {
+  flex-basis: 34px;
+  width: 34px;
+}
+
+.app--creation .composer-content-trigger,
+:root[data-theme-style] .app--creation .composer-content-trigger {
+  width: 28px;
+  height: 28px;
+}
+
 .app--creation .composer-meta__control--profile,
 :root[data-theme-style] .app--creation .composer-meta__control--profile {
   flex: 0 0 auto;
@@ -27565,12 +27662,14 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .app--creation .composer-modebar,
+.app--creation .composer-content-trigger,
 .app--creation .composer-task-mode-trigger,
 .app--creation .composer-profile-trigger,
 .app--creation .composer-more-trigger,
 .app--creation .composer-meta .modelsw__trigger,
 .app--creation .composer-context__item,
 :root[data-theme-style] .app--creation .composer-modebar,
+:root[data-theme-style] .app--creation .composer-content-trigger,
 :root[data-theme-style] .app--creation .composer-task-mode-trigger,
 :root[data-theme-style] .app--creation .composer-profile-trigger,
 :root[data-theme-style] .app--creation .composer-more-trigger,

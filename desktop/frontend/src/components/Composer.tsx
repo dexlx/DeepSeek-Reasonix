@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowRight, ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FileText, Flag, Folder, Gauge, List, MessageSquare, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, AtSign, Check, ChevronDown, ChevronUp, ChevronsUpDown, CornerDownRight, Equal, Eye, FilePlus2, FileText, Flag, Folder, Gauge, Hash, List, MessageSquare, Plus, Search, Shield, ShieldAlert, ShieldCheck, Slash, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -628,7 +628,9 @@ export function Composer({
   const [profileMenuClosing, setProfileMenuClosing] = useState(false);
   const [moreMenuOpen, setMoreMenuOpen] = useState(false);
   const [moreMenuClosing, setMoreMenuClosing] = useState(false);
+  const [contentMenuOpen, setContentMenuOpen] = useState(false);
   const [showPastChats, setShowPastChats] = useState(false);
+  const [directPastChats, setDirectPastChats] = useState(false);
   const [pastChats, setPastChats] = useState<SessionMeta[]>([]);
   const [pastChatQuery, setPastChatQuery] = useState("");
   const [sessionRefs, setSessionRefs] = useState<SessionReference[]>([]);
@@ -656,7 +658,9 @@ export function Composer({
   const [, setHistoryIndex] = useState(-1);
   const savedTextRef = useRef("");
   const taRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const composerCardRef = useRef<HTMLDivElement>(null);
+  const contentMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const intentMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const profileMenuAnchorRef = useRef<HTMLButtonElement>(null);
   const moreMenuAnchorRef = useRef<HTMLButtonElement>(null);
@@ -752,6 +756,8 @@ export function Composer({
     lastSelectionRef.current = { start: next.text.length, end: next.text.length };
     setComposerPrompt(null);
     setShowPastChats(false);
+    setDirectPastChats(false);
+    setContentMenuOpen(false);
     setPastChatQuery("");
     setLoadingPastChats(false);
     setActive(0);
@@ -1084,14 +1090,16 @@ export function Composer({
 
   // --- which menu (if any) is open --- (slash command names win; then slash
   // arguments; then @-refs — they're rarely valid at once)
-  const menuMode: "slash" | "slasharg" | "at" | null =
-    slashMatches.length > 0 && !dismissed
-      ? "slash"
-      : argRes && argRes.items.length > 0 && !dismissed
-        ? "slasharg"
-        : atRaw !== null && !dismissed
-          ? "at"
-          : null;
+  const menuMode: "slash" | "slasharg" | "at" | "pastChats" | null =
+    directPastChats
+      ? "pastChats"
+      : slashMatches.length > 0 && !dismissed
+        ? "slash"
+        : argRes && argRes.items.length > 0 && !dismissed
+          ? "slasharg"
+          : atRaw !== null && !dismissed
+            ? "at"
+            : null;
   const countBase =
     menuMode === "slash"
       ? slashMatches.length
@@ -1099,7 +1107,9 @@ export function Composer({
         ? argRes!.items.length
         : menuMode === "at"
           ? atMenuItems.length
-          : 0;
+          : menuMode === "pastChats"
+            ? pastChats.length
+            : 0;
 
   // Reset highlight + un-dismiss whenever the active query changes.
   useEffect(() => {
@@ -1142,11 +1152,15 @@ export function Composer({
   // sub-menu and reset related state. Without this, showPastChats can outlive
   // the @ token and leave the session list visible with no way to dismiss it.
   useEffect(() => {
-    if (menuMode !== "at" && showPastChats) {
+    if (menuMode !== "at" && menuMode !== "pastChats" && showPastChats) {
       setShowPastChats(false);
       setPastChatQuery("");
       setActive(0);
     }
+  }, [menuMode]);
+
+  useEffect(() => {
+    if (menuMode && menuMode !== "pastChats") setContentMenuOpen(false);
   }, [menuMode]);
 
   const resetPromptHistoryNavigation = () => {
@@ -1374,6 +1388,9 @@ export function Composer({
 
   const openIntentMenu = useCallback(() => {
     clearIntentCloseTimer();
+    setContentMenuOpen(false);
+    setDirectPastChats(false);
+    setDismissed(true);
     setIntentMenuClosing(false);
     setIntentMenuOpen(true);
   }, [clearIntentCloseTimer]);
@@ -1400,6 +1417,9 @@ export function Composer({
 
   const openProfileMenu = useCallback(() => {
     clearProfileCloseTimer();
+    setContentMenuOpen(false);
+    setDirectPastChats(false);
+    setDismissed(true);
     setProfileMenuClosing(false);
     setProfileMenuOpen(true);
   }, [clearProfileCloseTimer]);
@@ -1426,6 +1446,9 @@ export function Composer({
 
   const openMoreMenu = useCallback(() => {
     clearMoreCloseTimer();
+    setContentMenuOpen(false);
+    setDirectPastChats(false);
+    setDismissed(true);
     setMoreMenuClosing(false);
     setMoreMenuOpen(true);
   }, [clearMoreCloseTimer]);
@@ -2166,6 +2189,46 @@ export function Composer({
     }
   };
 
+  const closeDirectPastChats = () => {
+    setText((current) => current.replace(/(?:^|\s)#[^\s]*$/, "").trimEnd());
+    setDirectPastChats(false);
+    setShowPastChats(false);
+    setPastChatQuery("");
+    setActive(0);
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  const insertContentTrigger = (trigger: "@" | "#" | "/") => {
+    const selection = getInputSelection();
+    const current = textRef.current;
+    const needsSpace = selection.from > 0 && !/\s/.test(current.charAt(selection.from - 1));
+    const value = `${needsSpace ? " " : ""}${trigger}`;
+    setContentMenuOpen(false);
+    setDirectPastChats(false);
+    setShowPastChats(false);
+    setDismissed(false);
+    replaceInputRange(value, selection.from, selection.to);
+    if (trigger === "#") {
+      setDirectPastChats(true);
+      void openPastChats();
+    }
+  };
+
+  const openContentMenu = () => {
+    if (intentMenuOpen || intentMenuClosing) closeIntentMenu();
+    if (profileMenuOpen || profileMenuClosing) closeProfileMenu();
+    if (moreMenuOpen || moreMenuClosing) closeMoreMenu();
+    setDirectPastChats(false);
+    setShowPastChats(false);
+    setDismissed(true);
+    setContentMenuOpen(true);
+  };
+
+  const chooseAttachmentFiles = () => {
+    setContentMenuOpen(false);
+    fileInputRef.current?.click();
+  };
+
   // PR-C1: client-side filter for the past:chats list. Matches against the
   // human-visible fields (title, topic, preview, path, workspace) so users
   // can narrow long session lists without a backend round-trip. Lowercased
@@ -2188,7 +2251,7 @@ export function Composer({
 
   // Final menu item count: when the past:chats list is open, count the
   // filtered sessions instead of file entries + the "past:chats" row.
-  const count = menuMode === "at" && showPastChats
+  const count = (menuMode === "at" && showPastChats) || menuMode === "pastChats"
     ? filteredPastChats.length
     : countBase;
 
@@ -2221,7 +2284,10 @@ export function Composer({
         },
       ];
     });
-    setText((prev) => removeAtToken(prev));
+    setText((prev) => directPastChats
+      ? prev.replace(/(?:^|\s)#[^\s]*$/, "").trimEnd()
+      : removeAtToken(prev));
+    setDirectPastChats(false);
     setPastChatQuery("");
     setShowPastChats(false);
     setActive(0);
@@ -2258,12 +2324,13 @@ export function Composer({
       if (item) pickArg(item);
       return;
     }
-    if (menuMode === "at") {
+    if (menuMode === "at" || menuMode === "pastChats") {
       if (showPastChats) {
         const session = filteredPastChats[active];
         if (session) pickSession(session);
         return;
       }
+      if (menuMode === "pastChats") return;
       const item = atMenuItems[active];
       if (!item) return;
       if (item.kind === "pastChats") {
@@ -2403,7 +2470,9 @@ export function Composer({
       }
       if (e.key === "Escape") {
         e.preventDefault();
-        if (showPastChats) {
+        if (menuMode === "pastChats") {
+          closeDirectPastChats();
+        } else if (showPastChats) {
           setPastChatQuery("");
           setShowPastChats(false);
           setActive(0);
@@ -2443,9 +2512,12 @@ export function Composer({
       } else if (e.key === "Enter" || e.key === "Tab") {
         pickActive();
       } else if (e.key === "Escape") {
-        setPastChatQuery("");
-        setShowPastChats(false);
-        setActive(0);
+        if (menuMode === "pastChats") closeDirectPastChats();
+        else {
+          setPastChatQuery("");
+          setShowPastChats(false);
+          setActive(0);
+        }
       }
     }
   };
@@ -2586,6 +2658,9 @@ export function Composer({
   useEffect(() => {
     if (!suspendedByDecision) return;
     setDismissed(true);
+    setContentMenuOpen(false);
+    setDirectPastChats(false);
+    setShowPastChats(false);
     closeIntentMenu();
     closeProfileMenu();
     closeMoreMenu();
@@ -2674,6 +2749,62 @@ export function Composer({
       style={{ "--wails-drop-target": "drop" } as CSSProperties}
       onDropCapture={onFileDropCapture}
     >
+      <input
+        ref={fileInputRef}
+        className="composer-content-file-input"
+        type="file"
+        multiple
+        tabIndex={-1}
+        aria-hidden="true"
+        onChange={(event) => {
+          const files = Array.from(event.currentTarget.files ?? []);
+          event.currentTarget.value = "";
+          if (files.length > 0) attachFiles(files);
+          requestAnimationFrame(() => taRef.current?.focus());
+        }}
+      />
+      <AnchoredPopover
+        open={contentMenuOpen && !disabled && !readOnly && !running}
+        anchorRef={contentMenuAnchorRef}
+        onClose={() => setContentMenuOpen(false)}
+        className="composer-access-menu composer-content-menu"
+        align="start"
+      >
+        <div className="composer-access-menu__section" role="menu" aria-label={t("composer.contentMenuTitle")}>
+          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={chooseAttachmentFiles}>
+            <FilePlus2 size={16} aria-hidden="true" />
+            <span className="composer-access-menu__copy">
+              <span className="composer-access-menu__title">{t("composer.contentAddAttachment")}</span>
+              <span className="composer-access-menu__desc">{t("composer.contentAddAttachmentDesc")}</span>
+            </span>
+          </button>
+          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("@")}>
+            <AtSign size={16} aria-hidden="true" />
+            <span className="composer-access-menu__copy">
+              <span className="composer-access-menu__title">{t("composer.contentReferenceFiles")}</span>
+              <span className="composer-access-menu__desc">{t("composer.contentReferenceFilesDesc")}</span>
+            </span>
+            <kbd>@</kbd>
+          </button>
+          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("#")}>
+            <Hash size={16} aria-hidden="true" />
+            <span className="composer-access-menu__copy">
+              <span className="composer-access-menu__title">{t("composer.contentReferenceSessions")}</span>
+              <span className="composer-access-menu__desc">{t("composer.contentReferenceSessionsDesc")}</span>
+            </span>
+            <kbd>#</kbd>
+          </button>
+          <div className="composer-content-menu__divider" aria-hidden="true" />
+          <button type="button" role="menuitem" className="composer-access-menu__item composer-content-menu__item" onClick={() => insertContentTrigger("/")}>
+            <Slash size={16} aria-hidden="true" />
+            <span className="composer-access-menu__copy">
+              <span className="composer-access-menu__title">{t("composer.contentUseCommands")}</span>
+              <span className="composer-access-menu__desc">{t("composer.contentUseCommandsDesc")}</span>
+            </span>
+            <kbd>/</kbd>
+          </button>
+        </div>
+      </AnchoredPopover>
       <AnchoredPopover
         open={intentMenuOpen}
         closing={intentMenuClosing}
@@ -2814,7 +2945,7 @@ export function Composer({
       {menuMode === "slasharg" && argRes && (
         <ArgMenu items={argRes.items} activeIndex={active} onPick={pickArg} onHover={setActive} />
       )}
-      {menuMode === "at" && (
+      {(menuMode === "at" || menuMode === "pastChats") && (
         showPastChats ? (
           <div className="slashmenu" role="listbox">
             {loadingPastChats ? (
@@ -2895,15 +3026,20 @@ export function Composer({
               className="slashmenu__item slashmenu__item--back"
               onMouseDown={(ev) => {
                 ev.preventDefault();
-                setPastChatQuery("");
-                setShowPastChats(false);
-                setActive(0);
+                if (menuMode === "pastChats") closeDirectPastChats();
+                else {
+                  setPastChatQuery("");
+                  setShowPastChats(false);
+                  setActive(0);
+                }
               }}
             >
-              <span className="slashmenu__name">← 返回文件列表</span>
+              <span className="slashmenu__name">
+                {menuMode === "pastChats" ? t("composer.contentCloseSessions") : "← 返回文件列表"}
+              </span>
             </button>
           </div>
-        ) : (
+        ) : menuMode === "at" ? (
           <VirtualMenu
             items={atMenuItems}
             activeIndex={active}
@@ -2945,7 +3081,7 @@ export function Composer({
               )
             }
           />
-        )
+        ) : null
       )}
       {pendingGuidance.length > 0 && (
         <div className="composer-guidance-shelf" aria-label={t("composer.guidanceQueue")}>
@@ -3203,6 +3339,22 @@ export function Composer({
         />
         <div className={composerMetaClass}>
           <div className="composer-meta__params">
+            <div className="composer-meta__control composer-meta__control--content">
+              <Tooltip label={t("composer.contentMenuTitle")} disabled={contentMenuOpen}>
+                <button
+                  ref={contentMenuAnchorRef}
+                  type="button"
+                  className={`composer-content-trigger${contentMenuOpen ? " composer-content-trigger--open" : ""}`}
+                  onClick={() => (contentMenuOpen ? setContentMenuOpen(false) : openContentMenu())}
+                  disabled={disabled || readOnly || running}
+                  aria-haspopup="menu"
+                  aria-expanded={contentMenuOpen}
+                  aria-label={t("composer.contentMenuTitle")}
+                >
+                  <Plus size={17} strokeWidth={1.8} aria-hidden="true" />
+                </button>
+              </Tooltip>
+            </div>
             <div className="composer-meta__control composer-meta__control--intent">
               <Tooltip label={taskModeTooltipLabel} disabled={intentMenuOpen || intentMenuClosing}>
                 <button
