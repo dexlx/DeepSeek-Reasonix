@@ -172,6 +172,9 @@ eq(finalDeclaration(".composer-meta__control--intent", "max-width"), "72px", "ta
 eq(finalDeclaration(".composer-task-mode-trigger__value", "text-overflow"), "ellipsis", "task method selector truncates its value only when constrained");
 eq(finalDeclaration(".composer-meta .modelsw__trigger", "font-weight"), "var(--composer-control-font-weight)", "model selector uses the shared control weight");
 eq(finalDeclaration(".composer-meta__divider", "height"), "18px", "execution policy and model settings have a compact visual divider");
+eq(finalDeclaration(".composer-modebar--approval", "--composer-modebar-active-bg"), "var(--mode-auto-bg)", "ask approval restores the solid semantic fill");
+eq(finalDeclaration('.composer-modebar--approval[data-mode="auto"]', "--composer-modebar-active-fg"), "#fff", "auto approval keeps high-contrast text on its solid fill");
+eq(finalDeclaration('.composer-modebar--approval[data-mode="yolo"]', "--composer-modebar-active-bg"), "var(--mode-yolo-bg)", "yolo approval restores the solid warning fill");
 eq(finalDeclaration(".composer-intent-menu", "width"), "min(284px, calc(100vw - 16px))", "task method menu uses the shared menu width");
 eq(finalDeclaration(".composer-profile-menu", "width"), "min(284px, calc(100vw - 16px))", "work mode menu uses the shared menu width");
 eq(finalDeclaration(".composer-access-menu__desc", "white-space"), "normal", "menu descriptions can wrap onto a second line");
