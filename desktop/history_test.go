@@ -91,6 +91,21 @@ func TestHistoryMessagesDoNotReplayMemoryCompilerContract(t *testing.T) {
 	assertNoHistoryMemoryContract(t, got[0].Content)
 }
 
+func TestHistoryMessagesRestoreCompiledSkillInvocationWithoutContract(t *testing.T) {
+	raw := historyMemoryCompilerContract(t, "/reasonix-develop ship the refactor")
+	msgs := []provider.Message{{Role: provider.RoleUser, Content: raw}}
+
+	got := historyMessages(msgs, func(string) string { return "ship the refactor" })
+	if len(got) != 1 {
+		t.Fatalf("history length = %d, want 1: %+v", len(got), got)
+	}
+	if got[0].Content != "ship the refactor" || got[0].SubmitText != "/reasonix-develop ship the refactor" {
+		t.Fatalf("compiled skill history = %+v", got[0])
+	}
+	assertNoHistoryMemoryContract(t, got[0].Content)
+	assertNoHistoryMemoryContract(t, got[0].SubmitText)
+}
+
 func TestHistoryMessagesStripActiveGoalFromVisibleUserContent(t *testing.T) {
 	raw := "<active-goal>\nship the approval redesign\n</active-goal>\n\ncontinue implementation"
 	msgs := []provider.Message{

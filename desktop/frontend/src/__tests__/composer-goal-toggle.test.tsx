@@ -5,6 +5,7 @@ import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { Composer, composerPickFileEntry } from "../components/Composer";
+import { UserMessage } from "../components/Message";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { AppBindings } from "../lib/bridge";
@@ -1038,6 +1039,7 @@ console.log("\ncomposer goal toggle");
   const dom = installDom();
   let commandsCalls = 0;
   let availableCommands: CommandInfo[] = [
+    { name: "mcp", description: "Manage MCP servers", kind: "builtin", group: "integrations" },
     { name: "explore", description: "Investigate the codebase", kind: "subagent" },
     { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
     { name: "toolbox:writing-plans", description: "Write another plan", kind: "skill", plugin: "toolbox" },
@@ -1049,7 +1051,7 @@ console.log("\ncomposer goal toggle");
       return availableCommands;
     },
   });
-  const { root, rerender } = await renderComposer({ workspaceScopeKey: "runtime-0" });
+  const { root, calls, rerender } = await renderComposer({ workspaceScopeKey: "runtime-0" });
 
   await waitFor("plugin commands loaded", () => commandsCalls > 0);
   await replaceComposerDraft(rerender, 2000, "/m");
@@ -1079,11 +1081,114 @@ console.log("\ncomposer goal toggle");
     textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
     await flushTimers();
   });
-  eq(textarea.value, "/superpowers:writing-plans ", "selecting a plugin skill inserts its qualified name");
+  eq(textarea.value, "", "selecting a plugin skill keeps the task input separate from the invocation");
+  ok(document.querySelector(".invocation-display--composer")?.textContent?.includes("Writing Plans") === true, "selected skill renders as composer context");
+  ok(document.querySelector(".invocation-display--composer")?.textContent?.includes("superpowers") === true, "selected plugin skill keeps its source visible");
+  ok(document.querySelector(".composer__content > .invocation-display--composer + textarea") !== null, "selected skill lives inside the task body column above the textarea");
+
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Backspace", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  ok(document.querySelector(".invocation-display--composer") === null, "Backspace removes a selected skill from an empty task input");
+
+  await replaceComposerDraft(rerender, 2002, "/writing-plans");
+  await waitFor("skill menu after removal", () => Boolean(document.querySelector(".slashmenu")));
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+
+  await replaceComposerDraft(rerender, 2003, "Draft the release plan");
+  const sendButton = document.querySelector(".composer__btn--send") as HTMLButtonElement | null;
+  if (!sendButton) throw new Error("composer send button did not render");
+  await act(async () => {
+    sendButton.click();
+    await flushTimers();
+  });
+  eq(calls.send[0], "Draft the release plan", "selected skill keeps the visible transcript text clean");
+  eq(calls.submit[0], "/superpowers:writing-plans Draft the release plan", "selected skill preserves the provider-visible slash invocation");
+  ok(document.querySelector(".invocation-display--composer") === null, "selected skill clears after send");
+
+  await replaceComposerDraft(rerender, 2004, "/mcp");
+  await waitFor("builtin command menu", () => Boolean(document.querySelector(".slashmenu")));
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea.value, "/mcp ", "management commands keep the existing inline argument flow");
+  ok(document.querySelector(".invocation-display--composer") === null, "management commands do not become selected abilities");
 
   await act(async () => {
     root.unmount();
   });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <UserMessage
+          id="h1"
+          text="Draft the release plan"
+          submitText="/superpowers:writing-plans Draft the release plan"
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+  ok(document.querySelector(".invocation-display--message")?.textContent?.includes("Writing Plans") === true, "restored history renders the selected skill header");
+  ok(document.querySelector(".invocation-display--message")?.textContent?.includes("superpowers") === true, "restored history retains plugin source from the qualified command");
+  eq(document.querySelector(".msg__text")?.textContent, "Draft the release plan", "history message keeps slash syntax out of the task body");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <UserMessage
+          id="h2"
+          text="Format this file"
+          submitText={"以下是用户引用的历史会话上下文：\n\n[会话：Earlier]\n...\n\n---\n\n当前用户问题：\n/my-formatter Format this file"}
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+  ok(document.querySelector(".invocation-display--message")?.textContent?.includes("My Formatter") === true, "history and trash previews recover selected abilities after referenced-session context");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <UserMessage
+          id="h3"
+          text={"Compare these commands\n/other-command"}
+          submitText={"/reasonix-develop Compare these commands\n/other-command"}
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+  ok(document.querySelector(".invocation-display--message")?.textContent?.includes("Reasonix Develop") === true, "history recovery ignores slash-prefixed lines inside the task body");
+
+  await act(async () => {
+    root.render(
+      <LocaleProvider>
+        <UserMessage
+          id="h4"
+          text={"Compare these commands\n/other-command"}
+          submitText={"以下是用户引用的历史会话上下文：\n\n[会话：Earlier]\n...\n\n---\n\n当前用户问题：\nCompare these commands\n/other-command"}
+        />
+      </LocaleProvider>,
+    );
+    await flushTimers();
+  });
+  ok(document.querySelector(".invocation-display--message") === null, "ordinary referenced-session text does not turn task slash lines into a skill header");
+
+  await act(async () => root.unmount());
   dom.window.close();
 }
 

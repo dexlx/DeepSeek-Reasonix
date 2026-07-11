@@ -35,5 +35,11 @@ eq(
   "messages without hidden submit context use the rebuilt submit text",
 );
 
+eq(
+  replaySubmitText("/reasonix-develop review this change", "review this change", "review the updated change", "review the updated change"),
+  "/reasonix-develop review the updated change",
+  "editing a structured skill message preserves its slash invocation",
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);

@@ -5704,8 +5704,9 @@ body > .mermaid-diagram--fullscreen {
 }
 .composer {
   display: flex;
-  gap: 8px;
-  align-items: center;
+  flex-direction: column;
+  gap: 5px;
+  align-items: stretch;
   min-height: 0;
   background: transparent;
   border: none;
@@ -5716,7 +5717,117 @@ body > .mermaid-diagram--fullscreen {
 .composer-card--resized .composer,
 .composer-card--autosized .composer {
   flex: 1;
+}
+.composer__input-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  flex: 1;
+}
+.composer__content {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  align-items: stretch;
+  gap: 5px;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+}
+.composer-card--resized .composer__input-row,
+.composer-card--autosized .composer__input-row {
   align-items: flex-start;
+}
+.composer--has-invocation .composer__caret {
+  margin-top: 32px;
+}
+.invocation-display {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  max-width: 100%;
+  color: var(--accent);
+}
+.invocation-display--composer {
+  align-self: flex-start;
+  height: 27px;
+}
+.invocation-display--message {
+  margin-bottom: 6px;
+  color: var(--accent);
+}
+.invocation-display--message .invocation-display__name {
+  font-size: 13px;
+  font-weight: 620;
+}
+.invocation-display--message .invocation-display__source {
+  font-size: 10.5px;
+}
+.invocation-display__identity {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  min-width: 0;
+  max-width: 100%;
+  padding: 0 2px;
+}
+.invocation-display__identity > svg {
+  flex: 0 0 auto;
+  stroke-width: 1.8;
+}
+.invocation-display__name {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--accent);
+  font-size: 15px;
+  font-weight: 590;
+  line-height: 1.35;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.invocation-display__source {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--fg-faint);
+  font-size: 11px;
+  line-height: 1.3;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.invocation-display__remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 22px;
+  height: 22px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg-faint);
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+.invocation-display:hover .invocation-display__remove,
+.invocation-display:focus-within .invocation-display__remove {
+  opacity: 1;
+}
+.invocation-display__remove:hover,
+.invocation-display__remove:focus-visible {
+  outline: none;
+  background: var(--hover);
+  color: var(--fg);
+}
+@media (hover: none) {
+  .invocation-display__remove {
+    opacity: 1;
+  }
 }
 .composer--dragover {
   outline: 1px dashed var(--accent);
@@ -5749,6 +5860,7 @@ body > .mermaid-diagram--fullscreen {
 }
 .composer__input {
   flex: 1;
+  width: 100%;
   resize: none;
   border: none;
   background: none;
@@ -5765,7 +5877,8 @@ body > .mermaid-diagram--fullscreen {
   display: none;                    /* Chrome / Safari / Wails webview */
 }
 .composer-card--resized .composer__input {
-  height: 100%;
+  height: auto;
+  min-height: 0;
   max-height: none;
   overflow-y: auto;
   scrollbar-width: thin;           /* restore scrollbar when resized */

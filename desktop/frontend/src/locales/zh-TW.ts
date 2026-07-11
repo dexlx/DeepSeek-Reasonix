@@ -445,6 +445,9 @@ export const zhTW: Record<DictKey, string> = {
   "imageViewer.title": "圖片預覽",
   "composer.imageInputUnsupported": "目前模型不會直接接收圖片。可切換到支援圖片的模型，或讓 OCR/識圖 MCP 工具讀取附件路徑。",
   "composer.contextItems": "上下文項目",
+  "composer.selectedInvocation": "已選擇的技能或子智慧體",
+  "composer.removeInvocation": "移除已選擇的技能或子智慧體",
+  "composer.removeInvocationNamed": "移除 {name}",
   "composer.workspaceReferences": "工作區引用",
   "composer.removeReference": "移除引用",
 

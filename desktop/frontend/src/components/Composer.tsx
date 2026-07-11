@@ -9,6 +9,7 @@ import { canUsePromptHistory, isFnKeyEvent, promptHistoryDirectionFromEvent } fr
 import { cacheGeneration, loadOlder } from "../lib/composerHistory";
 import { SPINNER_WORDS, useI18n } from "../lib/i18n";
 import { detectShortcutPlatform, formatShortcutCombo, matchesShortcut } from "../lib/keyboardShortcuts";
+import { commandUsesStructuredInvocation, invocationDisplayForCommand } from "../lib/invocationDisplay";
 import { clearLayoutSize, loadOptionalLayoutSize, saveLayoutSize } from "../lib/layoutPreferences";
 import { createRafResizeUpdater } from "../lib/resizeDrag";
 import { useToast } from "../lib/toast";
@@ -28,6 +29,7 @@ import { Tooltip } from "./Tooltip";
 import { ComposerContextCard } from "./ComposerContextCard";
 import { ContextWindowRing } from "./ContextWindowRing";
 import { ImageViewer } from "./ImageViewer";
+import { InvocationBadge } from "./InvocationBadge";
 import { VirtualMenu } from "./VirtualMenu";
 import { dirEntryMenuLabel, dirEntrySubmitPath } from "./FileReferenceMenu";
 import { ContextMenu, contextMenuPointFromEvent, type ContextMenuItem, type ContextMenuPoint } from "./ContextMenu";
@@ -57,6 +59,7 @@ const COMPOSER_MAX_HEIGHT = 360;
 const COMPOSER_RUN_STRIP_RESERVED = 30;
 const COMPOSER_MAX_VIEWPORT_RATIO = 0.4;
 const COMPOSER_AUTO_RESERVED_HEIGHT = 58;
+const COMPOSER_INVOCATION_RESERVED_HEIGHT = 32;
 const PROMPT_HISTORY_PREFETCH_REMAINING = 3;
 // Grace after compositionend to swallow a confirm-Enter that lands just after
 // it; the real gap is a few ms, so keep it short or a deliberate quick second
@@ -82,6 +85,7 @@ type FileRefSearchCacheEntry = {
 
 type ComposerDraft = {
   text: string;
+  selectedInvocation: CommandInfo | null;
   attachments: Attachment[];
   workspaceRefs: WorkspaceReference[];
   pastedBlocks: PastedBlock[];
@@ -173,6 +177,7 @@ export function composerPickFileEntry(
 function emptyComposerDraft(): ComposerDraft {
   return {
     text: "",
+    selectedInvocation: null,
     attachments: [],
     workspaceRefs: [],
     pastedBlocks: [],
@@ -200,6 +205,7 @@ function guidanceTextMatches(queued: string, consumed: string): boolean {
 function cloneComposerDraft(draft: ComposerDraft): ComposerDraft {
   return {
     text: draft.text,
+    selectedInvocation: draft.selectedInvocation ? { ...draft.selectedInvocation } : null,
     attachments: [...draft.attachments],
     workspaceRefs: [...draft.workspaceRefs],
     pastedBlocks: [...draft.pastedBlocks],
@@ -319,8 +325,8 @@ function clampComposerHeight(height: number): number {
   return Math.min(Math.max(Math.round(height), COMPOSER_MIN_HEIGHT), composerMaxHeight());
 }
 
-function composerAutoInputMaxHeight(): number {
-  return Math.max(32, composerMaxHeight() - COMPOSER_AUTO_RESERVED_HEIGHT);
+function composerAutoInputMaxHeight(extraReservedHeight = 0): number {
+  return Math.max(32, composerMaxHeight() - COMPOSER_AUTO_RESERVED_HEIGHT - extraReservedHeight);
 }
 
 function loadComposerHeight(): number | null {
@@ -609,6 +615,7 @@ export function Composer({
   }, []);
 
   const [workspaceRefs, setWorkspaceRefs] = useState<WorkspaceReference[]>([]);
+  const [selectedInvocation, setSelectedInvocation] = useState<CommandInfo | null>(null);
   const [pastedBlocks, setPastedBlocks] = useState<PastedBlock[]>([]);
   const [openPastedLabels, setOpenPastedLabels] = useState<string[]>([]);
   const [pendingPaste, setPendingPaste] = useState(0);
@@ -681,11 +688,13 @@ export function Composer({
   const draftsBySessionRef = useRef<Record<string, ComposerDraft>>({});
   const activeDraftKeyRef = useRef(draftKey);
   const textRef = useRef(text);
+  const selectedInvocationRef = useRef(selectedInvocation);
   const attachmentsRef = useRef(attachments);
   const workspaceRefsRef = useRef(workspaceRefs);
   const openPastedLabelsRef = useRef(openPastedLabels);
   const sessionRefsRef = useRef(sessionRefs);
   textRef.current = text;
+  selectedInvocationRef.current = selectedInvocation;
   attachmentsRef.current = attachments;
   workspaceRefsRef.current = workspaceRefs;
   pastedBlocksRef.current = pastedBlocks;
@@ -699,6 +708,7 @@ export function Composer({
 
   const snapshotComposerDraft = (): ComposerDraft => ({
     text: textRef.current,
+    selectedInvocation: selectedInvocationRef.current ? { ...selectedInvocationRef.current } : null,
     attachments: [...attachmentsRef.current],
     workspaceRefs: [...workspaceRefsRef.current],
     pastedBlocks: [...pastedBlocksRef.current],
@@ -718,11 +728,13 @@ export function Composer({
   const restoreComposerDraft = (draft: ComposerDraft) => {
     const next = cloneComposerDraft(draft);
     textRef.current = next.text;
+    selectedInvocationRef.current = next.selectedInvocation;
     attachmentsRef.current = next.attachments;
     workspaceRefsRef.current = next.workspaceRefs;
     openPastedLabelsRef.current = next.openPastedLabels;
     sessionRefsRef.current = next.sessionRefs;
     setText(next.text);
+    setSelectedInvocation(next.selectedInvocation);
     setAttachments(next.attachments);
     setWorkspaceRefs(next.workspaceRefs);
     pastedBlocksRef.current = next.pastedBlocks;
@@ -1351,6 +1363,8 @@ export function Composer({
     if (targetDraftKey === activeDraftKeyRef.current) {
       textRef.current = "";
       setText("");
+      selectedInvocationRef.current = null;
+      setSelectedInvocation(null);
       historyIndexRef.current = -1;
       setHistoryIndex(-1);
       clearAttachments();
@@ -1367,6 +1381,7 @@ export function Composer({
     }
     const draft = cloneComposerDraft(draftsBySessionRef.current[targetDraftKey] ?? emptyComposerDraft());
     draft.text = "";
+    draft.selectedInvocation = null;
     draft.attachments = [];
     draft.workspaceRefs = [];
     draft.pastedBlocks = [];
@@ -1483,7 +1498,8 @@ export function Composer({
       const currentSessionRefs = sessionRefsRef.current;
       const currentPastedBlocks = [...pastedBlocksRef.current];
       const sessionContext = currentSessionRefs.length === 0 ? "" : await buildSessionContext(currentSessionRefs);
-      const baseSubmitText = [expandPastedBlocks(trimmedText, currentPastedBlocks), refs].filter(Boolean).join(trimmedText && refs ? " " : "");
+      const invocationPrefix = selectedInvocationRef.current ? `/${selectedInvocationRef.current.name}` : "";
+      const baseSubmitText = [invocationPrefix, expandPastedBlocks(trimmedText, currentPastedBlocks), refs].filter(Boolean).join(" ");
       const submitText = sessionContext ? `${sessionContext}${baseSubmitText}` : baseSubmitText;
       if (running) {
         const guidanceText = displayText.trim();
@@ -1963,7 +1979,22 @@ export function Composer({
     setTextCaretEnd([base, ...queued].filter((part) => part.trim() !== "").join("\n"));
   };
 
-  const pickCommand = (c: CommandInfo) => setTextCaretEnd("/" + c.name + " ");
+  const clearSelectedInvocation = () => {
+    selectedInvocationRef.current = null;
+    setSelectedInvocation(null);
+    requestAnimationFrame(() => taRef.current?.focus());
+  };
+
+  const pickCommand = (c: CommandInfo) => {
+    if (!commandUsesStructuredInvocation(c)) {
+      setTextCaretEnd("/" + c.name + " ");
+      return;
+    }
+    selectedInvocationRef.current = c;
+    setSelectedInvocation(c);
+    textRef.current = "";
+    setTextCaretEnd("");
+  };
 
   const activePastedBlocks = pastedBlocks.filter((block) => text.includes(block.label));
   const shellModeActive = text.trimStart().startsWith("!");
@@ -2010,13 +2041,13 @@ export function Composer({
     if (!node) return;
     const previousHeight = node.style.height;
     node.style.height = "auto";
-    const maxHeight = composerAutoInputMaxHeight();
+    const maxHeight = composerAutoInputMaxHeight(selectedInvocationRef.current ? COMPOSER_INVOCATION_RESERVED_HEIGHT : 0);
     const nextHeight = Math.min(node.scrollHeight, maxHeight);
     const nextOverflow = node.scrollHeight > maxHeight + 1;
     node.style.height = previousHeight;
     setTextareaAutoHeight((current) => (current === nextHeight ? current : nextHeight));
     setTextareaAutoOverflow((current) => (current === nextOverflow ? current : nextOverflow));
-  }, [composerHeight]);
+  }, [composerHeight, selectedInvocation]);
 
   useLayoutEffect(() => {
     measureTextareaAutoHeight();
@@ -2302,6 +2333,19 @@ export function Composer({
       return;
     }
 
+    if (
+      e.key === "Backspace" &&
+      !composing &&
+      selectedInvocationRef.current &&
+      e.currentTarget.value === "" &&
+      e.currentTarget.selectionStart === 0 &&
+      e.currentTarget.selectionEnd === 0
+    ) {
+      e.preventDefault();
+      clearSelectedInvocation();
+      return;
+    }
+
     syncPromptHistoryGeneration();
 
     const canUseCurrentPromptHistory = () => canUsePromptHistory({
@@ -2453,7 +2497,9 @@ export function Composer({
     ? ({ height: `${textareaAutoHeight}px`, overflowY: textareaAutoOverflow ? "auto" : "hidden" } as CSSProperties)
     : undefined;
   const composerAutoExpanded = composerHeight === null && textareaAutoHeight !== null && textareaAutoHeight > 40;
-  const composerResizeValue = composerHeight ?? clampComposerHeight((textareaAutoHeight ?? 0) + COMPOSER_AUTO_RESERVED_HEIGHT);
+  const composerResizeValue = composerHeight ?? clampComposerHeight(
+    (textareaAutoHeight ?? 0) + COMPOSER_AUTO_RESERVED_HEIGHT + (selectedInvocation ? COMPOSER_INVOCATION_RESERVED_HEIGHT : 0),
+  );
   void onSetMode;
   const chooseApprovalMode = (nextMode: ToolApprovalMode) => {
     onSetToolApprovalMode(nextMode);
@@ -3045,69 +3091,85 @@ export function Composer({
           </div>
         )}
         <div
-          className={`composer${dragOver ? " composer--dragover" : ""}${disabled || readOnly ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
+          className={`composer${selectedInvocation ? " composer--has-invocation" : ""}${dragOver ? " composer--dragover" : ""}${disabled || readOnly ? " composer--disabled" : ""}${shellModeActive ? " composer--shell" : ""}`}
           onDrop={onDrop}
           onDragOver={onDragOver}
           onDragLeave={onDragLeave}
         >
-          <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
-          <textarea
-            id="composer-input"
-            ref={taRef}
-            className="composer__input"
-            aria-label={t("composer.placeholder")}
-            value={text}
-            onChange={(e) => {
-              resetPromptHistoryNavigation();
-              setText(e.target.value);
-              if (composerPrompt) setComposerPrompt(null);
-            }}
-            onSelect={rememberCaret}
-            onClick={rememberCaret}
-            onKeyUp={rememberCaret}
-            onFocus={rememberCaret}
-            onContextMenu={openInputMenu}
-            onPaste={onPaste}
-            onKeyDown={onKeyDown}
-            onCompositionStart={() => {
-              composingRef.current = true;
-            }}
-            onCompositionEnd={() => {
-              composingRef.current = false;
-              lastCompositionEndAt.current = Date.now();
-            }}
-            style={textareaStyle}
-            placeholder={composerPlaceholder}
-            rows={1}
-            disabled={disabled || readOnly}
-          />
-          {composerPrompt && (
-            <span className="composer__prompt" role="status">
-              {composerPrompt}
-            </span>
-          )}
-          {running && (
-            <Tooltip label={t("composer.stop")}>
+          <div className="composer__input-row">
+            <span className="composer__caret">{shellModeActive ? "$" : "›"}</span>
+            <div className="composer__content">
+              {selectedInvocation && (() => {
+                const invocation = invocationDisplayForCommand(selectedInvocation);
+                return (
+                  <InvocationBadge
+                    invocation={invocation}
+                    kind={selectedInvocation.kind === "subagent" ? "subagent" : "skill"}
+                    description={selectedInvocation.description}
+                    onRemove={clearSelectedInvocation}
+                    variant="composer"
+                  />
+                );
+              })()}
+              <textarea
+                id="composer-input"
+                ref={taRef}
+                className="composer__input"
+                aria-label={t("composer.placeholder")}
+                value={text}
+                onChange={(e) => {
+                  resetPromptHistoryNavigation();
+                  setText(e.target.value);
+                  if (composerPrompt) setComposerPrompt(null);
+                }}
+                onSelect={rememberCaret}
+                onClick={rememberCaret}
+                onKeyUp={rememberCaret}
+                onFocus={rememberCaret}
+                onContextMenu={openInputMenu}
+                onPaste={onPaste}
+                onKeyDown={onKeyDown}
+                onCompositionStart={() => {
+                  composingRef.current = true;
+                }}
+                onCompositionEnd={() => {
+                  composingRef.current = false;
+                  lastCompositionEndAt.current = Date.now();
+                }}
+                style={textareaStyle}
+                placeholder={composerPlaceholder}
+                rows={1}
+                disabled={disabled || readOnly}
+              />
+            </div>
+            {composerPrompt && (
+              <span className="composer__prompt" role="status">
+                {composerPrompt}
+              </span>
+            )}
+            {running && (
+              <Tooltip label={t("composer.stop")}>
+                <button
+                  className="composer__btn composer__btn--stop"
+                  type="button"
+                  onClick={handleCancel}
+                  aria-label={t("composer.stop")}
+                >
+                  <Square size={12} fill="currentColor" />
+                </button>
+              </Tooltip>
+            )}
+            <Tooltip label={submitTooltip}>
               <button
-                className="composer__btn composer__btn--stop"
-                type="button"
-                onClick={handleCancel}
-                aria-label={t("composer.stop")}
+                className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
+                onClick={submit}
+                disabled={submitBlocked}
+                aria-label={submitTooltip}
               >
-                <Square size={12} fill="currentColor" />
+                {running ? <CornerDownRight size={16} /> : <ArrowUp size={16} />}
               </button>
             </Tooltip>
-          )}
-          <Tooltip label={submitTooltip}>
-            <button
-              className={`composer__btn composer__btn--send${running ? " composer__btn--steer" : ""}`}
-              onClick={submit}
-              disabled={submitBlocked}
-              aria-label={submitTooltip}
-            >
-              {running ? <CornerDownRight size={16} /> : <ArrowUp size={16} />}
-            </button>
-          </Tooltip>
+          </div>
         </div>
         <ContextMenu
           open={inputMenuPoint !== null}

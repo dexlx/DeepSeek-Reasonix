@@ -16,8 +16,10 @@ import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { displayReasoningText } from "../lib/reasoningDisplay";
 import { stripMemoryCompilerExecution } from "../lib/memoryCompilerDisplay";
 import { visibleTranscriptMemoryCitations } from "../lib/memoryCitationVisibility";
+import { invocationDisplayFromMessage } from "../lib/invocationDisplay";
 import type { Item, MessageActionScope } from "../lib/useController";
 import type { CheckpointMeta, MemoryCitation } from "../lib/types";
+import { InvocationBadge } from "./InvocationBadge";
 
 type AssistantItem = Extract<Item, { kind: "assistant" }>;
 export type TurnActionMenu = "summary" | "rewind";
@@ -197,6 +199,7 @@ export function UserMessage({
   const actionText = stripMemoryCompilerExecution(imSource?.text ?? text);
   const hasMemoryCompiler = Boolean(submitText?.includes("<memory-compiler-execution>"));
   const { text: displayText, attachments } = parseAttachmentRefsForDisplay(actionText);
+  const invocation = imSource ? null : invocationDisplayFromMessage(displayText, submitText);
   const orderedAttachments = sortDisplayAttachments(attachments);
   const sourceLabel = imSource ? imSourceLabel(imSource, t) : "";
   const sentAt = createdAt === undefined ? null : messageDate(createdAt);
@@ -379,6 +382,7 @@ export function UserMessage({
       data-entrance={id || undefined}
     >
       <div className={`msg__body${editing ? " msg__body--editing" : ""}`}>
+        {invocation && <InvocationBadge invocation={invocation} variant="message" />}
         {editing ? (
           <form className="msg-edit" onSubmit={(event) => void submitEdit(event)}>
             {orderedDraftAttachments.length > 0 && (

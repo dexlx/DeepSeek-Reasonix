@@ -572,6 +572,9 @@ export const en = {
   "composer.pasteImageFailed": "Could not read clipboard image",
   "composer.imageInputUnsupported": "Current model will not receive images directly. Use an image-capable model or an OCR/vision MCP tool to inspect the attached path.",
   "composer.contextItems": "Context items",
+  "composer.selectedInvocation": "Selected skill or subagent",
+  "composer.removeInvocation": "Remove selected skill or subagent",
+  "composer.removeInvocationNamed": "Remove {name}",
   "composer.workspaceReferences": "Workspace references",
   "composer.removeReference": "Remove reference",
 

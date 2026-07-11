@@ -4422,8 +4422,17 @@ func historyMessagesWithPlannerDisplaysAndLookups(
 		if m.Role == provider.RoleAssistant && len(m.MemoryCitations) > 0 {
 			hm.MemoryCitations = append([]provider.MemoryCitation(nil), m.MemoryCitations...)
 		}
-		if m.Role == provider.RoleUser && content != m.Content && !agent.ContainsMemoryCompilerExecution(m.Content) {
-			hm.SubmitText = m.Content
+		if m.Role == provider.RoleUser && content != m.Content {
+			if agent.ContainsMemoryCompilerExecution(m.Content) {
+				// Never expose the compiler contract itself. A safely unwrapped
+				// slash invocation is useful display metadata, though: it lets the
+				// frontend restore the selected skill/subagent in history and trash.
+				if replay := control.StripComposePrefixes(m.Content); strings.HasPrefix(strings.TrimSpace(replay), "/") && replay != content {
+					hm.SubmitText = replay
+				}
+			} else {
+				hm.SubmitText = m.Content
+			}
 		}
 		if m.Role == provider.RoleAssistant && len(m.ToolCalls) > 0 {
 			hm.ToolCalls = make([]HistoryToolCall, len(m.ToolCalls))
