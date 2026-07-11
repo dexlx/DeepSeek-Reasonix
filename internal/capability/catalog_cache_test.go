@@ -102,7 +102,8 @@ func TestAuditRecordsDecisionFunnelAndDecline(t *testing.T) {
 	a.RecordDecline()
 	snap := a.Snapshot()
 	if snap.RoutedCandidates != 3 || snap.RoutedRequire != 1 || snap.RoutedPrefer != 1 || snap.RoutedSuggest != 1 || snap.Declines != 1 {
-		t.Fatalf("decision funnel audit = %+v", snap)
+		t.Fatalf("decision funnel audit: candidates=%d require=%d prefer=%d suggest=%d declines=%d",
+			snap.RoutedCandidates, snap.RoutedRequire, snap.RoutedPrefer, snap.RoutedSuggest, snap.Declines)
 	}
 }
 

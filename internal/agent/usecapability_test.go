@@ -94,7 +94,8 @@ func TestSkillInvocationUnavailableIsAudited(t *testing.T) {
 	a.noteCapabilityInvocation("run_skill", json.RawMessage(`{"name":"delivery-only"}`), fmt.Errorf("run_skill: %w", skill.ErrInvocationUnavailable))
 	snap := audit.Snapshot()
 	if snap.SkillInvocations != 1 || snap.SkillFailures != 1 || snap.SkillUnavailable != 1 {
-		t.Fatalf("skill unavailable audit = %+v", snap)
+		t.Fatalf("skill unavailable audit: invocations=%d failures=%d unavailable=%d",
+			snap.SkillInvocations, snap.SkillFailures, snap.SkillUnavailable)
 	}
 }
 

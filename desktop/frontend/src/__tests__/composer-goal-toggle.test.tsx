@@ -222,6 +222,12 @@ console.log("\ncomposer goal toggle");
 
   await rerender({ insertRequest: { id: 1, text: "ship the release notes", mode: "replace" } });
   eq(textarea.value, "ship the release notes", "insert request populates the composer draft");
+  // The insert queues a rAF that refocuses the textarea; drain that frame
+  // before focusing the trigger, or the late refocus blurs the tooltip away.
+  await act(async () => {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    await flushTimers();
+  });
 
   const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentButton) throw new Error("composer intent button did not render");
