@@ -1410,7 +1410,7 @@ export function Composer({
   const planModeOn = collaborationMode === "plan";
   const activeGoal = (goal ?? "").trim();
   const goalModeOn = collaborationMode === "goal";
-  const tokenModeOn = tokenMode === "economy";
+  const runtimeProfileActive = tokenMode !== "full";
   const warnImageInputFallback = useCallback((message = t("composer.imageInputUnsupported")) => {
     showToast(message, "warn");
   }, [showToast, t]);
@@ -2450,9 +2450,9 @@ export function Composer({
       requestAnimationFrame(() => taRef.current?.focus());
     });
   };
-  const chooseTokenMode = () => {
+  const chooseTokenMode = (mode: TokenMode) => {
     closeIntentMenu(() => {
-      onSetTokenMode(tokenModeOn ? "full" : "economy");
+      if (mode !== tokenMode) onSetTokenMode(mode);
       requestAnimationFrame(() => taRef.current?.focus());
     });
   };
@@ -2525,7 +2525,7 @@ export function Composer({
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
-    planModeOn || goalModeOn || tokenModeOn ? "composer-meta--has-intent-chip" : "composer-meta--no-intent-chip",
+    planModeOn || goalModeOn || runtimeProfileActive ? "composer-meta--has-intent-chip" : "composer-meta--no-intent-chip",
   ].join(" ");
 
   const inputSelection = getInputSelection();
@@ -2616,22 +2616,29 @@ export function Composer({
               <span />
             </span>
           </button>
-          <button
-            type="button"
-            className={`composer-access-menu__item composer-intent-menu__item${tokenModeOn ? " composer-access-menu__item--active" : ""}`}
-            onClick={chooseTokenMode}
-            disabled={disabled || running}
-            title={tokenModeOn ? t("composer.tokenEconomyOnDesc") : t("composer.tokenEconomyDesc")}
-          >
-            <Gauge size={16} />
-            <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.tokenEconomy")}</span>
-              <span className="composer-access-menu__desc">{tokenModeOn ? t("composer.tokenEconomyOnDesc") : t("composer.tokenEconomyDesc")}</span>
-            </span>
-            <span className={`composer-intent-switch${tokenModeOn ? " composer-intent-switch--on" : ""}`} aria-hidden="true">
-              <span />
-            </span>
-          </button>
+          <div className="composer-access-menu__label">{t("composer.runtimeProfileTitle")}</div>
+          {([
+            ["economy", Gauge, "composer.runtimeProfileEconomy", "composer.runtimeProfileEconomyDesc"],
+            ["full", SlidersHorizontal, "composer.runtimeProfileBalanced", "composer.runtimeProfileBalancedDesc"],
+            ["delivery", ShieldCheck, "composer.runtimeProfileDelivery", "composer.runtimeProfileDeliveryDesc"],
+          ] as const).map(([profile, Icon, titleKey, descKey]) => (
+            <button
+              key={profile}
+              type="button"
+              className={`composer-access-menu__item composer-intent-menu__item${tokenMode === profile ? " composer-access-menu__item--active" : ""}`}
+              onClick={() => chooseTokenMode(profile)}
+              disabled={disabled || running}
+              title={t(descKey)}
+              aria-pressed={tokenMode === profile}
+            >
+              <Icon size={16} />
+              <span className="composer-access-menu__copy">
+                <span className="composer-access-menu__title">{t(titleKey)}</span>
+                <span className="composer-access-menu__desc">{t(descKey)}</span>
+              </span>
+              {tokenMode === profile && <Check size={15} aria-hidden="true" />}
+            </button>
+          ))}
         </div>
       </AnchoredPopover>
       <AnchoredPopover
@@ -3116,15 +3123,15 @@ export function Composer({
                   </button>
                 </Tooltip>
               )}
-              {tokenModeOn && (
-                <Tooltip label={t("composer.tokenEconomyOnDesc")}>
+              {runtimeProfileActive && (
+                <Tooltip label={t(tokenMode === "delivery" ? "composer.runtimeProfileDeliveryDesc" : "composer.runtimeProfileEconomyDesc")}>
                   <button
                     type="button"
                     className="composer-mode-chip composer-mode-chip--token"
-                    onClick={chooseTokenMode}
+                    onClick={() => chooseTokenMode("full")}
                     disabled={disabled || running}
-                    title={t("composer.tokenEconomyExitTitle")}
-                    aria-label={t("composer.tokenEconomyExitTitle")}
+                    title={t("composer.runtimeProfileResetTitle")}
+                    aria-label={t("composer.runtimeProfileResetTitle")}
                   >
                     <span className="composer-mode-chip__icon composer-mode-chip__icon--mode" aria-hidden="true">
                       <Gauge size={14} />
@@ -3132,7 +3139,7 @@ export function Composer({
                     <span className="composer-mode-chip__icon composer-mode-chip__icon--dismiss" aria-hidden="true">
                       <X size={11} />
                     </span>
-                    <span className="composer-mode-chip__label">{t("composer.tokenEconomyShort")}</span>
+                    <span className="composer-mode-chip__label">{t(tokenMode === "delivery" ? "composer.runtimeProfileDeliveryShort" : "composer.runtimeProfileEconomyShort")}</span>
                   </button>
                 </Tooltip>
               )}

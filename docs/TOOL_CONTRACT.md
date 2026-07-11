@@ -41,11 +41,24 @@ The test checks that every registered built-in tool has a documented name, read-
 In a default full-token boot, Reasonix sends the built-in tools above plus the
 session, memory, skill, subagent, LSP, install, and slash-command tools below:
 
+The Balanced runtime profile uses this exact tool surface. Delivery keeps every
+Balanced tool and adds one stable proxy, `use_capability`, so optional MCP
+servers (including `auto_start=false`) can be inspected and called without
+changing provider-visible schemas mid-session. Delivery also adds a stable
+execution contract enforced by the host: state-changing and verification
+commands need acceptance criteria; changed work cannot finalize without
+post-change review, verification, and an evidence-backed `complete_step`
+sign-off; Skill/MCP `require`/`prefer` routes are gated with host-proven
+evidence; and medium/high-risk mutations force structured `review` /
+`security_review` results via the review-only `review_report` tool.
+
 `ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
 `read_only_task`, `read_session`, `read_skill`, `remember`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+Delivery only: `use_capability` (`action` = `inspect` | `call` | `decline`).
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` verifies the
 actual boot registry contract against the provider request, including read-only

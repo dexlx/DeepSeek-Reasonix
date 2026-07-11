@@ -13,6 +13,7 @@ import (
 
 	"mvdan.cc/sh/v3/syntax"
 
+	"reasonix/internal/capability"
 	"reasonix/internal/diff"
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
@@ -41,6 +42,14 @@ const maxStreamRecoveries = 3
 const maxExecutorHandoffNudges = 1
 const memoryCompilerInjectionMax = 5
 const memoryCompilerInjectionCooldown = 30 * time.Second
+
+const deliveryRuntimeMarker = `<delivery-runtime>
+This session is in delivery-first mode. Before any state-changing tool call,
+establish concrete, verifiable acceptance criteria with todo_write. After the
+change, inspect the result, run relevant verification, and sign off each step
+with complete_step citing the successful verification command. The host enforces
+these gates and will reject mutation or finalization when evidence is missing.
+</delivery-runtime>`
 
 // Renderer redraws the assistant's final-answer text as styled output. It is
 // applied only after a turn's text stream completes, so the user sees raw
@@ -333,6 +342,25 @@ type Agent struct {
 	// projectChecks are structured project instructions that complete_step can
 	// verify against same-turn bash receipts after a write-backed completion.
 	projectChecks []instruction.VerifyCheck
+
+	// deliveryProfile enables the runtime-enforced delivery contract. The stable
+	// profile prompt explains intent; these fields are host state and never enter
+	// the provider-cached prefix. deliveryCriteriaEstablished resets per user turn
+	// but may inherit an unfinished canonical task list on continuation.
+	deliveryProfile             bool
+	deliveryCriteriaEstablished bool
+	deliveryTaskExpected        bool
+	deliveryMutationExpected    bool
+
+	// capabilityLedger tracks require/prefer outcomes for this user turn only.
+	// Never serialized into prompts or session state.
+	capabilityLedger *capability.Ledger
+	// capabilityAudit accumulates non-persisted routing/proxy counters.
+	capabilityAudit *capability.Audit
+	// lastCapabilityGate tracks prefer-reminder state across final-answer retries.
+	capabilityPreferReminded bool
+	// pendingReviewWarnings are warn-level findings to surface in the final summary.
+	pendingReviewWarnings []string
 
 	// memQueue, when non-nil, lets the remember/forget tools fold a turn-tail note
 	// about a just-made memory change into the next turn, so it applies this
@@ -683,7 +711,11 @@ func (a *Agent) withTurnPreferences(input string) string {
 			lang = s
 		}
 	}
-	return WithReasoningLanguage(input, lang)
+	input = WithReasoningLanguage(input, lang)
+	if a.deliveryProfile && !strings.Contains(input, "<delivery-runtime>") {
+		input = strings.TrimSpace(input) + "\n\n" + deliveryRuntimeMarker
+	}
+	return input
 }
 
 // SetAsker installs the asker the `ask` tool uses to question the user.
@@ -873,6 +905,17 @@ type Options struct {
 	// ProjectChecks are host-observable structured checks extracted during boot.
 	ProjectChecks []instruction.VerifyCheck
 
+	// DeliveryProfile enforces acceptance criteria before mutations and requires
+	// post-change review, verification, and evidence-backed sign-off before a
+	// final answer. It changes host control flow, not tool schemas.
+	DeliveryProfile bool
+
+	// CapabilityLedger is the optional turn-scoped capability route ledger for
+	// Delivery require/prefer gates. Nil disables capability gates.
+	CapabilityLedger *capability.Ledger
+	// CapabilityAudit is the optional non-persisted metrics sink for routing.
+	CapabilityAudit *capability.Audit
+
 	// ReasoningLanguage controls visible reasoning language preference as transient
 	// user-turn context. Empty/auto injects nothing.
 	ReasoningLanguage string
@@ -984,6 +1027,9 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		jobs:                     opts.Jobs,
 		evidence:                 evidence.NewLedger(),
 		projectChecks:            append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
+		deliveryProfile:          opts.DeliveryProfile,
+		capabilityLedger:         opts.CapabilityLedger,
+		capabilityAudit:          opts.CapabilityAudit,
 		contextWindow:            opts.ContextWindow,
 		softCompactRatio:         opts.SoftCompactRatio,
 		toolResultSnipRatio:      opts.ToolResultSnipRatio,
@@ -1028,6 +1074,7 @@ func usageSourceOrDefault(source, fallback string) string {
 // a round count. A positive maxSteps imposes an optional hard guard, surfaced as
 // a resumable notice when hit.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	rawInput := input
 	turnStartedAt := time.Now()
 	workDurationMs := func() int64 {
 		if elapsed := time.Since(turnStartedAt).Milliseconds(); elapsed > 0 {
@@ -1042,12 +1089,14 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	if a.evidence != nil {
 		a.evidence.Reset()
 	}
+	a.deliveryCriteriaEstablished = a.hasIncompleteCanonicalCriteria()
+	a.deliveryTaskExpected = deliveryTaskNeedsEvidence(rawInput)
+	a.deliveryMutationExpected = deliveryTaskNeedsMutation(rawInput)
 	a.repeatSuccessCounts = nil
 	a.blockedTurnStreak = 0
 	a.loopGuardArmed = false
 	a.loopGuardReceiptMark = 0
 	a.sink.Emit(event.Event{Kind: event.TurnStarted})
-	rawInput := input
 	memoryCompilerInput := rawInput
 	if sourceInput, ok := MemoryCompilerSourceInputFromContext(ctx); ok {
 		memoryCompilerInput = sourceInput
@@ -1332,19 +1381,31 @@ func (a *Agent) GoalReadinessFailure() string {
 }
 
 type finalReadinessCheck struct {
-	applies              bool
-	reason               string
-	missingProjectChecks int
-	incompleteTodos      int
+	applies                   bool
+	reason                    string
+	missingProjectChecks      int
+	incompleteTodos           int
+	missingAcceptanceCriteria int
+	missingVerification       int
+	missingReview             int
+	missingSignoff            int
+	missingActionEvidence     int
+	missingMutation           int
 }
 
 func (c finalReadinessCheck) audit(result evidence.ReadinessAuditResult, recovered bool) evidence.ReadinessAudit {
 	return evidence.ReadinessAudit{
-		Result:                 result,
-		Recovered:              recovered,
-		MissingProjectChecks:   c.missingProjectChecks,
-		IncompleteTodos:        c.incompleteTodos,
-		CommandMismatchMissing: c.missingProjectChecks,
+		Result:                    result,
+		Recovered:                 recovered,
+		MissingProjectChecks:      c.missingProjectChecks,
+		IncompleteTodos:           c.incompleteTodos,
+		CommandMismatchMissing:    c.missingProjectChecks,
+		MissingAcceptanceCriteria: c.missingAcceptanceCriteria,
+		MissingVerification:       c.missingVerification,
+		MissingReview:             c.missingReview,
+		MissingSignoff:            c.missingSignoff,
+		MissingActionEvidence:     c.missingActionEvidence,
+		MissingMutation:           c.missingMutation,
 	}
 }
 
@@ -1366,6 +1427,26 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 		}
 	}
 	writer, hasWriter := a.evidence.LatestSuccessfulWriterIndex()
+	deliveryMutation := false
+	deliveryVerificationOnly := false
+	if a.deliveryProfile {
+		if mutation, ok := a.evidence.LatestSuccessfulMutationIndex(); ok {
+			writer, hasWriter = mutation, true
+			deliveryMutation = true
+		}
+		if a.deliveryTaskExpected && !a.evidence.HasSuccessfulWorkReceipt() {
+			out.missingActionEvidence++
+			missing = append(missing, "perform host-observable work for this technical task before answering")
+		}
+		if a.deliveryMutationExpected && !deliveryMutation {
+			out.missingMutation++
+			missing = append(missing, "the request requires a state change, but no successful mutation was observed")
+		}
+		if !hasWriter && a.evidence.HasSuccessfulVerificationCommand() {
+			writer, hasWriter = -1, true
+			deliveryVerificationOnly = true
+		}
+	}
 	if !hasWriter {
 		if len(missing) > 0 {
 			if a.loopGuardAllowsFinal() {
@@ -1377,11 +1458,40 @@ func (a *Agent) finalReadinessCheck() finalReadinessCheck {
 	}
 	hasProjectChecks := len(a.projectChecks) > 0
 	hasTodoReceipt := a.evidence.HasSuccessfulTodoWrite()
-	if !hasProjectChecks && !hasTodoReceipt && len(missing) == 0 {
+	if !a.deliveryProfile && !hasProjectChecks && !hasTodoReceipt && len(missing) == 0 {
 		return finalReadinessCheck{}
 	}
 	out.applies = true
+	if a.deliveryProfile {
+		if !a.deliveryCriteriaEstablished {
+			out.missingAcceptanceCriteria++
+			missing = append(missing, "establish concrete acceptance criteria with todo_write before changing state")
+		}
+		hasCompleteStep := a.evidence.HasSuccessfulCompleteStepAfter(writer)
+		if !hasCompleteStep {
+			out.missingSignoff++
+			missing = append(missing, "call complete_step after the latest mutation")
+		}
+		if !a.evidence.HasSuccessfulDeliverySignoffAfter(writer) {
+			out.missingVerification++
+			missing = append(missing, "run relevant verification after the latest mutation and cite that successful command in complete_step")
+		}
+		if deliveryMutation && !a.evidence.HasSuccessfulReviewAfter(writer) {
+			out.missingReview++
+			missing = append(missing, "inspect the changed result after the latest mutation (read the touched file or run git diff/status)")
+		}
+		if msg := a.deliveryReviewGateFailure(); msg != "" {
+			out.missingReview++
+			missing = append(missing, msg)
+		}
+		if msg := a.capabilityGateFailure(); msg != "" {
+			missing = append(missing, msg)
+		}
+	}
 	for _, check := range a.projectChecks {
+		if deliveryVerificationOnly {
+			break
+		}
 		command := strings.TrimSpace(check.Command)
 		if command == "" {
 			continue
@@ -1483,6 +1593,40 @@ func (a *Agent) incompleteCanonicalTodos() ([]evidence.TodoStepMatch, bool) {
 		return nil, false
 	}
 	return evidence.IncompleteTodos(a.todoState), true
+}
+
+func (a *Agent) hasIncompleteCanonicalCriteria() bool {
+	a.todoMu.Lock()
+	defer a.todoMu.Unlock()
+	return len(a.todoState) > 0 && len(evidence.IncompleteTodos(a.todoState)) > 0
+}
+
+func deliveryTaskNeedsEvidence(input string) bool {
+	isTask, err := newHeuristicClassifier().IsTask(context.Background(), input)
+	return err == nil && isTask
+}
+
+func deliveryTaskNeedsMutation(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	for _, phrase := range []string{
+		"do not fix", "don't fix", "without changing", "without modifying", "analysis only", "review only",
+		"不要修复", "不要修改", "不要改动", "只分析", "仅分析", "只检查", "仅检查", "只评审", "仅评审",
+	} {
+		if strings.Contains(normalized, phrase) {
+			return false
+		}
+	}
+	for _, needle := range []string{
+		"fix", "repair", "resolve", "create", "add", "write", "edit", "update", "change", "delete", "remove", "rename",
+		"implement", "refactor", "apply", "install", "publish", "commit", "push", "continue work",
+		"修复", "解决", "创建", "新建", "添加", "编写", "编辑", "修改", "更新", "删除", "移除", "重命名", "实现", "重构",
+		"实施", "落地", "安装", "发布", "提交", "继续处理",
+	} {
+		if containsTaskNeedle(normalized, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // advanceCanonicalTodo flips the canonical todo matching a signed-off step to
@@ -2419,9 +2563,67 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			}
 		}
 	}
+	// Resolve proxy tools (use_capability) to the real MCP target before
+	// permission, hooks, and evidence. Provider transcript keeps call.Name.
+	permName := call.Name
+	permArgs := json.RawMessage(call.Arguments)
+	execTool := t
+	execArgs := json.RawMessage(call.Arguments)
+	evidenceName := call.Name
+	evidenceArgs := json.RawMessage(call.Arguments)
+	readOnly := t.ReadOnly() || planModeTrustedReadOnly
+	var resolved tool.ResolvedCall
+	if resolver, ok := t.(tool.CallResolver); ok {
+		rc, rerr := resolver.ResolveCall(ctx, json.RawMessage(call.Arguments))
+		if rerr != nil {
+			return toolOutcome{
+				output: fmt.Sprintf("error: %v", rerr),
+				errMsg: firstLine(rerr.Error()),
+			}
+		}
+		resolved = rc
+		if rc.TargetName != "" {
+			permName = rc.TargetName
+			evidenceName = rc.TargetName
+		}
+		if len(rc.Args) > 0 {
+			permArgs = rc.Args
+			evidenceArgs = rc.Args
+			execArgs = rc.Args
+		}
+		if rc.Target != nil {
+			execTool = rc.Target
+		}
+		readOnly = rc.ReadOnly || planModeTrustedReadOnly
+		if rc.TargetName != "" && rc.TargetName != call.Name {
+			EmitProxyAudit(a.sink, rc)
+		}
+		if rc.SkipExecute {
+			// inspect/decline/unavailable: no target execution; still record meta receipt.
+			result := secrets.RedactToolOutput(rc.Result)
+			if a.evidence != nil {
+				// inspect/decline are not mutations; unavailable call targets are not success.
+				success := !rc.Unavailable
+				rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), success, true)
+				a.evidence.Record(rec)
+			}
+			if rc.Unavailable {
+				return toolOutcome{output: result, errMsg: firstLine(rc.UnavailableReason)}
+			}
+			body, truncMsg := truncateToolOutput(result)
+			return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
+		}
+	}
+
+	if a.deliveryProfile && evidence.ToolCallRequiresDeliveryCriteria(evidenceName, evidenceArgs, readOnly) && !a.deliveryCriteriaEstablished {
+		return toolOutcome{
+			output:  "blocked: delivery-first mode requires acceptance criteria before state-changing work. Call todo_write with a concrete, verifiable task list, then retry this tool call.",
+			blocked: true,
+			errMsg:  "blocked: delivery acceptance criteria required",
+		}
+	}
 	if a.gate != nil {
-		readOnly := t.ReadOnly() || planModeTrustedReadOnly
-		allow, reason, err := a.gate.Check(ctx, call.Name, json.RawMessage(call.Arguments), readOnly)
+		allow, reason, err := a.gate.Check(ctx, permName, permArgs, readOnly)
 		if err != nil {
 			return toolOutcome{
 				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),
@@ -2439,8 +2641,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	// PreToolUse hooks run after permission is granted but before the call: a
 	// gating hook (exit 2) refuses it, surfaced to the model like a gate denial.
+	// Proxy tools fire hooks against the real MCP target name and arguments.
 	if a.hooks != nil {
-		if block, msg := a.hooks.PreToolUse(ctx, call.Name, json.RawMessage(call.Arguments)); block {
+		if block, msg := a.hooks.PreToolUse(ctx, permName, permArgs); block {
 			if msg == "" {
 				msg = "blocked by a PreToolUse hook"
 			}
@@ -2455,9 +2658,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	// rewound. Fires after all gating (the edit is cleared to run) and only for
 	// tools that can describe their change; a Preview error means the edit will
 	// likely fail anyway, so we skip rather than snapshot a stale state.
-	if a.onPreEdit != nil && !t.ReadOnly() {
-		if pv, ok := t.(tool.Previewer); ok {
-			if change, perr := pv.Preview(json.RawMessage(call.Arguments)); perr == nil {
+	if a.onPreEdit != nil && !readOnly {
+		if pv, ok := execTool.(tool.Previewer); ok {
+			if change, perr := pv.Preview(execArgs); perr == nil {
 				a.onPreEdit(change)
 			}
 		}
@@ -2500,31 +2703,54 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	var result string
 	var images []string
 	var err error
-	if it, ok := t.(tool.ImageTool); ok {
-		result, images, err = it.ExecuteWithImages(cctx, json.RawMessage(call.Arguments))
+	// When a proxy resolved a concrete target, execute that target (not the
+	// proxy again) so permission-approved args and evidence stay aligned.
+	runTool := execTool
+	runArgs := execArgs
+	if resolved.Target != nil {
+		runTool = resolved.Target
+		runArgs = resolved.Args
+		if len(runArgs) == 0 {
+			runArgs = json.RawMessage(`{}`)
+		}
+	}
+	if it, ok := runTool.(tool.ImageTool); ok {
+		result, images, err = it.ExecuteWithImages(cctx, runArgs)
 	} else {
-		result, err = t.Execute(cctx, json.RawMessage(call.Arguments))
+		result, err = runTool.Execute(cctx, runArgs)
 	}
 	result = secrets.RedactToolOutput(result)
 	if a.evidence != nil {
+		// Always record the model-visible call for audit, then the real target
+		// attributes for mutation/read classification when they differ.
 		if call.Name == "complete_step" {
 			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly())
 			a.evidence.Record(rec)
 			if err == nil {
 				a.advanceCanonicalTodo(rec.Step)
 			}
+		} else if evidenceName != call.Name {
+			// Proxy: meta receipt (non-mutation) + real target receipt.
+			a.evidence.Record(evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, true))
+			rec := evidence.ReceiptFromToolCall(evidenceName, evidenceArgs, err == nil, readOnly)
+			a.evidence.Record(rec)
 		} else {
 			rec := evidence.ReceiptFromToolCall(call.Name, json.RawMessage(call.Arguments), err == nil, t.ReadOnly())
 			a.evidence.Record(rec)
 			if err == nil && call.Name == "todo_write" {
 				a.setTodoState(rec.Todos)
+				if len(rec.Todos) > 0 {
+					a.deliveryCriteriaEstablished = true
+				}
 			}
 		}
 	}
+	// Track skill/capability outcomes for Delivery gates.
+	a.noteCapabilityInvocation(call.Name, json.RawMessage(call.Arguments), err)
 	// PostToolUse hooks observe the result (they can't block); fired whether the
-	// call succeeded or errored, since the tool did run.
+	// call succeeded or errored, since the tool did run. Use real target name.
 	if a.hooks != nil {
-		a.hooks.PostToolUse(ctx, call.Name, json.RawMessage(call.Arguments), result)
+		a.hooks.PostToolUse(ctx, permName, permArgs, result)
 	}
 	if err != nil {
 		detail := result

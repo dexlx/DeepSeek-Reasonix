@@ -146,13 +146,13 @@ console.log("\nuse controller meta");
 {
   eq(
     tokenModeSwitchNoticeText("finish or cancel the current turn, answer pending prompts, and stop background jobs before changing token mode"),
-    "Token saver cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
-    "token mode busy guard is localized",
+    "Runtime mode cannot change yet. Stop the current answer, handle pending prompts, or wait for background jobs to finish.",
+    "runtime mode busy guard is localized",
   );
   eq(
     tokenModeSwitchNoticeText('tab "tab-a" changed while switching token mode; retry'),
-    "The current session changed while switching token saver. Try once more.",
-    "token mode tab race asks the user to retry",
+    "The current session changed while switching runtime mode. Try once more.",
+    "runtime mode tab race asks the user to retry",
   );
 }
 

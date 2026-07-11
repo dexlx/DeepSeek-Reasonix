@@ -12,10 +12,11 @@ import (
 type Kind string
 
 const (
-	KindSkill   Kind = "skill"
-	KindMCPTool Kind = "mcp-tool"
-	KindTool    Kind = "tool"
-	KindSource  Kind = "source"
+	KindSkill     Kind = "skill"
+	KindMCPServer Kind = "mcp-server"
+	KindMCPTool   Kind = "mcp-tool"
+	KindTool      Kind = "tool"
+	KindSource    Kind = "source"
 )
 
 type Status string
@@ -53,6 +54,10 @@ type Entry struct {
 	ToolName         string
 	ConnectSource    string
 	ConnectName      string
+	Requires         []string // capability IDs this skill depends on
+	Profiles         []string // economy|balanced|delivery; empty = all
+	AutoStart        bool     // MCP: configured auto_start
+	FailureReason    string   // host-proven failure detail
 }
 
 type RouteCandidate struct {
@@ -100,6 +105,8 @@ func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
 			NeedsFreshData:   sk.NeedsFreshData,
 			ToolName:         "run_skill",
 			ConnectSource:    connectSource,
+			Requires:         cleanList(sk.Requires),
+			Profiles:         cleanList(sk.Profiles),
 		})
 	}
 	return out

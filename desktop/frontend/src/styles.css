@@ -6236,9 +6236,9 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .composer-mode-chip--token {
-  flex: 0 0 62px;
+  flex: 0 1 auto;
   min-width: 62px;
-  max-width: 62px;
+  max-width: 128px;
   gap: 4px;
   padding: 0 8px 0 7px;
   border-color: color-mix(in srgb, #10b981 34%, var(--border));
@@ -6250,8 +6250,8 @@ body > .mermaid-diagram--fullscreen {
 }
 
 .composer-mode-chip--token .composer-mode-chip__label {
-  overflow: visible;
-  text-overflow: clip;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
 .composer-meta .modelsw {

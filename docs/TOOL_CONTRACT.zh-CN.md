@@ -40,11 +40,19 @@ go test ./internal/tool -run TestBuiltinToolContractDocumentation
 
 默认 full-token boot 会发送上面的内置工具，并额外发送 session、memory、skill、subagent、LSP、install 和 slash-command 工具：
 
+均衡（Balanced）使用这套工具面。交付优先（Delivery）保留全部 Balanced 工具，并额外增加稳定代理工具
+`use_capability`（inspect/call/decline），用于在不改变 provider 可见 Schema 的前提下发现和调用
+按需 MCP（含 `auto_start=false`）。Delivery 还会增加稳定执行合约，并由宿主运行时强制执行：变更和
+验证命令必须先建立验收标准；变更后的工作必须完成复查、验证并通过带证据的 `complete_step` 签收；
+Skill/MCP 的 require/prefer 路由受门禁约束；中/高风险改动强制结构化 review/security_review。
+
 `ask`, `explore`, `forget`, `history`, `install_skill`, `install_source`,
 `list_sessions`, `lsp_definition`, `lsp_diagnostics`, `lsp_hover`,
 `lsp_references`, `memory`, `parallel_tasks`, `read_only_skill`,
 `read_only_task`, `read_session`, `read_skill`, `remember`, `research`,
 `review`, `run_skill`, `security_review`, `slash_command`, `task`.
+
+仅 Delivery：`use_capability`（`action` = `inspect` | `call` | `decline`）。
 
 `internal/boot.TestBootToolContractMatchesProviderVisibleSurface` 会校验真实 boot registry 合约和 provider request 一致，包括 read-only 标记和 canonical schema。
 

@@ -32,6 +32,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/autoresearch"
 	"reasonix/internal/billing"
+	"reasonix/internal/capability"
 	"reasonix/internal/checkpoint"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
@@ -135,6 +136,12 @@ type Controller struct {
 	// c.mu. The Controller keeps the config-facing orchestration (persisting
 	// reasonix.toml on add/remove, building specs from entries). See mcp.go.
 	mcp mcpManager
+
+	// Capability routing (Delivery hybrid route). Not part of the provider-visible
+	// prefix; only seeds the turn-scoped ledger and optional semantic router.
+	pluginCfg       []config.PluginEntry
+	semanticRouter  *capability.SemanticRouter
+	capabilityAudit *capability.Audit
 
 	// goals owns the active goal's FSM (status, intercepts, idle/turn counters)
 	// and its persistence, behind its own mutex so a per-turn goal save never
@@ -3678,6 +3685,14 @@ func (c *Controller) ReloadCommands(ctx context.Context) error {
 // Skills returns the discoverable skills (for the slash menu and `/skills`).
 // When a live Store is available, scan it on demand so skills installed during
 // this session appear without rewriting the cache-stable system prompt.
+// Executor returns the underlying agent when present (nil for pure runners).
+func (c *Controller) Executor() *agent.Agent {
+	if c == nil {
+		return nil
+	}
+	return c.executor
+}
+
 func (c *Controller) Skills() []skill.Skill {
 	return c.skills.list()
 }

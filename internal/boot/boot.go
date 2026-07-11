@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"reasonix/internal/agent"
+	"reasonix/internal/capability"
 	"reasonix/internal/command"
 	"reasonix/internal/config"
 	"reasonix/internal/control"
@@ -101,10 +102,10 @@ type Options struct {
 	// (for example ACP session/new). They are connected eagerly for this
 	// controller but are not persisted to reasonix.toml.
 	ExtraPlugins []plugin.Spec
-	// TokenMode selects how much optional context/tool surface this session exposes
-	// at boot. Empty/full preserves the normal capability surface. "economy" keeps
-	// the core coding tools visible and moves skills, MCP, LSP, web_fetch,
-	// install_source, and task behind connect_tool_source.
+	// TokenMode selects the session's runtime profile. Empty/full/balanced preserves
+	// the normal capability surface. "economy" keeps the core coding tools visible
+	// and moves optional sources behind connect_tool_source. "delivery" keeps the
+	// full surface and adds a stable completion-and-verification contract.
 	TokenMode string
 	// SessionDir overrides where persisted chat transcripts are written. When
 	// empty, the shared CLI/global session directory is used.
@@ -167,6 +168,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	config.NormalizeLegacyMimoCustomProvidersForRefs(cfg, modelName)
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
 	tokenEconomy := tokenMode == TokenModeEconomy
+	tokenDelivery := tokenMode == TokenModeDelivery
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
 	entry, ok := cfg.ResolveModel(modelName)
 	if !ok {
@@ -272,6 +274,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	if tokenEconomy {
 		sysPrompt += "\n\n" + tokenEconomyPrompt
+	} else if tokenDelivery {
+		sysPrompt += "\n\n" + tokenDeliveryPrompt
 	}
 	if cfg.EnvironmentEnabled() {
 		shellLabel := shell.Kind.String()
@@ -636,7 +640,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			taskModel, taskEffort, resolveSubagentProvider).
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
-			WithMaxSubagentDepth(maxSubagentDepth)
+			WithMaxSubagentDepth(maxSubagentDepth).
+			WithDeliveryProfile(tokenDelivery)
 	}
 	addTaskTool := func() string {
 		if taskToolAdded {
@@ -716,6 +721,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			ReasoningLanguage:   agent.ReasoningLanguageFromContext(sctx),
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    maxSubagentDepth,
+			DeliveryProfile:     tokenDelivery,
 		}
 	}
 	readOnlySkillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
@@ -740,6 +746,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		subReg := agent.ReadOnlySubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
 		if subReg.Len() == 0 {
 			return "", fmt.Errorf("read_only_skill: skill %q has no read-only tools available", sk.Name)
+		}
+		switch sk.Name {
+		case "review", "security-review", "security_review":
+			agent.AttachReviewReportTool(subReg)
 		}
 		steps := maxSteps
 		if steps > 0 {
@@ -783,6 +793,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			subReg = agent.ReadOnlySubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
 		} else {
 			subReg = agent.SubagentToolRegistryForDepth(reg, sk.AllowedTools, childDepth, maxSubagentDepth)
+		}
+		// Delivery risk gates require structured review_report from review
+		// subagents only — never expose it on the parent tool surface.
+		switch sk.Name {
+		case "review", "security-review", "security_review":
+			agent.AttachReviewReportTool(subReg)
 		}
 		continueFrom := strings.TrimSpace(runOpts.ContinueFrom)
 		legacyForkFrom := strings.TrimSpace(runOpts.ForkFrom)
@@ -1037,6 +1053,46 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		})
 	}
 
+	// Delivery-only stable capability proxy. Registered before agent.New so the
+	// tool schema is part of the Delivery cache prefix and never changes when
+	// on-demand MCP servers connect through the proxy.
+	var capLedger *capability.Ledger
+	var capAudit *capability.Audit
+	if tokenDelivery {
+		capLedger = capability.NewLedger()
+		capAudit = &capability.Audit{}
+		connected := map[string]bool{}
+		if pluginHost != nil {
+			for _, n := range pluginHost.ServerNames() {
+				connected[n] = true
+			}
+		}
+		failed := map[string]string{}
+		if pluginHost != nil {
+			for _, f := range pluginHost.Failures() {
+				failed[f.Name] = f.Error
+			}
+		}
+		catalogFn := func() capability.Catalog {
+			conn := map[string]bool{}
+			if pluginHost != nil {
+				for _, n := range pluginHost.ServerNames() {
+					conn[n] = true
+				}
+			}
+			return capability.BuildCatalog(capability.CatalogOptions{
+				Tools:     reg.ContractEntries(),
+				Skills:    skillStore.List(),
+				Plugins:   cfg.Plugins,
+				Profile:   capability.ProfileDelivery,
+				Connected: conn,
+				Failed:    failed,
+			})
+		}
+		reg.Add(agent.NewUseCapabilityTool(pluginHost, cfg.Plugins, reg, capLedger, capAudit, catalogFn))
+		_ = connected
+	}
+
 	execSess := agent.NewSession(sysPrompt)
 	var memCompiler *memorycompiler.Runtime
 	if cfg.MemoryCompilerEnabled() {
@@ -1050,6 +1106,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Hooks:                              hookRunner,
 		Jobs:                               jm,
 		ProjectChecks:                      projectChecks,
+		DeliveryProfile:                    tokenDelivery,
+		CapabilityLedger:                   capLedger,
+		CapabilityAudit:                    capAudit,
 		ContextWindow:                      entry.ContextWindow,
 		SoftCompactRatio:                   cfg.Agent.SoftCompactRatio,
 		ToolResultSnipRatio:                cfg.Agent.ToolResultSnipRatio,
@@ -1188,7 +1247,21 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if classifier != nil {
 		ctrlOpts.Classifier = classifier
 	}
-	return control.New(ctrlOpts), nil
+	ctrl := control.New(ctrlOpts)
+	if tokenDelivery {
+		var router *capability.SemanticRouter
+		// Prefer agent.subagent_models["capability-router"] when configured.
+		if modelRef := strings.TrimSpace(cfg.Agent.SubagentModels["capability-router"]); modelRef != "" {
+			if p, _, _, err := resolveSubagentProvider(modelRef, strings.TrimSpace(cfg.Agent.SubagentEfforts["capability-router"])); err == nil && p != nil {
+				router = &capability.SemanticRouter{Provider: p, Sink: sink, Model: modelRef}
+			}
+		}
+		if router == nil {
+			router = &capability.SemanticRouter{Provider: execProv, Sink: sink}
+		}
+		ctrl.WireCapabilityRouting(cfg.Plugins, router, capAudit)
+	}
+	return ctrl, nil
 }
 
 func rememberPermissionRule(workspaceRoot, rule string) control.RememberResult {

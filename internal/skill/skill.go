@@ -78,6 +78,12 @@ type Skill struct {
 	AutoUse          string // off | suggest | prefer | require
 	NeedsFreshData   bool
 	Cost             string // low | medium | high (advisory)
+	// Requires lists capability IDs this skill depends on (e.g. mcp-server:github).
+	// Optional; empty keeps full backward compatibility with older skills.
+	Requires []string
+	// Profiles restricts availability to economy|balanced|delivery. Empty means
+	// the skill is eligible in every profile.
+	Profiles []string
 }
 
 // IsValidName reports whether name is a usable skill identifier.
@@ -507,6 +513,8 @@ func (s *Store) parseSkill(path, stem string, scope Scope, requireSkillMarker bo
 		AutoUse:        parseAutoUse(fm[skillFrontmatterAutoUse]),
 		NeedsFreshData: parseBoolFrontmatter(fm[skillFrontmatterNeedsFreshData]),
 		Cost:           parseCost(fm[skillFrontmatterCost]),
+		Requires:       parseCSVFrontmatter(fm[skillFrontmatterRequires]),
+		Profiles:       parseProfilesFrontmatter(fm[skillFrontmatterProfiles]),
 	}, true
 }
 
@@ -525,6 +533,8 @@ const (
 	skillFrontmatterAutoUse          = "auto-use"
 	skillFrontmatterNeedsFreshData   = "needs-fresh-data"
 	skillFrontmatterCost             = "cost"
+	skillFrontmatterRequires         = "requires"
+	skillFrontmatterProfiles         = "profiles"
 )
 
 var skillMarkerFrontmatterKeys = []string{
@@ -542,6 +552,8 @@ var skillMarkerFrontmatterKeys = []string{
 	skillFrontmatterAutoUse,
 	skillFrontmatterNeedsFreshData,
 	skillFrontmatterCost,
+	skillFrontmatterRequires,
+	skillFrontmatterProfiles,
 }
 
 func hasSkillMarker(content string, fm map[string]string) bool {
@@ -754,6 +766,23 @@ func parseAutoUse(raw string) string {
 	default:
 		return ""
 	}
+}
+
+// parseProfilesFrontmatter keeps only economy|balanced|delivery values.
+func parseProfilesFrontmatter(raw string) []string {
+	var out []string
+	seen := map[string]bool{}
+	for _, p := range parseCSVFrontmatter(raw) {
+		p = strings.ToLower(strings.TrimSpace(p))
+		switch p {
+		case "economy", "balanced", "delivery":
+			if !seen[p] {
+				seen[p] = true
+				out = append(out, p)
+			}
+		}
+	}
+	return out
 }
 
 func parseBoolFrontmatter(raw string) bool {
