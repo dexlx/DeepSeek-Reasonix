@@ -8,7 +8,7 @@ import { Composer, composerPickFileEntry } from "../components/Composer";
 import { LocaleProvider } from "../lib/i18n";
 import { ToastProvider } from "../lib/toast";
 import type { AppBindings } from "../lib/bridge";
-import type { CollaborationMode, DirEntry, ToolApprovalMode, TokenMode } from "../lib/types";
+import type { CollaborationMode, CommandInfo, DirEntry, ToolApprovalMode, TokenMode } from "../lib/types";
 
 let passed = 0;
 let failed = 0;
@@ -1037,19 +1037,36 @@ console.log("\ncomposer goal toggle");
 {
   const dom = installDom();
   let commandsCalls = 0;
+  let availableCommands: CommandInfo[] = [
+    { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
+    { name: "toolbox:writing-plans", description: "Write another plan", kind: "skill", plugin: "toolbox" },
+    { name: "superpowers:brainstorming", description: "Explore an idea", kind: "skill", plugin: "superpowers" },
+  ];
   mockApp({
     Commands: async () => {
       commandsCalls += 1;
-      return [
-        { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
-        { name: "toolbox:writing-plans", description: "Write another plan", kind: "skill", plugin: "toolbox" },
-        { name: "superpowers:brainstorming", description: "Explore an idea", kind: "skill", plugin: "superpowers" },
-      ];
+      return availableCommands;
     },
   });
-  const { root, rerender } = await renderComposer();
+  const { root, rerender } = await renderComposer({ workspaceScopeKey: "runtime-0" });
 
   await waitFor("plugin commands loaded", () => commandsCalls > 0);
+  await replaceComposerDraft(rerender, 2000, "/m");
+  await waitFor("initial skill command menu", () => Boolean(document.querySelector(".slashmenu")));
+  ok(
+    document.querySelector(".slashmenu")?.textContent?.includes("/my-formatter") === false,
+    "new subagent command is absent before runtime refresh",
+  );
+
+  availableCommands = [
+    ...availableCommands,
+    { name: "my-formatter", description: "Formats code the way I like it", kind: "skill" },
+  ];
+  const initialCommandsCalls = commandsCalls;
+  await rerender({ workspaceScopeKey: "runtime-1" });
+  await waitFor("commands refreshed after runtime rebuild", () => commandsCalls > initialCommandsCalls);
+  ok(commandsCalls > initialCommandsCalls, "runtime rebuild refetches subagent slash commands");
+
   await replaceComposerDraft(rerender, 2001, "/writing-plans");
   await waitFor("qualified plugin skill menu", () => Boolean(document.querySelector(".slashmenu")));
 

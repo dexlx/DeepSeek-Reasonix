@@ -2573,7 +2573,7 @@ function makeMockApp(): AppBindings {
           console.info("mock AutoResearchRecordEvidence");
         },
     async Commands() {
-      return [
+      const commands: CommandInfo[] = [
         { name: "new", description: "start new session; save transcript", kind: "builtin" as const },
         { name: "clear", description: "discard current context", kind: "builtin" as const },
         { name: "compact", description: "Summarize older history to free up context", kind: "builtin" as const },
@@ -2581,9 +2581,17 @@ function makeMockApp(): AppBindings {
         { name: "effort", description: "Set reasoning effort", kind: "builtin" as const },
         { name: "skill", description: "List skills", kind: "builtin" as const },
         { name: "plugins", description: "Manage plugin packages", kind: "builtin" as const },
-        { name: "explore", description: "Investigate the codebase in an isolated subagent", kind: "skill" as const },
         { name: "review", description: "Review the staged diff", hint: "[focus]", kind: "custom" as const },
       ];
+      const seen = new Set(commands.map((command) => command.name));
+      for (const skill of capSkills) {
+        if (skill.enabled === false) continue;
+        const name = (skill.invocation || `/${skill.name}`).replace(/^\/+/, "");
+        if (!name || seen.has(name)) continue;
+        seen.add(name);
+        commands.push({ name, description: skill.description, kind: "skill" });
+      }
+      return commands;
     },
     async Capabilities() {
       return {

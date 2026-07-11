@@ -558,7 +558,7 @@ export function Composer({
   submitDisabled?: boolean;
   readOnly?: boolean;
   decisionPending?: boolean;
-  // ready/cwd/running re-trigger the command fetch: Commands() returns only
+  // ready/cwd/running/workspaceScopeKey re-trigger the command fetch: Commands() returns only
   // built-ins until boot.Build finishes (the controller, hence skills/custom/MCP,
   // is nil before then), the available set changes when the workspace switches,
   // and a completed turn may have installed skills or MCP prompts.
@@ -896,8 +896,16 @@ export function Composer({
   // --- slash commands (whole-input "/token") ---
   const [commands, setCommands] = useState<CommandInfo[]>([]);
   useEffect(() => {
-    app.Commands().then((next) => setCommands(asArray(next))).catch(() => {});
-  }, [ready, cwd, running]);
+    let live = true;
+    app.Commands()
+      .then((next) => {
+        if (live) setCommands(asArray(next));
+      })
+      .catch(() => {});
+    return () => {
+      live = false;
+    };
+  }, [ready, cwd, running, workspaceScopeKey]);
 
   const slashQuery = useMemo(() => {
     if (!text.startsWith("/") || /\s/.test(text)) return null;
