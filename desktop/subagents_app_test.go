@@ -1,8 +1,11 @@
 package main
 
 import (
+	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"reasonix/internal/config"
@@ -132,6 +135,78 @@ func TestUpdateSubagentProfileRequiresDescriptionAndPrompt(t *testing.T) {
 	}
 }
 
+func TestUpdateSubagentProfileRefusesNonManualSkill(t *testing.T) {
+	a := newTestSubagentApp(t)
+	home := os.Getenv("HOME")
+	// A hand-authored subagent skill without invocation: manual — the exact
+	// shape the reviewer flagged: editing it here would silently drop fields.
+	dir := filepath.Join(home, ".reasonix", "skills", "hand-authored")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\ndescription: hand written\nrunAs: subagent\nread-only: true\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.UpdateSubagentProfile("hand-authored", "global", SubagentProfileInput{Description: "x", SystemPrompt: "y"})
+	if err == nil {
+		t.Fatal("expected refusal for a non-manual skill")
+	}
+	if !strings.Contains(err.Error(), "manual") {
+		t.Fatalf("error should explain the manual-invocation rule, got: %v", err)
+	}
+}
+
+func TestUpdateSubagentProfileRefusesUnmanagedFrontmatter(t *testing.T) {
+	a := newTestSubagentApp(t)
+	home := os.Getenv("HOME")
+	// invocation: manual but carrying read-only — dropping it on save would
+	// turn a read-only agent writable (boot.go picks the registry from it).
+	dir := filepath.Join(home, ".reasonix", "skills", "manual-readonly")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\ndescription: locked down\nrunAs: subagent\ninvocation: manual\nread-only: true\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.UpdateSubagentProfile("manual-readonly", "global", SubagentProfileInput{Description: "x", SystemPrompt: "y"})
+	if err == nil {
+		t.Fatal("expected refusal for unmanaged frontmatter keys")
+	}
+	if !strings.Contains(err.Error(), "read-only") {
+		t.Fatalf("error should name the unmanaged key, got: %v", err)
+	}
+	// The file must be untouched by the refused edit.
+	raw, rerr := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if rerr != nil || !strings.Contains(string(raw), "read-only: true") {
+		t.Fatalf("refused edit must not modify the file, got: %s (%v)", raw, rerr)
+	}
+}
+
+func TestUpdateSubagentProfileRefusesExpandedReferences(t *testing.T) {
+	a := newTestSubagentApp(t)
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".reasonix", "skills", "with-refs")
+	if err := os.MkdirAll(filepath.Join(dir, "references"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\ndescription: has refs\nrunAs: subagent\ninvocation: manual\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "references", "extra.md"), []byte("depth material"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.UpdateSubagentProfile("with-refs", "global", SubagentProfileInput{Description: "x", SystemPrompt: "y"})
+	if err == nil {
+		t.Fatal("expected refusal for a profile with a references/ dir")
+	}
+	if !strings.Contains(err.Error(), "references") {
+		t.Fatalf("error should name the references dir, got: %v", err)
+	}
+}
+
 func TestUpdateSubagentProfileWrongScopeFailsSafely(t *testing.T) {
 	a := newTestSubagentApp(t)
 	if _, err := a.CreateSubagentProfile(SubagentProfileInput{
@@ -146,6 +221,54 @@ func TestUpdateSubagentProfileWrongScopeFailsSafely(t *testing.T) {
 		if sk.Name == "editable-agent3" && sk.Description != "v1" {
 			t.Fatalf("profile should be unchanged after a refused scope-mismatched update, got description=%q", sk.Description)
 		}
+	}
+}
+
+func TestTrySubagentRegistryIsReadOnly(t *testing.T) {
+	reg := trySubagentToolRegistry(config.Default(), t.TempDir(), nil)
+	for _, writer := range []string{"write_file", "edit_file", "multi_edit", "move_file", "notebook_edit", "delete_range", "delete_symbol"} {
+		if _, ok := reg.Get(writer); ok {
+			t.Errorf("try registry should strip writer tool %q; got %v", writer, reg.Names())
+		}
+	}
+	for _, meta := range []string{"task", "run_skill", "install_skill", "install_source", "parallel_tasks"} {
+		if _, ok := reg.Get(meta); ok {
+			t.Errorf("try registry should strip meta/delegation tool %q; got %v", meta, reg.Names())
+		}
+	}
+	if _, ok := reg.Get("read_file"); !ok {
+		t.Fatalf("try registry should keep read_file; got %v", reg.Names())
+	}
+}
+
+func TestTrySubagentRegistryBashEnforcesReadOnlyPolicy(t *testing.T) {
+	reg := trySubagentToolRegistry(config.Default(), t.TempDir(), nil)
+	bash, ok := reg.Get("bash")
+	if !ok {
+		t.Fatalf("try registry should keep bash; got %v", reg.Names())
+	}
+	if !bash.ReadOnly() {
+		t.Fatal("try bash should report ReadOnly=true (plan-mode-safe wrapper)")
+	}
+	out, err := bash.Execute(context.Background(), json.RawMessage(`{"command":"rm -rf /tmp/x"}`))
+	if err != nil {
+		t.Fatalf("blocked command should return a message, not an error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(out), "plan mode") && !strings.Contains(strings.ToLower(out), "blocked") && !strings.Contains(strings.ToLower(out), "not allowed") {
+		t.Fatalf("write-capable command should be blocked by the read-only policy, got: %s", out)
+	}
+}
+
+func TestTrySubagentRegistryHonorsAllowedTools(t *testing.T) {
+	reg := trySubagentToolRegistry(config.Default(), t.TempDir(), []string{"read_file", "grep", "write_file"})
+	if _, ok := reg.Get("read_file"); !ok {
+		t.Fatalf("allowlisted read_file missing; got %v", reg.Names())
+	}
+	if _, ok := reg.Get("write_file"); ok {
+		t.Fatalf("write_file must stay stripped even when allowlisted; got %v", reg.Names())
+	}
+	if _, ok := reg.Get("ls"); ok {
+		t.Fatalf("ls not in the allowlist, should be absent; got %v", reg.Names())
 	}
 }
 
@@ -240,6 +363,98 @@ api_key_env = "DEEPSEEK_API_KEY"
 	}
 	if _, ok := cfg.Agent.SubagentEfforts["explore"]; ok {
 		t.Fatalf("cleared effort override should be removed, got %+v", cfg.Agent.SubagentEfforts)
+	}
+}
+
+func TestSubagentOverrideAliasesReadAndClear(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	// A legacy underscore-key override for the security-review skill — the
+	// runtime dispatch (boot.SubagentModelKeys) honors it, so the UI must
+	// both display it and clear it.
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+default_model = "deepseek/deepseek-v4-flash"
+
+[[providers]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[agent.subagent_models]
+security_review = "deepseek/deepseek-v4-pro"
+
+[agent.subagent_efforts]
+security_review = "max"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	// Read side: the alias entry must surface for the hyphenated skill name.
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if got := subagentOverrideFor(cfg.Agent.SubagentModels, "security-review"); got != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("alias model override not visible: %q", got)
+	}
+	if got := subagentOverrideFor(cfg.Agent.SubagentEfforts, "security-review"); got != "max" {
+		t.Fatalf("alias effort override not visible: %q", got)
+	}
+
+	// Clear side: clearing by the hyphenated name must remove the underscore
+	// entry too, or the override silently stays live at dispatch time.
+	app := NewApp()
+	if err := app.SetSubagentProfileModel("security-review", ""); err != nil {
+		t.Fatalf("clear model: %v", err)
+	}
+	if err := app.SetSubagentProfileEffort("security-review", ""); err != nil {
+		t.Fatalf("clear effort: %v", err)
+	}
+	cfg = config.LoadForEdit(config.UserConfigPath())
+	if v, ok := cfg.Agent.SubagentModels["security_review"]; ok {
+		t.Fatalf("legacy alias model entry survived the clear: %q", v)
+	}
+	if v, ok := cfg.Agent.SubagentEfforts["security_review"]; ok {
+		t.Fatalf("legacy alias effort entry survived the clear: %q", v)
+	}
+}
+
+func TestSetSubagentProfileModelSweepsAliasOnSet(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "DEEPSEEK_API_KEY", "sk-test")
+	if err := os.MkdirAll(filepath.Dir(config.UserConfigPath()), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	if err := os.WriteFile(config.UserConfigPath(), []byte(`
+default_model = "deepseek/deepseek-v4-flash"
+
+[[providers]]
+name = "deepseek"
+kind = "openai"
+base_url = "https://api.deepseek.com"
+models = ["deepseek-v4-flash", "deepseek-v4-pro"]
+default = "deepseek-v4-flash"
+api_key_env = "DEEPSEEK_API_KEY"
+
+[agent.subagent_models]
+security_review = "deepseek/deepseek-v4-flash"
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.SetSubagentProfileModel("security-review", "deepseek/deepseek-v4-pro"); err != nil {
+		t.Fatalf("set model: %v", err)
+	}
+	cfg := config.LoadForEdit(config.UserConfigPath())
+	if _, ok := cfg.Agent.SubagentModels["security_review"]; ok {
+		t.Fatalf("stale alias entry should be swept on set: %+v", cfg.Agent.SubagentModels)
+	}
+	if got := cfg.Agent.SubagentModels["security-review"]; got != "deepseek/deepseek-v4-pro" {
+		t.Fatalf("canonical entry = %q, want deepseek/deepseek-v4-pro", got)
 	}
 }
 

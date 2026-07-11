@@ -452,6 +452,68 @@ func TestRenderSkillFileEmitsColorAndInvocationWhenSet(t *testing.T) {
 	}
 }
 
+// TestRenderSkillFileEscapesYAMLMetacharacters pins the security contract the
+// reviewer flagged: free text with YAML metacharacters must round-trip intact.
+// Before the yaml.v3 renderer, a description like "Review code: focus on
+// security" produced an unparseable block; frontmatter.Split then returned an
+// EMPTY map and the loader silently fell back to runAs=inline +
+// invocation=auto — dissolving both the isolation boundary and the
+// no-autodiscovery guarantee.
+func TestRenderSkillFileEscapesYAMLMetacharacters(t *testing.T) {
+	cases := []struct {
+		label string
+		desc  string
+	}{
+		{"colon", "Review code: focus on security"},
+		{"hash", "Reviews #security and #perf tags"},
+		{"double-quote", `Says "hello" politely`},
+		{"single-quote", "Don't break on apostrophes"},
+		{"newline", "First line\nsecond line"},
+		{"leading-special", "- starts like a list item"},
+		{"yaml-lookalike", "runAs: inline"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.label, func(t *testing.T) {
+			home := t.TempDir()
+			st := New(Options{HomeDir: home, DisableBuiltins: true})
+			content := RenderSkillFile(SkillFileOptions{
+				Name:        "esc",
+				Description: tc.desc,
+				Body:        "the body",
+				RunAs:       RunSubagent,
+				Invocation:  "manual",
+			})
+			if _, err := st.CreateWithContent("esc", ScopeGlobal, content); err != nil {
+				t.Fatalf("CreateWithContent: %v", err)
+			}
+			sk, ok := st.Read("esc")
+			if !ok {
+				t.Fatalf("skill unreadable; rendered content:\n%s", content)
+			}
+			// The load-bearing assertions: the security-relevant fields must
+			// survive, never silently reset to their permissive defaults.
+			if sk.RunAs != RunSubagent {
+				t.Errorf("RunAs = %q, want subagent (isolation lost); content:\n%s", sk.RunAs, content)
+			}
+			if sk.Invocation != "manual" {
+				t.Errorf("Invocation = %q, want manual (autodiscovery re-enabled); content:\n%s", sk.Invocation, content)
+			}
+			wantDesc := strings.TrimSpace(tc.desc)
+			if tc.label == "newline" {
+				// frontmatter.Split returns the scalar as parsed; the multi-line
+				// value survives YAML round-trip intact.
+				wantDesc = "First line\nsecond line"
+			}
+			if sk.Description != wantDesc {
+				t.Errorf("Description = %q, want %q", sk.Description, wantDesc)
+			}
+			if sk.Body != "the body" {
+				t.Errorf("Body = %q, want %q", sk.Body, "the body")
+			}
+		})
+	}
+}
+
 func TestRenderSkillFileOmitsColorAndInvocationByDefault(t *testing.T) {
 	content := RenderSkillFile(SkillFileOptions{
 		Name:        "plain-inline",

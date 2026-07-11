@@ -8,6 +8,8 @@ import (
 	"strconv"
 	"strings"
 
+	"gopkg.in/yaml.v3"
+
 	"reasonix/internal/event"
 	"reasonix/internal/tool"
 )
@@ -546,38 +548,48 @@ type SkillFileOptions struct {
 	Invocation string
 }
 
+// skillFileFrontmatter is the YAML shape RenderSkillFile emits. Field order is
+// the emission order (yaml.v3 preserves struct order); values are marshaled by
+// yaml.v3 so free-text fields with colons, '#', quotes, or newlines are
+// escaped correctly instead of corrupting the block — an unparseable
+// frontmatter would make the loader fall back to an EMPTY field map, silently
+// resetting runAs to inline and invocation to auto (see frontmatter.Split).
+type skillFileFrontmatter struct {
+	Name         string   `yaml:"name"`
+	Description  string   `yaml:"description"`
+	Color        string   `yaml:"color,omitempty"`
+	Invocation   string   `yaml:"invocation,omitempty"`
+	RunAs        string   `yaml:"runAs,omitempty"`
+	Model        string   `yaml:"model,omitempty"`
+	Effort       string   `yaml:"effort,omitempty"`
+	AllowedTools []string `yaml:"allowed-tools,omitempty,flow"`
+}
+
 // RenderSkillFile assembles a skill file's frontmatter + body. Subagent-only
 // fields (model, effort, allowed-tools) are emitted only when RunAs=subagent;
 // color and invocation are independent of RunAs.
 func RenderSkillFile(opts SkillFileOptions) string {
-	var fm strings.Builder
-	fm.WriteString("---\nname: " + opts.Name + "\ndescription: " + opts.Description + "\n")
-	if opts.Color != "" {
-		fm.WriteString("color: " + opts.Color + "\n")
+	fm := skillFileFrontmatter{
+		Name:        opts.Name,
+		Description: opts.Description,
+		Color:       strings.TrimSpace(opts.Color),
 	}
 	if strings.EqualFold(strings.TrimSpace(opts.Invocation), "manual") {
-		fm.WriteString("invocation: manual\n")
+		fm.Invocation = "manual"
 	}
 	if opts.RunAs == RunSubagent {
-		fm.WriteString("runAs: subagent\n")
-		if opts.Model != "" {
-			fm.WriteString("model: " + opts.Model + "\n")
-		}
-		if opts.Effort != "" {
-			fm.WriteString("effort: " + opts.Effort + "\n")
-		}
-		var tools []string
+		fm.RunAs = string(RunSubagent)
+		fm.Model = strings.TrimSpace(opts.Model)
+		fm.Effort = strings.TrimSpace(opts.Effort)
 		for _, t := range opts.AllowedTools {
 			if t = strings.TrimSpace(t); t != "" {
-				tools = append(tools, t)
+				fm.AllowedTools = append(fm.AllowedTools, t)
 			}
 		}
-		if len(tools) > 0 {
-			fm.WriteString("allowed-tools: " + strings.Join(tools, ", ") + "\n")
-		}
 	}
-	fm.WriteString("---\n\n")
-	return fm.String() + strings.TrimRight(opts.Body, " \t\r\n") + "\n"
+	// Marshaling a flat struct of strings cannot fail.
+	raw, _ := yaml.Marshal(fm)
+	return "---\n" + string(raw) + "---\n\n" + strings.TrimRight(opts.Body, " \t\r\n") + "\n"
 }
 
 // --- shared helpers ---

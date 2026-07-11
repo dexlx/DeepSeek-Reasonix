@@ -3,12 +3,18 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
+	"os"
+	"path/filepath"
 	"strings"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
+	"reasonix/internal/frontmatter"
+	"reasonix/internal/permission"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
 	"reasonix/internal/tool"
@@ -104,12 +110,61 @@ func (a *App) CreateSubagentProfile(input SubagentProfileInput) (string, error) 
 	return path, nil
 }
 
+// subagentEditorManagedKeys are the frontmatter keys this page's editor
+// carries through an edit round-trip. A file with any OTHER key (read-only,
+// triggers, auto-use, ...) was not authored by this page and would be
+// silently stripped on save — most dangerously `read-only`, which is a hard
+// tool-registry boundary (boot.go picks the read-only registry from it), so
+// dropping it would turn a read-only agent writable.
+var subagentEditorManagedKeys = map[string]bool{
+	"name": true, "description": true, "color": true, "invocation": true,
+	"runas": true, "model": true, "effort": true, "allowed-tools": true,
+}
+
+// editableSubagentProfile reports whether sk's backing file is fully
+// representable by this page's editor: a manual-invocation subagent profile
+// whose frontmatter has only editor-managed keys and whose body is the plain
+// file body (no sibling references/ or scripts/ dirs, which Read() expands
+// into Body — saving the expanded Body would bake that content into the main
+// file). Anything else must be edited as a skill file, not through this form.
+func editableSubagentProfile(sk skill.Skill) error {
+	if sk.Invocation != "manual" {
+		return fmt.Errorf("%q was not created by the subagent profiles page (invocation is not \"manual\") — edit it as a skill file instead", sk.Name)
+	}
+	if sk.Path == "" || sk.Path == "(builtin)" {
+		return fmt.Errorf("%q has no editable file", sk.Name)
+	}
+	raw, err := os.ReadFile(sk.Path)
+	if err != nil {
+		return err
+	}
+	fm, _ := frontmatter.Split(string(raw))
+	for key := range fm {
+		if !subagentEditorManagedKeys[key] {
+			return fmt.Errorf("%q carries frontmatter this editor does not manage (%s) and would silently drop — edit it as a skill file instead", sk.Name, key)
+		}
+	}
+	if filepath.Base(sk.Path) == skill.SkillFile {
+		dir := filepath.Dir(sk.Path)
+		for _, sibling := range []string{"references", "scripts"} {
+			if info, err := os.Stat(filepath.Join(dir, sibling)); err == nil && info.IsDir() {
+				return fmt.Errorf("%q has a %s/ directory whose content is folded into the body at load time — editing here would bake it into the main file; edit it as a skill file instead", sk.Name, sibling)
+			}
+		}
+	}
+	return nil
+}
+
 // UpdateSubagentProfile overwrites an existing user-authored subagent
 // profile's content in place. name and scope are the profile's identity and
 // are not editable through this call — the frontend keeps them read-only in
 // the edit form, since renaming or re-scoping would mean moving the file
 // (delete-then-create), a separate operation this repo doesn't support yet.
 // input.Name/input.Scope are ignored in favor of the name/scope params.
+//
+// Only profiles this page could have written are editable — see
+// editableSubagentProfile. This is the backend enforcement of the same rule
+// the frontend applies by filtering its list to invocation=manual.
 func (a *App) UpdateSubagentProfile(name, scope string, input SubagentProfileInput) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
@@ -127,6 +182,20 @@ func (a *App) UpdateSubagentProfile(name, scope string, input SubagentProfileInp
 	_, ctrl := a.activeTabAndCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
+	}
+	found := false
+	for _, sk := range ctrl.AllSkills() {
+		if config.SkillNameKey(sk.Name) != config.SkillNameKey(name) {
+			continue
+		}
+		found = true
+		if err := editableSubagentProfile(sk); err != nil {
+			return err
+		}
+		break
+	}
+	if !found {
+		return fmt.Errorf("%q not found", name)
 	}
 
 	content := skill.RenderSkillFile(skill.SkillFileOptions{
@@ -173,11 +242,19 @@ func (a *App) DeleteSubagentProfile(name, scope string) error {
 
 // TrySubagentProfile runs a subagent profile once, synchronously, fully
 // isolated from any live session — it builds its own provider and tool
-// registry straight from config, exactly like the standalone `reasonix
-// review` CLI command (internal/cli/review.go) does, and never touches
-// Controller.RunSkill or any part of the Chat Runtime critical path. Because
-// it needs nothing saved to disk, it runs directly against the caller's
-// current form values (input), so a profile can be tried before Save.
+// registry straight from config, like the standalone `reasonix review` CLI
+// command (internal/cli/review.go), and never touches Controller.RunSkill or
+// any part of the Chat Runtime critical path. Because it needs nothing saved
+// to disk, it runs directly against the caller's current form values (input),
+// so a profile can be tried before Save.
+//
+// A try run is deliberately READ-ONLY regardless of the profile's tool scope:
+// it is a settings-page preview, not a real work session, and it has no UI to
+// answer approval prompts. ReadOnlySubagentToolRegistry strips writer tools
+// and wraps bash in the plan-mode safe command policy; the confined reader/
+// search/fetch instances below enforce the same workspace boundaries the real
+// boot path installs (boot.go addBuiltins), and the headless permission gate
+// applies the user's configured deny rules.
 func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (string, error) {
 	task = strings.TrimSpace(task)
 	if task == "" {
@@ -188,7 +265,14 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 		return "", fmt.Errorf("system prompt is required")
 	}
 
-	cfg, err := config.Load()
+	// Resolve config against the active tab's workspace, not the desktop
+	// process's CWD — project-level reasonix.toml (sandbox roots, permissions)
+	// must apply to the try run exactly as it would to a real session there.
+	root := ""
+	if tab, _ := a.activeTabAndCtrl(); tab != nil {
+		root = tab.WorkspaceRoot
+	}
+	cfg, err := config.LoadForRoot(root)
 	if err != nil {
 		return "", err
 	}
@@ -219,37 +303,61 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 		return "", err
 	}
 
-	root := ""
-	if tab, _ := a.activeTabAndCtrl(); tab != nil {
-		root = tab.WorkspaceRoot
-	}
-	parentReg := tool.NewRegistry()
-	for _, tl := range tool.Builtins() {
-		parentReg.Add(tl)
-	}
-	if _, ok := parentReg.Get("bash"); ok {
-		bashSpec := sandbox.Spec{
-			Mode:            cfg.BashMode(),
-			WriteRoots:      cfg.WriteRootsForRoot(root),
-			ForbidReadRoots: cfg.ForbidReadRootsForRoot(root),
-			Network:         cfg.Sandbox.Network,
-		}
-		guard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
-		parentReg.Add(builtin.ConfineBash(bashSpec, guard))
-	}
-	// SubagentToolRegistry treats an empty input.AllowedTools as "all" (the
-	// "default all permissions" tool-scope option), matching how a saved
-	// profile's runtime dispatch already behaves.
-	reg := agent.SubagentToolRegistry(parentReg, input.AllowedTools)
+	reg := trySubagentToolRegistry(cfg, root, input.AllowedTools)
+
+	// The headless gate enforces the user's configured permission rules (deny
+	// hard-blocks; ask resolves to allow, as for any subagent, which has no UI
+	// to answer a prompt).
+	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 
 	result, err := agent.RunSubAgentWithSession(context.Background(), prov, reg, agent.NewSession(prompt), task, agent.Options{
 		MaxSteps:      12,
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       me.Price,
 		ContextWindow: me.ContextWindow,
+		Gate:          control.NewHeadlessPermissionGate(policy),
 	}, event.Discard)
 	if err != nil {
 		return "", err
 	}
 	return result, nil
+}
+
+// trySubagentToolRegistry builds the read-only, workspace-confined tool set a
+// try run may use. It replaces the unconfined init-time defaults with confined
+// instances, mirroring boot.go's addBuiltins: writers bound to the workspace
+// roots, readers/search to forbid-read roots, bash to the OS sandbox,
+// web_fetch to the proxy. Writers are stripped by the read-only registry —
+// confining them anyway keeps this list byte-comparable with boot's and safe
+// if the read-only posture is ever relaxed.
+func trySubagentToolRegistry(cfg *config.Config, root string, allowedTools []string) *tool.Registry {
+	parentReg := tool.NewRegistry()
+	for _, tl := range tool.Builtins() {
+		parentReg.Add(tl)
+	}
+	writeRoots := cfg.WriteRootsForRoot(root)
+	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	guard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
+	managedConfig := builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
+	bashSpec := sandbox.Spec{
+		Mode:            cfg.BashMode(),
+		WriteRoots:      writeRoots,
+		ForbidReadRoots: forbidReadRoots,
+		Network:         cfg.Sandbox.Network,
+	}
+	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, io.Discard)
+	confined := append(builtin.ConfineWriters(writeRoots, guard, managedConfig),
+		builtin.ConfineBash(bashSpec, guard),
+		builtin.ConfineSearch(searchSpec, bashSpec, forbidReadRoots),
+		builtin.ConfineWebFetch(cfg.NetworkProxySpec()))
+	confined = append(confined, builtin.ConfineReaders(forbidReadRoots)...)
+	for _, tl := range confined {
+		if _, ok := parentReg.Get(tl.Name()); ok {
+			parentReg.Add(tl)
+		}
+	}
+	// ReadOnlySubagentToolRegistry treats an empty allowedTools as "all" (the
+	// "default all permissions" tool-scope option) and then keeps only
+	// read-only tools plus policy-wrapped bash.
+	return agent.ReadOnlySubagentToolRegistry(parentReg, allowedTools)
 }

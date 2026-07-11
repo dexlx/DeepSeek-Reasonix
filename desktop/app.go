@@ -5865,12 +5865,26 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 			Color:            s.Color,
 			Invocation:       s.Invocation,
 			Body:             s.Body,
-			ConfiguredModel:  configuredModels[s.Name],
-			ConfiguredEffort: configuredEfforts[s.Name],
+			ConfiguredModel:  subagentOverrideFor(configuredModels, s.Name),
+			ConfiguredEffort: subagentOverrideFor(configuredEfforts, s.Name),
 		})
 	}
 	out.SkillRoots = a.cachedSkillRootsView()
 	return out
+}
+
+// subagentOverrideFor resolves a per-name subagent override with the same
+// underscore/hyphen alias fallback the runtime dispatch uses
+// (boot.SubagentModelKeys) — an exact-key read would show a legacy
+// `security_review` config entry as "inherit default" while it still won at
+// dispatch time.
+func subagentOverrideFor(overrides map[string]string, name string) string {
+	for _, key := range boot.SubagentModelKeys(name) {
+		if v := strings.TrimSpace(overrides[key]); v != "" {
+			return v
+		}
+	}
+	return ""
 }
 
 // AvailableSubagentTools lists the tool names a subagent profile's

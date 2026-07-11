@@ -83,7 +83,12 @@ export function SubagentsSettingsPage({ s }: { s: SettingsView }) {
   }, [skills, query]);
 
   const builtins = useMemo(() => filtered.filter((sk) => sk.scope === "builtin"), [filtered]);
-  const custom = useMemo(() => filtered.filter((sk) => sk.scope !== "builtin"), [filtered]);
+  // Only profiles this page created (invocation=manual) are listed as
+  // editable. Other runAs=subagent skills (hand-authored, possibly carrying
+  // read-only/triggers/auto-use frontmatter this form cannot round-trip) are
+  // managed on the Skills page instead; the backend refuses to update them
+  // regardless (editableSubagentProfile).
+  const custom = useMemo(() => filtered.filter((sk) => sk.scope !== "builtin" && sk.invocation === "manual"), [filtered]);
 
   if (!skills) return <div className="empty">{t("caps.loading")}</div>;
 

@@ -344,7 +344,7 @@ export const zhTW: Record<DictKey, string> = {
   "subagents.newTitle": "新增子智慧體",
   "subagents.editTitle": "編輯子智慧體",
   "subagents.tryIt": "試執行",
-  "subagents.tryItPlaceholder": "給它一個一次性任務，隔離執行看看效果…",
+  "subagents.tryItPlaceholder": "給它一個一次性任務——隔離且唯讀執行…",
   "subagents.run": "執行",
   "subagents.running": "執行中…",
 

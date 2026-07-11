@@ -429,7 +429,7 @@ export const zh: Record<DictKey, string> = {
   "subagents.newTitle": "新建子智能体",
   "subagents.editTitle": "编辑子智能体",
   "subagents.tryIt": "试运行",
-  "subagents.tryItPlaceholder": "给它一个一次性任务，隔离运行看看效果…",
+  "subagents.tryItPlaceholder": "给它一个一次性任务——隔离且只读运行…",
   "subagents.run": "运行",
   "subagents.running": "运行中…",
 

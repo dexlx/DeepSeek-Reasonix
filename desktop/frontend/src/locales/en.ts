@@ -428,7 +428,7 @@ export const en = {
   "subagents.newTitle": "New subagent",
   "subagents.editTitle": "Edit subagent",
   "subagents.tryIt": "Try it",
-  "subagents.tryItPlaceholder": "Give it a one-off task to run in isolation…",
+  "subagents.tryItPlaceholder": "Give it a one-off task — runs isolated and read-only…",
   "subagents.run": "Run",
   "subagents.running": "Running…",
 
