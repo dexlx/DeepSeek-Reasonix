@@ -11650,9 +11650,10 @@ body > .mermaid-diagram--fullscreen {
 .subagents-inherit-badge {
   flex-shrink: 0;
   padding: 2px 8px;
-  border: 1px dashed var(--border-soft);
+  border: 1px solid var(--border-soft);
   border-radius: 999px;
-  color: var(--fg-faint);
+  background: color-mix(in srgb, var(--bg-elev) 54%, transparent);
+  color: var(--fg-dim);
   font-size: 10px;
   font-weight: 550;
   line-height: 1.3;
@@ -11805,7 +11806,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 12px;
   border: 1px solid var(--border-soft);
   border-radius: 10px;
-  background: color-mix(in srgb, var(--bg-soft) 46%, transparent);
+  background: transparent;
 }
 .subagents-profile-group .cap-skills-head {
   margin: 0;
@@ -11815,9 +11816,12 @@ body > .mermaid-diagram--fullscreen {
 .subagents-profile-group .cap-skills-head__title {
   margin: 0;
 }
+.subagents-builtin-card {
+  background: color-mix(in srgb, var(--bg-soft) 38%, transparent);
+}
 .subagents-builtin-overrides {
   display: grid;
-  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 0.8fr) auto;
+  grid-template-columns: minmax(220px, 1.2fr) minmax(180px, 0.8fr) 152px;
   align-items: end;
   gap: 8px;
   margin: 8px 0 0 33px;
@@ -11843,6 +11847,18 @@ body > .mermaid-diagram--fullscreen {
   align-items: center;
   justify-content: flex-end;
   gap: 6px;
+}
+.subagents-reset-override {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+.subagents-reset-override__state {
+  color: var(--accent-strong);
+  font-size: 10px;
+  font-weight: 700;
 }
 .subagents-row-actions {
   flex-shrink: 0;

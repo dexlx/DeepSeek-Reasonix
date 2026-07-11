@@ -257,7 +257,7 @@ function BuiltinSubagentRow({
   const inheritedEffort = s.subagentEffort || t("common.auto");
   const overridden = Boolean(skill.configuredModel || skill.configuredEffort);
   return (
-    <div className="cap-skill-card">
+    <div className="cap-skill-card subagents-builtin-card">
       <div className="cap-skill-card__top">
         <span className="cap-skill-card__head">
           <span className="cap-skill-card__icon">/</span>
@@ -306,12 +306,11 @@ function BuiltinSubagentRow({
         </label>
         <div className="subagents-builtin-overrides__status">
           {overridden ? (
-            <>
-              <span className="cap-skill-badge cap-skill-badge--project">{t("subagents.overridden")}</span>
-              <button className="btn btn--small" type="button" disabled={busy} onClick={onReset}>
-                {t("subagents.resetOverride")}
-              </button>
-            </>
+            <button className="btn btn--small subagents-reset-override" type="button" disabled={busy} onClick={onReset}>
+              <span className="subagents-reset-override__state">{t("subagents.overridden")}</span>
+              <span aria-hidden="true">·</span>
+              <span>{t("subagents.resetOverride")}</span>
+            </button>
           ) : (
             <Tooltip label={t("subagents.builtinReadOnlyHint")}>
               <span className="subagents-inherit-badge">{t("subagents.inherited")}</span>

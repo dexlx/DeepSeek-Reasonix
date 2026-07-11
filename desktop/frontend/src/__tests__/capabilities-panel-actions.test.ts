@@ -27,10 +27,13 @@ ok(savedCustomSelection.size === 2 && !savedCustomSelection.has("bash"), "saved 
 ok(selectToolsOnFirstCustomUse(new Set(), subagentTools, true).size === 0, "returning to custom mode should preserve a deliberate empty selection");
 
 const subagentsSource = readFileSync(new URL("../components/SubagentsPanel.tsx", import.meta.url), "utf8");
+const subagentsStyles = readFileSync(new URL("../styles.css", import.meta.url), "utf8");
 const customGroupIndex = subagentsSource.indexOf('aria-labelledby="subagents-custom-title"');
 const builtinGroupIndex = subagentsSource.indexOf('aria-labelledby="subagents-builtin-title"');
 ok(customGroupIndex >= 0 && builtinGroupIndex > customGroupIndex, "custom subagents should render before built-in subagents");
 ok((subagentsSource.match(/className="subagents-profile-group"/g) ?? []).length === 2, "custom and built-in subagents should use separate sections");
+ok(subagentsSource.includes('className="btn btn--small subagents-reset-override"'), "override status and reset should share one compact action");
+ok(subagentsStyles.includes("minmax(180px, 0.8fr) 152px"), "built-in subagents should reserve one stable status column");
 
 function server(status: ServerView["status"]): ServerView {
   return {
