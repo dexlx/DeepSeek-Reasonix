@@ -648,14 +648,18 @@ reasonix subagent run reviewer "review and fix the current diff"
 reasonix subagent delete reviewer --yes
 ```
 
-`create` defaults to project scope; pass `--scope global` for a user-wide
-profile. `edit` changes only explicitly supplied fields, and an empty value such
+`create` defaults to project scope when a workspace is available and to global
+scope otherwise; pass `--scope project|global` to choose explicitly. `edit`
+changes only explicitly supplied fields, and an empty value such
 as `--model=` or `--tools=` clears that field. The profile editors deliberately
 refuse custom-path or richer hand-authored Skills so they cannot discard
 frontmatter, references, or scripts; manage those files through the Skills
 workflow instead. Built-in profiles have no editable file, so `edit` accepts
 only `--model` and `--effort` for them and stores the same per-name overrides as
 the desktop settings page.
+
+See [Subagent profiles](./SUBAGENT_PROFILES.md) for the complete CLI reference,
+Skill file format, model precedence, safety behavior, and troubleshooting.
 
 `/memory` lists both memory documents (`REASONIX.md` / `AGENTS.md`) and saved
 auto-memory facts. During agent turns, the read-only `history` and `memory`

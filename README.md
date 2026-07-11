@@ -127,6 +127,8 @@ commands, `@` references, and two-model setup are all in the
 
 - **[Guide](./docs/GUIDE.md)** — configuration, permissions & sandbox, plugins
   (MCP), slash commands, `@` references, two-model collaboration.
+- **[Subagent profiles](./docs/SUBAGENT_PROFILES.md)** — create, share, preview,
+  run, edit, and safely delete isolated agent profiles from desktop or CLI.
 - **[Bot guide](./docs/BOT_GUIDE.md)** — connect Feishu, Lark, and WeChat bots
   from the desktop app, then use approvals, YOLO, and commands from IM.
 - **[Spec](./docs/SPEC.md)** — engineering contract: architecture, registries,

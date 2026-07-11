@@ -521,11 +521,15 @@ reasonix subagent run reviewer "审查并修复当前 diff"
 reasonix subagent delete reviewer --yes
 ```
 
-`create` 默认写入项目级目录；使用 `--scope global` 可创建用户全局 profile。`edit` 只修改
-显式传入的字段，`--model=`、`--tools=` 这类空值会清除对应配置。Profile 编辑器会拒绝
+workspace 可用时，`create` 默认写入项目级目录，否则默认写入全局目录；可用
+`--scope project|global` 明确选择。`edit` 只修改显式传入的字段，`--model=`、`--tools=`
+这类空值会清除对应配置。Profile 编辑器会拒绝
 custom path 或包含更多手写结构的 Skill，避免丢失 frontmatter、references 或 scripts；
 这些文件仍应通过 Skills 工作流管理。内置 profile 没有可编辑文件，因此 `edit` 对它们只接受
 `--model` 和 `--effort`，并写入与桌面设置页相同的按名称覆盖配置。
+
+完整 CLI 参数、Skill 文件格式、模型优先级、安全行为和排障说明见
+[子智能体 Profile](./SUBAGENT_PROFILES.zh-CN.md)。
 
 `/memory` 会同时列出记忆文档（`REASONIX.md` / `AGENTS.md`）和已保存的 auto-memory 条目。
 在 agent 回合中，只读的 `history` 和 `memory` 工具可以按需检索历史 session 决策、
