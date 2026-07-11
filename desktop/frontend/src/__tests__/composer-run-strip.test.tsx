@@ -185,13 +185,14 @@ console.log("\ncomposer run strip");
   });
   eq(calls.tokenModes.at(-1), "delivery", "selecting delivery keeps the token-mode callback contract");
 
-  const intentTrigger = document.querySelector(".composer-action-trigger") as HTMLButtonElement | null;
+  const intentTrigger = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentTrigger) throw new Error("task intent trigger did not render");
   await act(async () => {
     intentTrigger.click();
     await flushTimers();
   });
   eq(document.querySelector(".composer-intent-menu")?.textContent?.includes("Work mode"), false, "task-intent menu no longer owns work mode");
+  eq(document.querySelectorAll('.composer-intent-menu [role="menuitemradio"]').length, 3, "task method menu exposes direct, plan, and goal");
 
   await act(async () => {
     root.unmount();

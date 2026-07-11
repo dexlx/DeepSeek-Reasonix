@@ -223,15 +223,20 @@ console.log("\ncomposer goal toggle");
   await rerender({ insertRequest: { id: 1, text: "ship the release notes", mode: "replace" } });
   eq(textarea.value, "ship the release notes", "insert request populates the composer draft");
 
-  const intentButton = document.querySelector(".composer-action-trigger") as HTMLButtonElement | null;
+  const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
   if (!intentButton) throw new Error("composer intent button did not render");
+  ok(intentButton.textContent?.includes("Task method") === true, "task method trigger stays visible in direct mode");
+  ok(intentButton.textContent?.includes("Direct") === true, "task method trigger exposes the current mode");
 
   await act(async () => {
     intentButton.click();
     await flushTimers();
   });
 
-  const goalButton = document.querySelectorAll(".composer-intent-menu__item")[1] as HTMLButtonElement | undefined;
+  const taskModeItems = document.querySelectorAll(".composer-intent-menu__item");
+  eq(taskModeItems.length, 3, "task method menu exposes three mutually exclusive choices");
+  eq(document.querySelectorAll(".composer-intent-switch").length, 0, "task method menu does not present independent switches");
+  const goalButton = taskModeItems[2] as HTMLButtonElement | undefined;
   if (!goalButton) throw new Error("composer goal menu item did not render");
 
   await act(async () => {
@@ -242,6 +247,38 @@ console.log("\ncomposer goal toggle");
   eq(calls.send.length, 0, "enabling goal mode with a draft does not send");
   eq(calls.setCollaborationMode.join(","), "goal", "enabling goal mode switches only the collaboration axis");
   eq(textarea.value, "ship the release notes", "enabling goal mode preserves the draft text");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const { root, calls } = await renderComposer({
+    collaborationMode: "goal",
+    goal: "finish the migration",
+  });
+
+  const intentButton = document.querySelector(".composer-task-mode-trigger") as HTMLButtonElement | null;
+  if (!intentButton) throw new Error("active goal task method trigger did not render");
+  ok(intentButton.textContent?.includes("Goal") === true, "task method trigger exposes an active goal");
+
+  await act(async () => {
+    intentButton.click();
+    await flushTimers();
+  });
+
+  const stopGoal = document.querySelector(".composer-intent-menu__stop") as HTMLButtonElement | null;
+  if (!stopGoal) throw new Error("explicit stop goal action did not render");
+  eq(stopGoal.textContent, "Stop goal", "active goal uses an explicit stop action");
+  await act(async () => {
+    stopGoal.click();
+    await flushTimers();
+  });
+  eq(calls.clearGoal, 1, "explicit stop action clears the active goal");
+  eq(calls.setCollaborationMode.length, 0, "stopping a goal does not race a second mode update");
 
   await act(async () => {
     root.unmount();

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, ClipboardEvent, DragEvent, KeyboardEvent, MouseEvent as ReactMouseEvent, PointerEvent as ReactPointerEvent } from "react";
-import { ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, ClipboardCheck, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Scale, Search, Shield, ShieldAlert, ShieldCheck, SlidersHorizontal, Square, Target, Trash2, X } from "lucide-react";
+import { ArrowRight, ArrowUp, Check, ChevronDown, ChevronUp, ChevronsUpDown, ClipboardCheck, CornerDownRight, Eye, FileText, Folder, Gauge, List, MessageSquare, Scale, Search, Shield, ShieldAlert, ShieldCheck, Square, Target, Trash2, X } from "lucide-react";
 import { asArray } from "../lib/array";
 import { filterAtMatches } from "../lib/atMatches";
 import { DedupIndex, sha256 } from "../lib/attachDedup";
@@ -2472,22 +2472,15 @@ export function Composer({
     onSetToolApprovalMode(nextMode);
     requestAnimationFrame(() => taRef.current?.focus());
   };
-  const choosePlanMode = () => {
+  const chooseTaskMode = (nextMode: CollaborationMode) => {
     closeIntentMenu(() => {
-      onSetCollaborationMode(planModeOn ? "normal" : "plan");
+      if (nextMode !== collaborationMode) onSetCollaborationMode(nextMode);
       requestAnimationFrame(() => taRef.current?.focus());
     });
   };
-  const chooseGoalMode = () => {
-    if (goalModeOn) {
-      closeIntentMenu(() => {
-        onClearGoal();
-        requestAnimationFrame(() => taRef.current?.focus());
-      });
-      return;
-    }
+  const stopGoalMode = () => {
     closeIntentMenu(() => {
-      onSetCollaborationMode("goal");
+      onClearGoal();
       requestAnimationFrame(() => taRef.current?.focus());
     });
   };
@@ -2509,6 +2502,13 @@ export function Composer({
       : "composer.runtimeProfileBalancedDesc";
   const RuntimeProfileIcon = tokenMode === "economy" ? Gauge : tokenMode === "delivery" ? ClipboardCheck : Scale;
   const runtimeProfileTriggerLabel = t("composer.runtimeProfileTrigger", { mode: t(runtimeProfileShortKey) });
+  const taskModeShortKey = collaborationMode === "plan"
+    ? "composer.taskModePlanShort"
+    : collaborationMode === "goal"
+      ? "composer.taskModeGoalShort"
+      : "composer.taskModeDirectShort";
+  const TaskModeIcon = collaborationMode === "plan" ? List : collaborationMode === "goal" ? Target : ArrowRight;
+  const taskModeTriggerLabel = t("composer.taskModeTrigger", { mode: t(taskModeShortKey) });
   const effortLevels = asArray(effort?.levels);
   const currentEffort = effort?.current || "auto";
   const compactEffortTitle = currentEffort === "auto"
@@ -2611,7 +2611,6 @@ export function Composer({
   const composerMetaClass = [
     "composer-meta",
     hasEffort ? "composer-meta--has-effort" : "composer-meta--no-effort",
-    planModeOn || goalModeOn ? "composer-meta--has-intent-chip" : "composer-meta--no-intent-chip",
   ].join(" ");
 
   const inputSelection = getInputSelection();
@@ -2668,40 +2667,64 @@ export function Composer({
         className="composer-access-menu composer-intent-menu"
         align="start"
       >
-        <div className="composer-access-menu__section">
+        <div className="composer-access-menu__section" role="menu" aria-label={t("composer.intentMenuTitle")}>
           <div className="composer-access-menu__label">{t("composer.intentMenuTitle")}</div>
           <button
             type="button"
-            className={`composer-access-menu__item composer-intent-menu__item${planModeOn ? " composer-access-menu__item--active" : ""}`}
-            onClick={choosePlanMode}
+            role="menuitemradio"
+            aria-checked={collaborationMode === "normal"}
+            className={`composer-access-menu__item composer-intent-menu__item${collaborationMode === "normal" ? " composer-access-menu__item--active" : ""}`}
+            onClick={() => chooseTaskMode("normal")}
             disabled={disabled || running}
-            title={planModeOn ? t("composer.exitPlanTitle") : t("composer.enterPlanTitle")}
           >
-            <List size={16} />
+            <ArrowRight size={16} />
             <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.modePlan")}</span>
-              <span className="composer-access-menu__desc">{t("composer.planModeDesc")}</span>
+              <span className="composer-access-menu__title">{t("composer.taskModeDirect")}</span>
+              <span className="composer-access-menu__desc">{t("composer.taskModeDirectDesc")}</span>
             </span>
-            <span className={`composer-intent-switch${planModeOn ? " composer-intent-switch--on" : ""}`} aria-hidden="true">
-              <span />
-            </span>
+            {collaborationMode === "normal" && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
           </button>
           <button
             type="button"
-            className={`composer-access-menu__item composer-intent-menu__item${goalModeOn ? " composer-access-menu__item--active" : ""}`}
-            onClick={chooseGoalMode}
+            role="menuitemradio"
+            aria-checked={planModeOn}
+            className={`composer-access-menu__item composer-intent-menu__item${planModeOn ? " composer-access-menu__item--active" : ""}`}
+            onClick={() => chooseTaskMode("plan")}
             disabled={disabled || running}
-            title={goalModeOn ? activeGoal || t("composer.goalModeActiveDesc") : t("composer.goalModeDesc")}
+          >
+            <List size={16} />
+            <span className="composer-access-menu__copy">
+              <span className="composer-access-menu__title">{t("composer.taskModePlan")}</span>
+              <span className="composer-access-menu__desc">{t("composer.taskModePlanDesc")}</span>
+            </span>
+            {planModeOn && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
+          </button>
+          <button
+            type="button"
+            role="menuitemradio"
+            aria-checked={goalModeOn}
+            className={`composer-access-menu__item composer-intent-menu__item${goalModeOn ? " composer-access-menu__item--active" : ""}`}
+            onClick={() => chooseTaskMode("goal")}
+            disabled={disabled || running}
+            title={activeGoal || undefined}
           >
             <Target size={16} />
             <span className="composer-access-menu__copy">
-              <span className="composer-access-menu__title">{t("composer.modeGoal")}</span>
-              <span className="composer-access-menu__desc">{goalModeOn ? activeGoal || t("composer.goalModeActiveDesc") : t("composer.goalModeDesc")}</span>
+              <span className="composer-access-menu__title">{t("composer.taskModeGoal")}</span>
+              <span className="composer-access-menu__desc">{activeGoal || t("composer.taskModeGoalDesc")}</span>
             </span>
-            <span className={`composer-intent-switch${goalModeOn ? " composer-intent-switch--on" : ""}`} aria-hidden="true">
-              <span />
-            </span>
+            {goalModeOn && <Check className="composer-intent-menu__check" size={16} aria-hidden="true" />}
           </button>
+          {goalModeOn && activeGoal && (
+            <button
+              type="button"
+              className="composer-intent-menu__stop"
+              onClick={stopGoalMode}
+              disabled={disabled || running}
+            >
+              {t("composer.taskModeStopGoal")}
+            </button>
+          )}
         </div>
       </AnchoredPopover>
       <AnchoredPopover
@@ -3170,57 +3193,21 @@ export function Composer({
                 <button
                   ref={intentMenuAnchorRef}
                   type="button"
-                  className={`composer-action-trigger${intentMenuOpen || intentMenuClosing ? " composer-action-trigger--open" : ""}`}
+                  className={`composer-task-mode-trigger${intentMenuOpen || intentMenuClosing ? " composer-task-mode-trigger--open" : ""}`}
                   onClick={() => (intentMenuOpen || intentMenuClosing ? closeIntentMenu() : openIntentMenu())}
                   disabled={disabled || running}
                   aria-haspopup="menu"
                   aria-expanded={intentMenuOpen && !intentMenuClosing}
-                  aria-label={t("composer.intentMenuTitle")}
-                  title={intentMenuOpen || intentMenuClosing ? undefined : t("composer.intentMenuTitle")}
+                  aria-label={taskModeTriggerLabel}
+                  title={intentMenuOpen || intentMenuClosing ? undefined : taskModeTriggerLabel}
                 >
-                  <SlidersHorizontal size={17} />
+                  <TaskModeIcon size={14} aria-hidden="true" />
+                  <span className="composer-task-mode-trigger__prefix">{t("composer.intentMenuTitle")}</span>
+                  <span className="composer-task-mode-trigger__separator" aria-hidden="true">·</span>
+                  <span className="composer-task-mode-trigger__value">{t(taskModeShortKey)}</span>
+                  <ChevronsUpDown size={12} aria-hidden="true" />
                 </button>
               </Tooltip>
-              {planModeOn && (
-                <Tooltip label={t("composer.exitPlanTitle")}>
-                  <button
-                    type="button"
-                    className="composer-mode-chip composer-mode-chip--plan"
-                    onClick={choosePlanMode}
-                    disabled={disabled}
-                    title={t("composer.exitPlanTitle")}
-                    aria-label={t("composer.exitPlanTitle")}
-                  >
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--mode" aria-hidden="true">
-                      <List size={14} />
-                    </span>
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--dismiss" aria-hidden="true">
-                      <X size={11} />
-                    </span>
-                    <span className="composer-mode-chip__label">{t("composer.modePlan")}</span>
-                  </button>
-                </Tooltip>
-              )}
-              {goalModeOn && (
-                <Tooltip label={t("composer.exitGoalTitle")}>
-                  <button
-                    type="button"
-                    className="composer-mode-chip composer-mode-chip--goal"
-                    onClick={chooseGoalMode}
-                    disabled={disabled}
-                    title={activeGoal || t("composer.exitGoalTitle")}
-                    aria-label={t("composer.exitGoalTitle")}
-                  >
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--mode" aria-hidden="true">
-                      <Target size={14} />
-                    </span>
-                    <span className="composer-mode-chip__icon composer-mode-chip__icon--dismiss" aria-hidden="true">
-                      <X size={11} />
-                    </span>
-                    <span className="composer-mode-chip__label">{t("composer.modeGoal")}</span>
-                  </button>
-                </Tooltip>
-              )}
             </div>
             <div className="composer-meta__control composer-meta__control--profile">
               <Tooltip label={t(runtimeProfileDescKey)} disabled={profileMenuOpen || profileMenuClosing}>

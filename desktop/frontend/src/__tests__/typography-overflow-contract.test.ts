@@ -168,6 +168,8 @@ eq(finalDeclaration(".composer-meta__control--profile", "flex"), "0 0 auto", "wo
 eq(finalDeclaration(".composer-meta__control--profile", "max-width"), "68px", "work mode selector keeps a compact narrow-width bound");
 eq(finalDeclaration(".composer-profile-trigger__label", "overflow"), "hidden", "work mode selector clips only when space is constrained");
 eq(finalDeclaration(".composer-profile-trigger__label", "text-overflow"), "ellipsis", "work mode selector shows an ellipsis when constrained");
+eq(finalDeclaration(".composer-meta__control--intent", "max-width"), "72px", "task method selector keeps its current state visible at narrow widths");
+eq(finalDeclaration(".composer-task-mode-trigger__value", "text-overflow"), "ellipsis", "task method selector truncates its value only when constrained");
 eq(
   finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
   "0 !important",
@@ -179,7 +181,7 @@ eq(
   "collapsed creation tool bodies do not paint hidden tool text",
 );
 ok(
-  /@container\s*\(max-width:\s*760px\)[\s\S]*?\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(240px,\s*42vw\)[\s\S]*?\.composer-meta--has-intent-chip\s+\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(220px,\s*38vw\)[\s\S]*?\.composer-meta__control--effort\s*\{[\s\S]*?display\s*:\s*none[\s\S]*?\.composer-meta__control--more\s*\{[\s\S]*?display\s*:\s*inline-flex/.test(styles),
+  /@container\s*\(max-width:\s*760px\)[\s\S]*?\.composer-meta__control--model\s*\{[\s\S]*?flex\s*:\s*0 1 auto[\s\S]*?width\s*:\s*fit-content[\s\S]*?max-width\s*:\s*min\(240px,\s*42vw\)[\s\S]*?\.composer-meta__control--intent\s*\{[\s\S]*?max-width\s*:\s*88px[\s\S]*?\.composer-meta__control--effort\s*\{[\s\S]*?display\s*:\s*none[\s\S]*?\.composer-meta__control--more\s*\{[\s\S]*?display\s*:\s*inline-flex/.test(styles),
   "composer compact controls activate at the capped theme width",
 );
 eq(finalDeclaration(".md table", "overflow-x"), "auto", "markdown tables scroll horizontally");
