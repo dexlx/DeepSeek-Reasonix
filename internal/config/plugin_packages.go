@@ -6,6 +6,7 @@ import (
 	"sort"
 	"strings"
 
+	"reasonix/internal/command"
 	"reasonix/internal/pluginpkg"
 )
 
@@ -59,6 +60,26 @@ func mergeInstalledPluginPackages(cfg *Config, root string) []string {
 		}
 	}
 	return warnings
+}
+
+// pluginPackageCommandRoots returns the command directories contributed by
+// enabled installed plugin packages, in deterministic (name, path) order.
+// CommandRootsForRoot places them ahead of every user/project dir so explicit
+// commands win exact canonical-name clashes; LoadInstalled filters to enabled
+// packages.
+func pluginPackageCommandRoots() []command.Root {
+	reasonixHome := ReasonixHomeDir()
+	if strings.TrimSpace(reasonixHome) == "" {
+		return nil
+	}
+	installed, _ := pluginpkg.LoadInstalled(reasonixHome)
+	var out []command.Root
+	for _, item := range installed {
+		for _, root := range item.Package.CommandRoots() {
+			out = append(out, command.Root{Path: root, Plugin: item.Installed.Name})
+		}
+	}
+	return out
 }
 
 // PluginPackageOwner reports the installed plugin package that contributed an
