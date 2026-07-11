@@ -178,6 +178,12 @@ type Controller struct {
 	running   bool
 	finishing bool // TurnDone is still being delivered; park a replacement turn
 	canceling bool
+	// closed marks the controller as terminally torn down (close() ran). It
+	// seals turn admission: without it, a submit arriving AFTER close cleared
+	// the parked queue — but while a still-running turn's TurnDone delivery
+	// was in flight — would park again and then start against freed resources
+	// when the window closed.
+	closed bool
 	// parkedTurns holds turn bodies that arrived during the finishing window,
 	// FIFO. finishGuardedTurn starts the oldest one as it closes the window
 	// (see runGuarded/finishGuardedTurn); close() discards any remainder.
@@ -593,6 +599,11 @@ const (
 	// so it is refused with a user-visible Notice asking to resend rather
 	// than silently running against a session the user didn't see.
 	turnDroppedRotating
+	// turnDroppedClosed: the controller has been closed. Deliberately silent:
+	// this controller's transports are being (or have been) torn down and the
+	// input's home is the replacement controller the host swaps in — a Notice
+	// here would go to a dead surface.
+	turnDroppedClosed
 )
 
 // runGuarded runs body on a background goroutine under a fresh cancellable
@@ -609,6 +620,10 @@ const (
 // on submitDisabled rather than turn_done (Composer.tsx).
 func (c *Controller) runGuarded(body func(ctx context.Context) error) admissionResult {
 	c.mu.Lock()
+	if c.closed {
+		c.mu.Unlock()
+		return turnDroppedClosed
+	}
 	if c.rotating {
 		c.mu.Unlock()
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "input was not accepted: the session is being switched — please resend"})
@@ -675,7 +690,10 @@ func (c *Controller) finishGuardedTurn(err error) {
 	defer func() {
 		c.mu.Lock()
 		c.finishing = false
-		if len(c.parkedTurns) == 0 {
+		if c.closed || len(c.parkedTurns) == 0 {
+			// A closed controller must not start a parked turn against freed
+			// resources; close() also cleared the queue, this guards the
+			// close-raced-with-delivery ordering.
 			c.mu.Unlock()
 			return
 		}
@@ -746,7 +764,13 @@ func (c *Controller) runTurn(ctx context.Context, input string) error {
 func (c *Controller) RunTurn(ctx context.Context, input string) error {
 	ctx, cancel := context.WithCancel(ctx)
 	c.mu.Lock()
-	if c.running || c.rotating {
+	// finishing is part of the gate: TurnDone delivery for the previous turn
+	// is still fanning out, and starting a synchronous turn inside that
+	// window recreates the completion/transport crosstalk the window exists
+	// to prevent (Running() already reports true here). closed seals a torn-
+	// down controller. Synchronous callers get an error rather than parking:
+	// they hold a request/response boundary open and already handle busy.
+	if c.running || c.finishing || c.rotating || c.closed {
 		c.mu.Unlock()
 		cancel()
 		return ErrTurnRunning
@@ -4090,8 +4114,12 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 	c.closeOnce.Do(func() {
 		c.mu.Lock()
 		started := c.startedOnce
-		// A parked turn must not start against a controller that is being torn
-		// down; a running turn finishing after close would otherwise drain it.
+		// Seal turn admission and drop anything already parked: a parked turn
+		// must not start against a controller that is being torn down, and
+		// without the closed flag a submit landing after this critical
+		// section (while a running turn's TurnDone delivery is still in
+		// flight) would park again and start after teardown.
+		c.closed = true
 		c.parkedTurns = nil
 		c.mu.Unlock()
 		if fireSessionEnd && started {

@@ -169,6 +169,72 @@ func TestCloseDiscardsParkedTurns(t *testing.T) {
 	}
 }
 
+// TestCloseSealsAdmissionDuringFinishingWindow pins the terminal-state
+// ordering the first review round flagged: Close clears the parked queue, but
+// a submit arriving AFTER that — while the old turn's TurnDone delivery is
+// still in flight — must be rejected outright, not parked and started against
+// freed resources when the window closes.
+func TestCloseSealsAdmissionDuringFinishingWindow(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+
+	c.runGuarded(func(context.Context) error { return nil })
+	<-entered // finishing window is now held open
+
+	c.Close() // seals admission; parked queue is empty at this instant
+
+	lateRan := make(chan struct{}, 1)
+	if got := c.runGuarded(func(context.Context) error {
+		lateRan <- struct{}{}
+		return nil
+	}); got != turnDroppedClosed {
+		t.Fatalf("submit after Close during finishing window = %v, want turnDroppedClosed", got)
+	}
+
+	close(release) // window closes; the drain must start nothing
+	select {
+	case <-lateRan:
+		t.Fatal("submit accepted after Close ran when finishing window closed")
+	case <-time.After(200 * time.Millisecond):
+	}
+}
+
+// TestRunTurnRefusedDuringFinishingWindow pins the synchronous gate: RunTurn
+// must not start inside the previous turn's TurnDone delivery window — that
+// would recreate the completion/transport crosstalk the window prevents.
+func TestRunTurnRefusedDuringFinishingWindow(t *testing.T) {
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	c := New(Options{Sink: holdFinishingWindow(release, entered, nil)})
+
+	c.runGuarded(func(context.Context) error { return nil })
+	<-entered // finishing window is now held open
+
+	errCh := make(chan error, 1)
+	go func() { errCh <- c.RunTurn(context.Background(), "sync input") }()
+	select {
+	case err := <-errCh:
+		if err != ErrTurnRunning {
+			t.Fatalf("RunTurn during finishing window = %v, want ErrTurnRunning", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("RunTurn did not return promptly during the finishing window")
+	}
+	close(release)
+	waitIdleAdmission(t, c)
+}
+
+// TestRunTurnRefusedAfterClose pins the terminal state for the synchronous
+// entry point too.
+func TestRunTurnRefusedAfterClose(t *testing.T) {
+	c := New(Options{})
+	c.Close()
+	if err := c.RunTurn(context.Background(), "late"); err != ErrTurnRunning {
+		t.Fatalf("RunTurn after Close = %v, want ErrTurnRunning", err)
+	}
+}
+
 // waitIdleAdmission polls the running||finishing admission gate; a test that
 // submits or asserts idle right after TurnDone must wait the finishing window
 // out (TurnDone is emitted inside it).
