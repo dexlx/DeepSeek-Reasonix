@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"reasonix/internal/agent"
 	"reasonix/internal/boot"
@@ -122,14 +123,20 @@ var subagentEditorManagedKeys = map[string]bool{
 }
 
 // editableSubagentProfile reports whether sk's backing file is fully
-// representable by this page's editor: a manual-invocation subagent profile
+// representable by this page's editor: a manual-invocation SUBAGENT profile
 // whose frontmatter has only editor-managed keys and whose body is the plain
 // file body (no sibling references/ or scripts/ dirs, which Read() expands
 // into Body — saving the expanded Body would bake that content into the main
 // file). Anything else must be edited as a skill file, not through this form.
 func editableSubagentProfile(sk skill.Skill) error {
+	if sk.RunAs != skill.RunSubagent {
+		// A manual-invocation INLINE skill has only managed keys too; without
+		// this check UpdateSubagentProfile would rewrite it with
+		// runAs: subagent, silently changing its execution semantics.
+		return fmt.Errorf("%q is not a subagent profile (runAs is not \"subagent\") — manage it as a skill file instead", sk.Name)
+	}
 	if sk.Invocation != "manual" {
-		return fmt.Errorf("%q was not created by the subagent profiles page (invocation is not \"manual\") — edit it as a skill file instead", sk.Name)
+		return fmt.Errorf("%q was not created by the subagent profiles page (invocation is not \"manual\") — manage it as a skill file instead", sk.Name)
 	}
 	if sk.Path == "" || sk.Path == "(builtin)" {
 		return fmt.Errorf("%q has no editable file", sk.Name)
@@ -231,6 +238,25 @@ func (a *App) DeleteSubagentProfile(name, scope string) error {
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
+	// Re-resolve the target and apply the full profile-identity check before
+	// deleting: the generic DeleteSkill removes any user skill matching
+	// name+scope, so a stale UI list (the file changed after load) or a direct
+	// bridge call could otherwise delete an unrelated hand-authored skill this
+	// page never owned.
+	found := false
+	for _, sk := range ctrl.AllSkills() {
+		if config.SkillNameKey(sk.Name) != config.SkillNameKey(name) {
+			continue
+		}
+		found = true
+		if err := editableSubagentProfile(sk); err != nil {
+			return err
+		}
+		break
+	}
+	if !found {
+		return fmt.Errorf("%q not found", name)
+	}
 	if err := ctrl.DeleteSkill(name, subagentProfileScope(scope)); err != nil {
 		return err
 	}
@@ -323,38 +349,39 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 	return result, nil
 }
 
-// trySubagentToolRegistry builds the read-only, workspace-confined tool set a
-// try run may use. It replaces the unconfined init-time defaults with confined
-// instances, mirroring boot.go's addBuiltins: writers bound to the workspace
-// roots, readers/search to forbid-read roots, bash to the OS sandbox,
-// web_fetch to the proxy. Writers are stripped by the read-only registry —
-// confining them anyway keeps this list byte-comparable with boot's and safe
+// trySubagentToolRegistry builds the read-only, workspace-rooted tool set a
+// try run may use. The parent set comes from builtin.Workspace — the same
+// per-workspace assembly boot uses for desktop tabs — so every tool both
+// enforces the configured confinement AND resolves relative paths against the
+// active tab's root, not the desktop process CWD (which, in a multi-workspace
+// session, would let a try run read or search a different project than the
+// one on screen). Writers are stripped by the read-only registry — Workspace
+// wiring them anyway keeps this byte-comparable with boot's assembly and safe
 // if the read-only posture is ever relaxed.
 func trySubagentToolRegistry(cfg *config.Config, root string, allowedTools []string) *tool.Registry {
-	parentReg := tool.NewRegistry()
-	for _, tl := range tool.Builtins() {
-		parentReg.Add(tl)
-	}
 	writeRoots := cfg.WriteRootsForRoot(root)
 	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
-	guard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
-	managedConfig := builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths())
 	bashSpec := sandbox.Spec{
 		Mode:            cfg.BashMode(),
 		WriteRoots:      writeRoots,
 		ForbidReadRoots: forbidReadRoots,
 		Network:         cfg.Sandbox.Network,
 	}
-	searchSpec := builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, io.Discard)
-	confined := append(builtin.ConfineWriters(writeRoots, guard, managedConfig),
-		builtin.ConfineBash(bashSpec, guard),
-		builtin.ConfineSearch(searchSpec, bashSpec, forbidReadRoots),
-		builtin.ConfineWebFetch(cfg.NetworkProxySpec()))
-	confined = append(confined, builtin.ConfineReaders(forbidReadRoots)...)
-	for _, tl := range confined {
-		if _, ok := parentReg.Get(tl.Name()); ok {
-			parentReg.Add(tl)
-		}
+	ws := builtin.Workspace{
+		Dir:             root,
+		WriteRoots:      writeRoots,
+		ForbidReadRoots: forbidReadRoots,
+		Bash:            bashSpec,
+		BashTimeout:     time.Duration(cfg.BashTimeoutSeconds()) * time.Second,
+		Search:          builtin.ResolveSearch(cfg.Tools.Search.Engine, cfg.Tools.Search.RgPath, io.Discard),
+		ProxySpec:       cfg.NetworkProxySpec(),
+		ReadPaths:       builtin.NewPathResolver(),
+		SessionGuard:    builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots()),
+		ManagedConfig:   builtin.NewManagedConfigPaths(config.ReasonixManagedConfigPaths()),
+	}
+	parentReg := tool.NewRegistry()
+	for _, tl := range ws.Tools() {
+		parentReg.Add(tl)
 	}
 	// ReadOnlySubagentToolRegistry treats an empty allowedTools as "all" (the
 	// "default all permissions" tool-scope option) and then keeps only

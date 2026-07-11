@@ -184,6 +184,58 @@ func TestUpdateSubagentProfileRefusesUnmanagedFrontmatter(t *testing.T) {
 	}
 }
 
+// TestUpdateSubagentProfileRefusesManualInlineSkill pins the runAs guard: a
+// hand-authored manual-invocation INLINE skill carries only editor-managed
+// frontmatter keys, so without an explicit runAs check the update path would
+// rewrite it with runAs: subagent — silently converting an inline playbook
+// into an isolated subagent.
+func TestUpdateSubagentProfileRefusesManualInlineSkill(t *testing.T) {
+	a := newTestSubagentApp(t)
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".reasonix", "skills", "manual-inline")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"),
+		[]byte("---\ndescription: quiet inline playbook\ninvocation: manual\n---\ninline body"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	err := a.UpdateSubagentProfile("manual-inline", "global", SubagentProfileInput{Description: "x", SystemPrompt: "y"})
+	if err == nil {
+		t.Fatal("expected refusal for a manual inline skill")
+	}
+	if !strings.Contains(err.Error(), "subagent") {
+		t.Fatalf("error should explain the runAs rule, got: %v", err)
+	}
+	raw, rerr := os.ReadFile(filepath.Join(dir, "SKILL.md"))
+	if rerr != nil || strings.Contains(string(raw), "runAs: subagent") {
+		t.Fatalf("refused edit must not convert the inline skill, got: %s (%v)", raw, rerr)
+	}
+}
+
+// TestDeleteSubagentProfileRefusesNonProfileSkill pins the delete guard: the
+// bridge method must not remove a user skill this page never owned, even when
+// called directly with a matching name+scope.
+func TestDeleteSubagentProfileRefusesNonProfileSkill(t *testing.T) {
+	a := newTestSubagentApp(t)
+	home := os.Getenv("HOME")
+	dir := filepath.Join(home, ".reasonix", "skills", "hand-skill")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(dir, "SKILL.md")
+	if err := os.WriteFile(file,
+		[]byte("---\ndescription: precious hand-authored playbook\nrunAs: subagent\ntriggers: deploy\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := a.DeleteSubagentProfile("hand-skill", "global"); err == nil {
+		t.Fatal("expected refusal deleting a non-profile skill")
+	}
+	if _, err := os.Stat(file); err != nil {
+		t.Fatalf("refused delete must leave the file in place: %v", err)
+	}
+}
+
 func TestUpdateSubagentProfileRefusesExpandedReferences(t *testing.T) {
 	a := newTestSubagentApp(t)
 	home := os.Getenv("HOME")
@@ -269,6 +321,52 @@ func TestTrySubagentRegistryHonorsAllowedTools(t *testing.T) {
 	}
 	if _, ok := reg.Get("ls"); ok {
 		t.Fatalf("ls not in the allowlist, should be absent; got %v", reg.Names())
+	}
+}
+
+// TestTrySubagentRegistryResolvesRelativePathsAgainstWorkspaceRoot pins the
+// multi-workspace contract: the try registry's tools must resolve relative
+// paths against the ACTIVE TAB's root, not the desktop process CWD. The
+// process working directory is global and, in a multi-tab session, points at
+// whichever project the app happened to start in — a try run resolving
+// against it could read (and send to the provider) a different project than
+// the one on screen.
+func TestTrySubagentRegistryResolvesRelativePathsAgainstWorkspaceRoot(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "marker.txt"), []byte("workspace-bound"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cwd == root {
+		t.Fatal("test requires process CWD != workspace root")
+	}
+
+	reg := trySubagentToolRegistry(config.Default(), root, nil)
+	rf, ok := reg.Get("read_file")
+	if !ok {
+		t.Fatalf("read_file missing; got %v", reg.Names())
+	}
+	out, err := rf.Execute(context.Background(), json.RawMessage(`{"path":"marker.txt"}`))
+	if err != nil {
+		t.Fatalf("relative read against the workspace root failed (resolved against process CWD?): %v", err)
+	}
+	if !strings.Contains(out, "workspace-bound") {
+		t.Fatalf("relative read returned wrong content: %s", out)
+	}
+
+	ls, ok := reg.Get("ls")
+	if !ok {
+		t.Fatalf("ls missing; got %v", reg.Names())
+	}
+	out, err = ls.Execute(context.Background(), json.RawMessage(`{"path":"."}`))
+	if err != nil {
+		t.Fatalf("relative ls against the workspace root failed: %v", err)
+	}
+	if !strings.Contains(out, "marker.txt") {
+		t.Fatalf("ls of workspace root missing marker.txt (listed process CWD instead?): %s", out)
 	}
 }
 
