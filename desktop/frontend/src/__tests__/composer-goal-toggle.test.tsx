@@ -1029,5 +1029,40 @@ console.log("\ncomposer goal toggle");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  let commandsCalls = 0;
+  mockApp({
+    Commands: async () => {
+      commandsCalls += 1;
+      return [
+        { name: "superpowers:writing-plans", description: "Write a plan", kind: "skill", plugin: "superpowers" },
+        { name: "toolbox:writing-plans", description: "Write another plan", kind: "skill", plugin: "toolbox" },
+        { name: "superpowers:brainstorming", description: "Explore an idea", kind: "skill", plugin: "superpowers" },
+      ];
+    },
+  });
+  const { root, rerender } = await renderComposer();
+
+  await waitFor("plugin commands loaded", () => commandsCalls > 0);
+  await replaceComposerDraft(rerender, 2001, "/writing-plans");
+  await waitFor("qualified plugin skill menu", () => Boolean(document.querySelector(".slashmenu")));
+
+  const menuSizer = document.querySelector<HTMLElement>(".slashmenu__sizer");
+  eq(menuSizer?.style.height, "68px", "short skill query keeps both matching plugin names and hides unrelated skills");
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+  await act(async () => {
+    textarea.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea.value, "/superpowers:writing-plans ", "selecting a plugin skill inserts its qualified name");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
