@@ -114,6 +114,96 @@ func TestReviewReportRequiresHostReadEvidence(t *testing.T) {
 	}
 }
 
+func TestReviewReportRejectsNonContentEvidence(t *testing.T) {
+	tl := NewReviewReportTool()
+	report := json.RawMessage(`{"kind":"review","verdict":"pass","reviewed_paths":["internal/agent/agent.go"]}`)
+
+	// git status mentions the path but never shows content.
+	led := evidence.NewLedger()
+	led.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"git status --short -- internal/agent/agent.go"}`), true, true))
+	if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
+		t.Fatal("git status must not count as review evidence")
+	}
+	// echo output containing the path shows nothing either.
+	led = evidence.NewLedger()
+	led.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"echo internal/agent/agent.go"}`), true, true))
+	if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
+		t.Fatal("echo must not count as review evidence")
+	}
+	// Writing a file is not reviewing it.
+	led = evidence.NewLedger()
+	led.Record(evidence.ReceiptFromToolCall("write_file", json.RawMessage(`{"path":"internal/agent/agent.go"}`), true, false))
+	if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
+		t.Fatal("a write receipt must not count as review evidence")
+	}
+	// A bare basename read must not satisfy a claim for a specific full path.
+	led = evidence.NewLedger()
+	led.Record(evidence.ReceiptFromToolCall("read_file", json.RawMessage(`{"path":"agent.go"}`), true, true))
+	if _, err := tl.Execute(evidence.WithLedger(context.Background(), led), report); err == nil {
+		t.Fatal("reverse basename matching must not count as review evidence")
+	}
+}
+
+func TestOnDemandModelNameMatchesPluginCanonicalName(t *testing.T) {
+	host := plugin.NewHost()
+	defer host.Close()
+	specs := []plugin.Spec{{Name: "lazy", Type: "stdio", Command: "reasonix-test-definitely-missing-binary"}}
+	tl := NewUseCapabilityTool(context.Background(), host, specs, tool.NewRegistry(), capability.NewLedger(), nil, nil)
+	for _, raw := range []string{"@model/tool", "search/issues", "with space", "plain_ok"} {
+		resolved, err := tl.ResolveCall(context.Background(),
+			json.RawMessage(`{"action":"call","capability_id":"mcp-tool:lazy/`+raw+`"}`))
+		if err != nil {
+			t.Fatalf("%q: %v", raw, err)
+		}
+		want := plugin.ModelToolName("lazy", raw)
+		if resolved.TargetName != want {
+			t.Fatalf("raw %q: permission-checked name %q differs from executed canonical name %q — deny/ask rules would miss", raw, resolved.TargetName, want)
+		}
+	}
+}
+
+func TestProxyCallAuditCountsOnAgentPath(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(fakeTool{name: "mcp__github__search_issues", readOnly: true})
+	audit := &capability.Audit{}
+	uc := NewUseCapabilityTool(context.Background(), nil, nil, reg, capability.NewLedger(), audit, nil)
+	reg.Add(uc)
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"),
+		Options{CapabilityLedger: capability.NewLedger(), CapabilityAudit: audit}, event.Discard)
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:github/search_issues","arguments":{}}`,
+	})
+	if out.blocked || out.errMsg != "" {
+		t.Fatalf("call failed: %+v", out)
+	}
+	if snap := audit.Snapshot(); snap.MCPCall != 1 || snap.MCPCallFailures != 0 {
+		t.Fatalf("MCPCall=%d failures=%d, want 1/0", snap.MCPCall, snap.MCPCallFailures)
+	}
+}
+
+func TestCapabilityGateRecoveryIsAudited(t *testing.T) {
+	reg := tool.NewRegistry()
+	audit := &capability.Audit{}
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"),
+		Options{DeliveryProfile: true, CapabilityLedger: capability.NewLedger(), CapabilityAudit: audit}, event.Discard)
+	a.SeedCapabilityRoute(capability.RouteDecision{Candidates: []capability.RouteCandidate{
+		{Entry: capability.Entry{ID: "skill:review"}, Policy: capability.AutoUseRequire},
+	}})
+	a.evidence.Record(evidence.ReceiptFromToolCall("read_file", json.RawMessage(`{"path":"a.go"}`), true, true))
+	if check := a.finalReadinessCheck(); check.reason == "" {
+		t.Fatal("expected a require miss first")
+	}
+	a.capabilityLedger.MarkInvoked("skill:review")
+	a.capabilityLedger.MarkSucceeded("skill:review")
+	if check := a.finalReadinessCheck(); strings.Contains(check.reason, "required capabilities") {
+		t.Fatalf("gate should be clean after success, reason=%q", check.reason)
+	}
+	if snap := audit.Snapshot(); snap.RequireRecovered != 1 {
+		t.Fatalf("RequireRecovered=%d, want 1", snap.RequireRecovered)
+	}
+}
+
 func TestRunSubAgentRequiresReviewReport(t *testing.T) {
 	prov := &scriptedProvider{name: "p", turns: [][]provider.Chunk{
 		{{Type: provider.ChunkText, Text: "looks fine"}, {Type: provider.ChunkDone}},

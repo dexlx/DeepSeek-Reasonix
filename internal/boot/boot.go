@@ -1088,6 +1088,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// every configured server, including auto_start=false, is proxy-callable.
 		capSpecs = PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions)
 		cachedTools, cacheHashOK := capability.LoadCachedToolsForSpecs(capSpecs)
+		var capProxy *agent.UseCapabilityTool
 		catalogFn := func() capability.Catalog {
 			conn := map[string]bool{}
 			if pluginHost != nil {
@@ -1095,7 +1096,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 					conn[n] = true
 				}
 			}
-			return capability.BuildCatalog(capability.CatalogOptions{
+			catOpts := capability.CatalogOptions{
 				Tools:       reg.ContractEntries(),
 				Skills:      skillStore.List(),
 				Plugins:     cfg.Plugins,
@@ -1104,12 +1105,19 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				Failed:      failed,
 				CachedTools: cachedTools,
 				CacheHashOK: cacheHashOK,
-			})
+			}
+			// Live proxy-observed tools keep mcp-tool entries routable after an
+			// on-demand connect (proxied tools never enter the registry).
+			if capProxy != nil {
+				catOpts.ProxyTools = capProxy.ConnectedProxyTools()
+			}
+			return capability.BuildCatalog(catOpts)
 		}
 		// ctx is the session-scoped boot context (the lifetime PluginCtx hands
 		// the controller): on-demand MCP children must survive the tool call
 		// that starts them and die with the session, not a resolve timeout.
-		reg.Add(agent.NewUseCapabilityTool(ctx, pluginHost, capSpecs, reg, capLedger, capAudit, catalogFn))
+		capProxy = agent.NewUseCapabilityTool(ctx, pluginHost, capSpecs, reg, capLedger, capAudit, catalogFn)
+		reg.Add(capProxy)
 	}
 
 	execSess := agent.NewSession(sysPrompt)

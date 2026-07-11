@@ -37,10 +37,16 @@ func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecisi
 	tools := c.ToolContractEntries()
 	profile := capability.ProfileBalanced
 	delivery := false
+	var proxyTools map[string][]plugin.CachedTool
 	if reg := c.mcp.registry(); reg != nil {
-		if _, ok := reg.Get("use_capability"); ok {
+		if t, ok := reg.Get("use_capability"); ok {
 			profile = capability.ProfileDelivery
 			delivery = true
+			if p, ok := t.(interface {
+				ConnectedProxyTools() map[string][]plugin.CachedTool
+			}); ok {
+				proxyTools = p.ConnectedProxyTools()
+			}
 		}
 	}
 	opts := capability.CatalogOptions{
@@ -56,6 +62,7 @@ func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecisi
 	// deterministic and semantic routing before any connection exists.
 	opts.CachedTools = c.capCachedTools
 	opts.CacheHashOK = c.capCacheHashOK
+	opts.ProxyTools = proxyTools
 	if h := c.Host(); h != nil {
 		opts.Connected = map[string]bool{}
 		for _, n := range h.ServerNames() {
@@ -68,6 +75,7 @@ func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecisi
 	}
 	catalog := capability.BuildCatalog(opts)
 	decision := capability.Route(routeInput, catalog.Entries)
+	decision.Delivery = delivery
 
 	// Semantic routing only in Delivery when no strong require/prefer match.
 	if delivery && c.semanticRouter != nil {

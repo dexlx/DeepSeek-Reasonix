@@ -359,6 +359,11 @@ type Agent struct {
 	capabilityAudit *capability.Audit
 	// lastCapabilityGate tracks prefer-reminder state across final-answer retries.
 	capabilityPreferReminded bool
+	// capabilityRequireMissSeen / capabilityPreferMissSeen remember that the
+	// final gate reported a miss earlier this turn, so a later clean gate is
+	// audited as a recovery. Reset per turn in SeedCapabilityRoute.
+	capabilityRequireMissSeen bool
+	capabilityPreferMissSeen  bool
 	// pendingReviewWarnings are warn-level findings to surface in the final summary.
 	pendingReviewWarnings []string
 

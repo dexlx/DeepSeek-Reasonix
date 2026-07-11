@@ -222,30 +222,38 @@ func (l *Ledger) HasSuccessfulReviewReportOfKind(kind ReviewKind) bool {
 	return false
 }
 
-// HasHostObservedPath reports whether the host recorded a successful receipt
-// naming path: a read or write receipt whose extracted paths match exactly
-// after normalization or by slash-suffix (relative refs vs fuller observed
-// paths), or a bash receipt whose command mentions the path. review_report
-// uses it so "reviewed_paths" is host-verified reading, not a model claim.
-func (l *Ledger) HasHostObservedPath(path string) bool {
+// HasReadEvidenceForPath reports whether the host observed the CONTENT of
+// path: a successful read receipt whose extracted paths equal the claimed
+// path after normalization (or contain it as a slash-suffix of a fuller
+// observed path), or a content-revealing bash command (diff/cmp/cat/head/
+// tail, git diff/show) that names the path. Deliberately rejected: write
+// receipts (writing is not reviewing), arbitrary path-mentioning commands
+// like git status or echo (they never show content), and reverse basename
+// suffix matching (a bare "agent.go" receipt must not satisfy a claim for a
+// specific full path).
+func (l *Ledger) HasReadEvidenceForPath(path string) bool {
 	p := normalizePath(path)
 	if l == nil || p == "" {
 		return false
 	}
 	needle := strings.ToLower(filepath.ToSlash(p))
 	l.mu.Lock()
+	defer l.mu.Unlock()
 	for _, r := range l.receipts {
-		if !r.Success || (!r.Read && !r.Write) {
+		if !r.Success {
 			continue
 		}
-		for _, rp := range r.Paths {
-			o := strings.ToLower(filepath.ToSlash(normalizePath(rp)))
-			if o == needle || strings.HasSuffix(o, "/"+needle) || strings.HasSuffix(needle, "/"+o) {
-				l.mu.Unlock()
-				return true
+		if r.Read {
+			for _, rp := range r.Paths {
+				o := strings.ToLower(filepath.ToSlash(normalizePath(rp)))
+				if o == needle || strings.HasSuffix(o, "/"+needle) {
+					return true
+				}
 			}
 		}
+		if r.ToolName == "bash" && commandShowsContentForPath(r.Command, needle) {
+			return true
+		}
 	}
-	l.mu.Unlock()
-	return l.HasSuccessfulBashMentioningPaths([]string{path})
+	return false
 }

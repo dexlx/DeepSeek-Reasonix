@@ -68,6 +68,10 @@ type RouteCandidate struct {
 
 type RouteDecision struct {
 	Candidates []RouteCandidate
+	// Delivery marks a Delivery-profile route: the transient block must direct
+	// the model to the stable use_capability proxy — connect_tool_source is not
+	// registered in Delivery, so instructing it would dead-end the route.
+	Delivery bool
 }
 
 func SkillEntries(skills []skill.Skill, tools []tool.ContractEntry) []Entry {
@@ -175,7 +179,7 @@ func RenderTransientBlock(d RouteDecision) string {
 	for _, c := range d.Candidates {
 		e := c.Entry
 		target := e.ID
-		if e.Status != StatusReady && e.ConnectSource != "" {
+		if !d.Delivery && e.Status != StatusReady && e.ConnectSource != "" {
 			target = fmt.Sprintf("source:%s", e.ConnectSource)
 			if e.ConnectName != "" {
 				target += "/" + e.ConnectName
@@ -185,7 +189,14 @@ func RenderTransientBlock(d RouteDecision) string {
 		if e.Status != "" && e.Status != StatusReady {
 			fmt.Fprintf(&b, " (status=%s)", e.Status)
 		}
-		if e.ConnectSource != "" {
+		switch {
+		case d.Delivery:
+			// Delivery has no connect_tool_source; the stable proxy both
+			// connects and calls on demand, keeping the concrete capability id.
+			if (e.Kind == KindMCPTool || e.Kind == KindMCPServer) && e.Status != StatusReady {
+				fmt.Fprintf(&b, "; call use_capability(action=\"call\", capability_id=%q, arguments={...}) — it connects the server on demand after approval", e.ID)
+			}
+		case e.ConnectSource != "":
 			if e.ConnectName != "" {
 				fmt.Fprintf(&b, "; first call connect_tool_source with source=%q name=%q", e.ConnectSource, e.ConnectName)
 			} else {

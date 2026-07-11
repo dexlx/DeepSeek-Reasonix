@@ -101,6 +101,23 @@ func (a *Audit) RecordMCPProxy(inspect, call, failed bool) {
 	}
 }
 
+// RecordGateRecovery records that gate kinds which missed earlier in the turn
+// later passed cleanly — the capability was actually invoked after the nudge.
+// Kept separate from RecordGate so a recovery never double-counts as a miss.
+func (a *Audit) RecordGateRecovery(require, prefer bool) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if require {
+		a.RequireRecovered++
+	}
+	if prefer {
+		a.PreferRecovered++
+	}
+}
+
 // RecordRouterUsage accumulates the semantic router's own model spend:
 // prompt/completion tokens, priced cost, and wall-clock latency per call.
 func (a *Audit) RecordRouterUsage(promptTokens, completionTokens int, cost float64, latencyMs int64) {

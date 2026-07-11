@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strings"
 
 	"reasonix/internal/evidence"
@@ -59,10 +60,13 @@ func (*ReviewReportTool) Execute(ctx context.Context, args json.RawMessage) (str
 	}
 	var unread []string
 	for _, p := range report.ReviewedPaths {
-		if led.HasHostObservedPath(p) {
+		if led.HasReadEvidenceForPath(p) {
 			continue
 		}
-		unread = append(unread, p)
+		// Slash-canonical display keeps the message (and tests) identical
+		// across OSes even though ParseReviewReport normalized with the
+		// platform separator.
+		unread = append(unread, filepath.ToSlash(p))
 	}
 	if len(unread) > 0 {
 		return "", fmt.Errorf("review_report rejected: no host-observed read evidence for: %s — read these files (or run git diff on them) before reporting them as reviewed", strings.Join(unread, ", "))

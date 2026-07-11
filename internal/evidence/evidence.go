@@ -1089,6 +1089,40 @@ func completeStepVerificationCommands(args json.RawMessage) []string {
 	return out
 }
 
+// commandShowsContentForPath reports whether a bash command reveals the
+// content of the (slash-lowered, normalized) path: diff/cmp/cat/head/tail or
+// git diff/git show naming it. Listing-only commands (git status, ls, echo)
+// never count — mentioning a path is not reading it.
+func commandShowsContentForPath(command, needle string) bool {
+	segments, _, ok := shellparse.SplitTopLevel(command)
+	if !ok {
+		return false
+	}
+	for _, segment := range segments {
+		normalized, safe := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
+		if !safe {
+			continue
+		}
+		fields, malformed := shellparse.StaticFields(normalized)
+		if malformed != "" || len(fields) == 0 {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(fields[0]))
+		content := base == "diff" || base == "cmp" || base == "cat" || base == "head" || base == "tail"
+		if base == "git" && len(fields) > 1 {
+			sub := strings.ToLower(fields[1])
+			content = sub == "diff" || sub == "show"
+		}
+		if !content {
+			continue
+		}
+		if strings.Contains(strings.ToLower(strings.ReplaceAll(segment, `\`, "/")), needle) {
+			return true
+		}
+	}
+	return false
+}
+
 func commandReviewsChanges(command string) bool {
 	segments, _, ok := shellparse.SplitTopLevel(command)
 	if !ok {

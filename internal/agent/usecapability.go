@@ -37,6 +37,10 @@ type UseCapabilityTool struct {
 	// proxyClients holds on-demand connected clients that must not pollute the
 	// provider-visible registry. Tools are looked up via host.ToolsFor.
 	connected map[string]bool
+	// liveTools snapshots raw tool metadata of proxy-connected servers so the
+	// capability catalog keeps concrete mcp-tool entries after a server turns
+	// ready — the tools deliberately never enter the provider-visible registry.
+	liveTools map[string][]plugin.CachedTool
 }
 
 // NewUseCapabilityTool builds the Delivery-only capability proxy. lifeCtx is
@@ -234,7 +238,7 @@ func (t *UseCapabilityTool) inspect(ctx context.Context, id string) (string, err
 						for _, ct := range cs.Tools {
 							list = append(list, inspectToolInfo{
 								ID:          "mcp-tool:" + server + "/" + ct.Name,
-								Name:        plugin.ToolPrefix(server) + normalizeToolToken(ct.Name),
+								Name:        plugin.ModelToolName(server, ct.Name),
 								Description: ct.Description,
 								ReadOnly:    ct.ReadOnly,
 								Schema:      ct.Schema,
@@ -269,8 +273,12 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 		}
 		return tool.ResolvedCall{}, err
 	}
-	// Prefer already-exposed registry tool (auto-started MCP).
-	modelName := plugin.ToolPrefix(server) + normalizeToolToken(raw)
+	// Prefer already-exposed registry tool (auto-started MCP). The model name
+	// MUST come from the plugin layer's canonical constructor: it appends a
+	// collision hash for sanitised raw names, and permission/hook rules are
+	// written against that executed name — a proxy-local normalization would
+	// let them silently miss.
+	modelName := plugin.ModelToolName(server, raw)
 	if t.registry != nil {
 		if tl, ok := t.registry.Get(modelName); ok {
 			base.TargetName = modelName
@@ -282,22 +290,6 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 				base.Args = args
 			}
 			return base, nil
-		}
-		// Also try exact raw-normalized scan.
-		for _, name := range t.registry.Names() {
-			s, r, ok := tool.SplitMCPName(name)
-			if ok && s == normalizeToolToken(server) && (r == normalizeToolToken(raw) || r == raw) {
-				tl, _ := t.registry.Get(name)
-				base.TargetName = name
-				base.Target = tl
-				base.ReadOnly = tl.ReadOnly()
-				if len(args) == 0 {
-					base.Args = json.RawMessage(`{}`)
-				} else {
-					base.Args = args
-				}
-				return base, nil
-			}
 		}
 	}
 	// Server already connected (auto-started or a previous proxy call):
@@ -361,14 +353,12 @@ func (t *UseCapabilityTool) resolveUnavailable(base tool.ResolvedCall, id, model
 	return base
 }
 
-// findMCPTool matches a server's tool list by raw MCP name (exact or
-// normalized) or by the namespaced model-visible name.
+// findMCPTool matches a server's tool list by raw MCP name or by the
+// canonical namespaced model-visible name (plugin.ModelToolName).
 func findMCPTool(tools []tool.Tool, raw, modelName string) tool.Tool {
 	for _, tl := range tools {
-		if m, ok := tl.(tool.MCPMetadata); ok {
-			if m.MCPRawToolName() == raw || normalizeToolToken(m.MCPRawToolName()) == normalizeToolToken(raw) {
-				return tl
-			}
+		if m, ok := tl.(tool.MCPMetadata); ok && m.MCPRawToolName() == raw {
+			return tl
 		}
 		if tl.Name() == modelName {
 			return tl
@@ -415,11 +405,10 @@ func (o *onDemandMCPTool) MCPRawToolName() string { return o.raw }
 func (o *onDemandMCPTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	tools, err := o.proxy.ensureServerTools(ctx, o.server)
 	if err != nil {
+		// Audit for the call path is recorded once by the agent loop
+		// (noteCapabilityInvocation); only the ledger outcome lands here.
 		if o.proxy.ledger != nil {
 			o.proxy.ledger.MarkUnavailable("mcp-tool:"+o.server+"/"+o.raw, err.Error())
-		}
-		if o.proxy.audit != nil {
-			o.proxy.audit.RecordMCPProxy(false, true, true)
 		}
 		return "", err
 	}
@@ -444,7 +433,7 @@ func (t *UseCapabilityTool) ensureServerTools(ctx context.Context, server string
 	}
 	// Reuse shared host if already connected (including auto-started).
 	if t.host.HasClient(server) {
-		return t.host.ToolsFor(ctx, server)
+		return t.serverTools(ctx, server)
 	}
 	spec, ok := t.specFor(server)
 	if !ok {
@@ -463,7 +452,7 @@ func (t *UseCapabilityTool) ensureServerTools(ctx context.Context, server string
 	tools, err := t.host.AddWithLifecycle(life, handshakeCtx, spec)
 	if err != nil {
 		if plugin.IsServerAlreadyConnected(err) {
-			return t.host.ToolsFor(ctx, server)
+			return t.serverTools(ctx, server)
 		}
 		t.host.RecordFailure(spec, err)
 		return nil, fmt.Errorf("connect %q: %w", server, err)
@@ -473,7 +462,54 @@ func (t *UseCapabilityTool) ensureServerTools(ctx context.Context, server string
 	t.mu.Unlock()
 	// Intentionally do NOT add tools to t.registry — Delivery schema stays stable.
 	_ = tools
-	return t.host.ToolsFor(ctx, server)
+	return t.serverTools(ctx, server)
+}
+
+// serverTools fetches the live tools for a connected server and refreshes the
+// proxy's catalog snapshot so mcp-tool entries stay routable once the server
+// is StatusReady (its tools are absent from the provider-visible registry).
+func (t *UseCapabilityTool) serverTools(ctx context.Context, server string) ([]tool.Tool, error) {
+	tools, err := t.host.ToolsFor(ctx, server)
+	if err != nil {
+		return nil, err
+	}
+	snap := make([]plugin.CachedTool, 0, len(tools))
+	for _, tl := range tools {
+		m, ok := tl.(tool.MCPMetadata)
+		if !ok || m.MCPRawToolName() == "" {
+			continue
+		}
+		snap = append(snap, plugin.CachedTool{
+			Name:        m.MCPRawToolName(),
+			Description: tl.Description(),
+			Schema:      tl.Schema(),
+			ReadOnly:    tl.ReadOnly(),
+		})
+	}
+	t.mu.Lock()
+	if t.liveTools == nil {
+		t.liveTools = map[string][]plugin.CachedTool{}
+	}
+	t.liveTools[server] = snap
+	t.mu.Unlock()
+	return tools, nil
+}
+
+// ConnectedProxyTools returns raw tool metadata for servers connected through
+// the proxy, keyed by server name. Catalog builders consume it so concrete
+// mcp-tool capabilities survive an on-demand connect without ever touching
+// the provider-visible registry.
+func (t *UseCapabilityTool) ConnectedProxyTools() map[string][]plugin.CachedTool {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if len(t.liveTools) == 0 {
+		return nil
+	}
+	out := make(map[string][]plugin.CachedTool, len(t.liveTools))
+	for k, v := range t.liveTools {
+		out[k] = append([]plugin.CachedTool(nil), v...)
+	}
+	return out
 }
 
 // specFor looks up the boot-converted spec for server. The proxy deliberately
@@ -511,20 +547,6 @@ func parseMCPCapabilityID(id string) (server, raw string, err error) {
 	default:
 		return "", "", fmt.Errorf("action=call requires an mcp-tool capability id, got %q", id)
 	}
-}
-
-func normalizeToolToken(s string) string {
-	// Match plugin.normalizeName loosely: keep alnum underscore hyphen.
-	var b strings.Builder
-	for _, r := range s {
-		switch {
-		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
-			b.WriteRune(r)
-		default:
-			b.WriteByte('_')
-		}
-	}
-	return b.String()
 }
 
 // Ensure UseCapabilityTool satisfies the tool contracts used by the agent.

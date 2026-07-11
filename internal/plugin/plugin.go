@@ -1242,6 +1242,15 @@ func ToolPrefix(server string) string {
 	return "mcp__" + normalizeName(server) + "__"
 }
 
+// ModelToolName is the canonical model-visible name for server's raw tool —
+// including the collision-hash suffix normalizeName appends when the raw name
+// needed sanitising. Every permission/hook/audit surface that names an MCP
+// tool must build the name through this function; a second normalization that
+// skips the hash would let deny/ask rules written for the executed name miss.
+func ModelToolName(server, raw string) string {
+	return toolName(server, raw)
+}
+
 var invalidNameChars = regexp.MustCompile(`[^a-zA-Z0-9_-]+`)
 
 func normalizeName(s string) string {

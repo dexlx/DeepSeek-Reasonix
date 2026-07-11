@@ -40,6 +40,10 @@ type CatalogOptions struct {
 	Disabled    map[string]bool
 	CachedTools map[string][]plugin.CachedTool // server → tools
 	CacheHashOK map[string]bool                // server → fingerprint match
+	// ProxyTools carries host-observed live tools of servers connected through
+	// the Delivery proxy: they are absent from Tools (never registered) yet
+	// must stay routable after the server turns ready.
+	ProxyTools map[string][]plugin.CachedTool
 }
 
 // LoadCachedToolsForSpecs loads the persisted MCP schema caches for the given
@@ -157,28 +161,44 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		}
 		out = append(out, e)
 
-		// Surface cached tools as candidates when the server is not yet ready.
-		if tools := opts.CachedTools[name]; len(tools) > 0 && status != StatusReady {
-			for _, ct := range tools {
-				raw := strings.TrimSpace(ct.Name)
-				if raw == "" {
-					continue
-				}
-				modelName := plugin.ToolPrefix(name) + raw
-				out = append(out, Entry{
-					ID:            "mcp-tool:" + name + "/" + raw,
-					Kind:          KindMCPTool,
-					Name:          name + "/" + raw,
-					Description:   strings.TrimSpace(ct.Description),
-					Source:        name,
-					Status:        StatusConfigured,
-					ReadOnly:      ct.ReadOnly,
-					ToolName:      modelName,
-					ConnectSource: "mcp",
-					ConnectName:   name,
-					AutoStart:     p.ShouldAutoStart(),
-				})
+		// Surface concrete tools that are not on the provider-visible registry:
+		// live proxy-observed tools once the server is connected (proxied
+		// servers never register), cached schema before any connection exists.
+		registryHasTools := false
+		prefix := plugin.ToolPrefix(name)
+		for _, te := range opts.Tools {
+			if strings.HasPrefix(te.Name, prefix) {
+				registryHasTools = true
+				break
 			}
+		}
+		var toolSrc []plugin.CachedTool
+		toolStatus := StatusConfigured
+		switch {
+		case len(opts.ProxyTools[name]) > 0 && !registryHasTools:
+			toolSrc = opts.ProxyTools[name]
+			toolStatus = StatusReady
+		case status != StatusReady:
+			toolSrc = opts.CachedTools[name]
+		}
+		for _, ct := range toolSrc {
+			raw := strings.TrimSpace(ct.Name)
+			if raw == "" {
+				continue
+			}
+			out = append(out, Entry{
+				ID:            "mcp-tool:" + name + "/" + raw,
+				Kind:          KindMCPTool,
+				Name:          name + "/" + raw,
+				Description:   strings.TrimSpace(ct.Description),
+				Source:        name,
+				Status:        toolStatus,
+				ReadOnly:      ct.ReadOnly,
+				ToolName:      plugin.ModelToolName(name, raw),
+				ConnectSource: "mcp",
+				ConnectName:   name,
+				AutoStart:     p.ShouldAutoStart(),
+			})
 		}
 	}
 	return out

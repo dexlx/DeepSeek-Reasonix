@@ -21,6 +21,8 @@ func (a *Agent) SeedCapabilityRoute(decision capability.RouteDecision) {
 	a.capabilityLedger.Reset()
 	a.capabilityLedger.SeedCandidates(decision)
 	a.capabilityPreferReminded = false
+	a.capabilityRequireMissSeen = false
+	a.capabilityPreferMissSeen = false
 }
 
 // CapabilityLedger returns the turn-scoped capability ledger (may be nil).
@@ -42,6 +44,19 @@ func (a *Agent) CapabilityAudit() *capability.Audit {
 func (a *Agent) noteCapabilityInvocation(toolName string, args json.RawMessage, callErr error) {
 	if a == nil || a.capabilityLedger == nil {
 		return
+	}
+	// Successful/failed proxied MCP calls execute the resolved target
+	// directly, so this is the single audit point for action=call (inspect,
+	// decline, and resolve-time unavailability are counted in ResolveCall,
+	// which returns before this runs).
+	if toolName == "use_capability" && a.capabilityAudit != nil {
+		var p struct {
+			Action string `json:"action"`
+		}
+		_ = json.Unmarshal(args, &p)
+		if strings.EqualFold(strings.TrimSpace(p.Action), "call") {
+			a.capabilityAudit.RecordMCPProxy(false, true, callErr != nil)
+		}
 	}
 	id := capabilityIDFromToolCall(toolName, args)
 	if id == "" {
@@ -113,6 +128,15 @@ func (a *Agent) capabilityGateFailure() string {
 	}
 	gate := a.capabilityLedger.CheckFinalGate()
 	if gate.Reason == "" {
+		// A clean gate after an earlier miss this turn is a recovery — the
+		// model was nudged and then actually invoked the capability.
+		if a.capabilityRequireMissSeen || a.capabilityPreferMissSeen {
+			if a.capabilityAudit != nil {
+				a.capabilityAudit.RecordGateRecovery(a.capabilityRequireMissSeen, a.capabilityPreferMissSeen)
+			}
+			a.capabilityRequireMissSeen = false
+			a.capabilityPreferMissSeen = false
+		}
 		return ""
 	}
 	if gate.PreferRemind && !a.capabilityPreferReminded {
@@ -120,6 +144,7 @@ func (a *Agent) capabilityGateFailure() string {
 			a.capabilityLedger.MarkReminded(id)
 		}
 		a.capabilityPreferReminded = true
+		a.capabilityPreferMissSeen = true
 		if a.capabilityAudit != nil {
 			a.capabilityAudit.RecordGate(false, true, false)
 		}
@@ -141,12 +166,14 @@ func (a *Agent) capabilityGateFailure() string {
 		return gate.Reason
 	}
 	if len(gate.RequireIDs) > 0 {
+		a.capabilityRequireMissSeen = true
 		if a.capabilityAudit != nil {
 			a.capabilityAudit.RecordGate(true, false, false)
 		}
 		return gate.Reason
 	}
 	if len(gate.PreferIDs) > 0 {
+		a.capabilityPreferMissSeen = true
 		if a.capabilityAudit != nil {
 			a.capabilityAudit.RecordGate(false, true, false)
 		}

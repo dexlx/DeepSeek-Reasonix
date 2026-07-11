@@ -1,10 +1,12 @@
 package capability
 
 import (
+	"strings"
 	"testing"
 
 	"reasonix/internal/config"
 	"reasonix/internal/plugin"
+	"reasonix/internal/tool"
 )
 
 func boolPtr(b bool) *bool { return &b }
@@ -85,5 +87,71 @@ func TestRecordRouterUsageAccumulates(t *testing.T) {
 	}
 	if snap.RouterLatencyMs != 500 {
 		t.Fatalf("latency = %v", snap.RouterLatencyMs)
+	}
+}
+
+func TestDeliveryRouteRenderKeepsCapabilityIDAndProxyInstruction(t *testing.T) {
+	entry := Entry{
+		ID: "mcp-tool:gh/search_issues", Kind: KindMCPTool, Name: "gh/search_issues",
+		Status: StatusConfigured, ConnectSource: "mcp", ConnectName: "gh",
+	}
+	d := RouteDecision{Delivery: true, Candidates: []RouteCandidate{{Entry: entry, Policy: AutoUsePrefer, Reason: "matches task"}}}
+	out := RenderTransientBlock(d)
+	if !strings.Contains(out, "mcp-tool:gh/search_issues") {
+		t.Fatalf("delivery render must keep the concrete capability id:\n%s", out)
+	}
+	if !strings.Contains(out, `use_capability(action="call", capability_id="mcp-tool:gh/search_issues"`) {
+		t.Fatalf("delivery render must instruct the proxy call:\n%s", out)
+	}
+	if strings.Contains(out, "connect_tool_source") {
+		t.Fatalf("connect_tool_source is not registered in Delivery:\n%s", out)
+	}
+	// Non-delivery keeps the historical connect_tool_source instruction.
+	d.Delivery = false
+	out = RenderTransientBlock(d)
+	if !strings.Contains(out, "connect_tool_source") {
+		t.Fatalf("non-delivery render lost connect_tool_source:\n%s", out)
+	}
+}
+
+func TestCatalogKeepsProxyToolsAfterConnect(t *testing.T) {
+	proxy := map[string][]plugin.CachedTool{
+		"gh": {{Name: "search_issues", Description: "search", ReadOnly: true}},
+	}
+	cat := BuildCatalog(CatalogOptions{
+		Plugins:    []config.PluginEntry{{Name: "gh", AutoStart: boolPtr(false)}},
+		Profile:    ProfileDelivery,
+		Connected:  map[string]bool{"gh": true}, // server is ready now
+		ProxyTools: proxy,
+	})
+	byID := map[string]Entry{}
+	for _, e := range cat.Entries {
+		byID[e.ID] = e
+	}
+	toolEntry, ok := byID["mcp-tool:gh/search_issues"]
+	if !ok {
+		t.Fatalf("proxy-connected tool vanished from catalog: %+v", cat.Entries)
+	}
+	if toolEntry.Status != StatusReady {
+		t.Fatalf("proxy-connected tool should be ready, got %q", toolEntry.Status)
+	}
+	// When the same server's tools are already on the registry, no duplicates.
+	cat = BuildCatalog(CatalogOptions{
+		Tools:      []tool.ContractEntry{{Name: plugin.ModelToolName("gh", "search_issues")}},
+		Plugins:    []config.PluginEntry{{Name: "gh", AutoStart: boolPtr(false)}},
+		Profile:    ProfileDelivery,
+		Connected:  map[string]bool{"gh": true},
+		ProxyTools: proxy,
+	})
+	count := 0
+	for _, e := range cat.Entries {
+		if e.ID == "mcp-tool:gh/search_issues" {
+			count++
+		}
+	}
+	// The registry's own ToolEntries contribution is the single source here;
+	// the proxy snapshot must not add a duplicate.
+	if count != 1 {
+		t.Fatalf("registry-backed server should have exactly one catalog entry, got %d", count)
 	}
 }
