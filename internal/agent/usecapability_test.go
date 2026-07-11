@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -13,6 +14,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -47,7 +49,8 @@ func TestUseCapabilityDeclineAndInspect(t *testing.T) {
 	ledger.SeedCandidates(capability.RouteDecision{Candidates: []capability.RouteCandidate{
 		{Entry: capability.Entry{ID: "skill:review"}, Policy: capability.AutoUsePrefer},
 	}})
-	tl := NewUseCapabilityTool(context.Background(), nil, nil, tool.NewRegistry(), ledger, nil, func() capability.Catalog {
+	audit := &capability.Audit{}
+	tl := NewUseCapabilityTool(context.Background(), nil, nil, tool.NewRegistry(), ledger, audit, func() capability.Catalog {
 		return capability.Catalog{Entries: []capability.Entry{{
 			ID: "skill:review", Kind: capability.KindSkill, Name: "review", Description: "review code", Status: capability.StatusReady,
 		}}}
@@ -63,12 +66,35 @@ func TestUseCapabilityDeclineAndInspect(t *testing.T) {
 	if gate := ledger.CheckFinalGate(); gate.Reason != "" {
 		t.Fatalf("after decline gate = %+v", gate)
 	}
+	if got := audit.Snapshot().Declines; got != 1 {
+		t.Fatalf("decline audit = %d, want 1", got)
+	}
 	// Cannot decline require.
 	ledger.SeedCandidates(capability.RouteDecision{Candidates: []capability.RouteCandidate{
 		{Entry: capability.Entry{ID: "skill:must"}, Policy: capability.AutoUseRequire},
 	}})
 	if _, err := tl.Execute(context.Background(), json.RawMessage(`{"action":"decline","capability_id":"skill:must","reason":"no"}`)); err == nil {
 		t.Fatal("expected decline of require to fail")
+	}
+}
+
+func TestDedicatedSecurityReviewUsesCanonicalSkillCapabilityID(t *testing.T) {
+	got := capabilityIDFromToolCall("security_review", json.RawMessage(`{"task":"audit auth"}`))
+	if got != "skill:security-review" {
+		t.Fatalf("capability ID = %q, want skill:security-review", got)
+	}
+}
+
+func TestSkillInvocationUnavailableIsAudited(t *testing.T) {
+	audit := &capability.Audit{}
+	a := New(&scriptedProvider{name: "p"}, tool.NewRegistry(), NewSession("sys"), Options{
+		CapabilityLedger: capability.NewLedger(),
+		CapabilityAudit:  audit,
+	}, event.Discard)
+	a.noteCapabilityInvocation("run_skill", json.RawMessage(`{"name":"delivery-only"}`), fmt.Errorf("run_skill: %w", skill.ErrInvocationUnavailable))
+	snap := audit.Snapshot()
+	if snap.SkillInvocations != 1 || snap.SkillFailures != 1 || snap.SkillUnavailable != 1 {
+		t.Fatalf("skill unavailable audit = %+v", snap)
 	}
 }
 

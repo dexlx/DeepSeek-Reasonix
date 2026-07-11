@@ -134,6 +134,9 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 				return tool.ResolvedCall{}, err
 			}
 		}
+		if t.audit != nil {
+			t.audit.RecordDecline()
+		}
 		base.SkipExecute = true
 		base.Result = fmt.Sprintf("declined capability %s: %s", id, reason)
 		base.ReadOnly = true

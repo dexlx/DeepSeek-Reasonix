@@ -2,11 +2,13 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 
 	"reasonix/internal/capability"
 	"reasonix/internal/evidence"
+	"reasonix/internal/skill"
 	"reasonix/internal/tool"
 )
 
@@ -65,7 +67,7 @@ func (a *Agent) noteCapabilityInvocation(toolName string, args json.RawMessage, 
 	if callErr != nil {
 		a.capabilityLedger.MarkFailed(id, callErr.Error())
 		if a.capabilityAudit != nil && strings.HasPrefix(id, "skill:") {
-			a.capabilityAudit.RecordSkill(true, false)
+			a.capabilityAudit.RecordSkill(true, errors.Is(callErr, skill.ErrInvocationUnavailable))
 		}
 		return
 	}
@@ -89,6 +91,9 @@ func capabilityIDFromToolCall(toolName string, args json.RawMessage) string {
 			case "explore", "research", "review", "security_review":
 				name = toolName
 			}
+		}
+		if name == "security_review" {
+			name = "security-review"
 		}
 		if name == "" {
 			return ""

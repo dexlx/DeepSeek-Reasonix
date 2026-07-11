@@ -35,13 +35,14 @@ func (c *Controller) withCapabilityRoute(composed, routeInput string) string {
 
 func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecision {
 	tools := c.ToolContractEntries()
-	profile := capability.ProfileBalanced
-	delivery := false
+	profile := c.runtimeProfile
+	if profile == "" {
+		profile = capability.ProfileBalanced
+	}
+	delivery := profile == capability.ProfileDelivery
 	var proxyTools map[string][]plugin.CachedTool
 	if reg := c.mcp.registry(); reg != nil {
 		if t, ok := reg.Get("use_capability"); ok {
-			profile = capability.ProfileDelivery
-			delivery = true
 			if p, ok := t.(interface {
 				ConnectedProxyTools() map[string][]plugin.CachedTool
 			}); ok {
@@ -74,8 +75,12 @@ func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecisi
 		}
 	}
 	catalog := capability.BuildCatalog(opts)
-	decision := capability.Route(routeInput, catalog.Entries)
-	decision.Delivery = delivery
+	var decision capability.RouteDecision
+	if delivery {
+		decision = capability.RouteDelivery(routeInput, catalog.Entries)
+	} else {
+		decision = capability.Route(routeInput, catalog.Entries)
+	}
 
 	// Semantic routing only in Delivery when no strong require/prefer match.
 	if delivery && c.semanticRouter != nil {
@@ -98,6 +103,9 @@ func (c *Controller) routeCapabilities(routeInput string) capability.RouteDecisi
 		}
 	} else if c.capabilityAudit != nil {
 		c.capabilityAudit.RecordRoute(false, false)
+	}
+	if c.capabilityAudit != nil {
+		c.capabilityAudit.RecordDecision(decision)
 	}
 	return decision
 }

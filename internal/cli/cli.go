@@ -453,7 +453,8 @@ func runAgent(args []string) int {
 			if audit := exec.CapabilityAudit(); audit != nil {
 				snap := audit.Snapshot()
 				metrics.m.MergeCapabilityAuditCounters(
-					snap.Routes, snap.SemanticRoutes, snap.SemanticFallbacks,
+					snap.Routes, snap.RoutedCandidates, snap.RoutedRequire, snap.RoutedPrefer, snap.RoutedSuggest, snap.Declines,
+					snap.SemanticRoutes, snap.SemanticFallbacks,
 					snap.RequireMissing, snap.RequireRecovered, snap.PreferMissing, snap.PreferRecovered,
 					snap.SkillInvocations, snap.SkillFailures, snap.SkillUnavailable,
 					snap.MCPInspect, snap.MCPCall, snap.MCPCallFailures,

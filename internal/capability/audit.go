@@ -8,6 +8,11 @@ type Audit struct {
 	mu sync.Mutex
 
 	Routes                 int
+	RoutedCandidates       int
+	RoutedRequire          int
+	RoutedPrefer           int
+	RoutedSuggest          int
+	Declines               int
 	SemanticRoutes         int
 	SemanticFallbacks      int
 	RequireMissing         int
@@ -26,6 +31,36 @@ type Audit struct {
 	RouterCompletionTokens int
 	RouterCost             float64
 	RouterLatencyMs        int64
+}
+
+// RecordDecision captures the route-to-invocation funnel before the model acts.
+func (a *Audit) RecordDecision(decision RouteDecision) {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, candidate := range decision.Candidates {
+		a.RoutedCandidates++
+		switch candidate.Policy {
+		case AutoUseRequire:
+			a.RoutedRequire++
+		case AutoUsePrefer:
+			a.RoutedPrefer++
+		case AutoUseSuggest:
+			a.RoutedSuggest++
+		}
+	}
+}
+
+// RecordDecline counts an explicit model decision not to use a preferred route.
+func (a *Audit) RecordDecline() {
+	if a == nil {
+		return
+	}
+	a.mu.Lock()
+	a.Declines++
+	a.mu.Unlock()
 }
 
 // RecordRoute increments deterministic/hybrid route counts.
@@ -155,6 +190,11 @@ func (a *Audit) Snapshot() Audit {
 	defer a.mu.Unlock()
 	return Audit{
 		Routes:                 a.Routes,
+		RoutedCandidates:       a.RoutedCandidates,
+		RoutedRequire:          a.RoutedRequire,
+		RoutedPrefer:           a.RoutedPrefer,
+		RoutedSuggest:          a.RoutedSuggest,
+		Declines:               a.Declines,
 		SemanticRoutes:         a.SemanticRoutes,
 		SemanticFallbacks:      a.SemanticFallbacks,
 		RequireMissing:         a.RequireMissing,

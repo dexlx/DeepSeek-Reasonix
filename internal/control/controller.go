@@ -144,6 +144,7 @@ type Controller struct {
 	capCacheHashOK  map[string]bool
 	semanticRouter  *capability.SemanticRouter
 	capabilityAudit *capability.Audit
+	runtimeProfile  capability.Profile
 
 	// goals owns the active goal's FSM (status, intercepts, idle/turn counters)
 	// and its persistence, behind its own mutex so a per-turn goal save never
@@ -419,6 +420,9 @@ type Options struct {
 	// terminal. Bot/headless frontends set a positive value so an unanswered
 	// prompt can't wedge the session indefinitely (#4626, #4402).
 	ApprovalTimeout time.Duration
+	// RuntimeProfile selects capability routing/filtering behavior. Empty keeps
+	// the backward-compatible Balanced profile.
+	RuntimeProfile capability.Profile
 }
 
 // New builds a Controller. A nil Sink is replaced with event.Discard.
@@ -434,6 +438,10 @@ func New(opts Options) *Controller {
 	pluginCtx := opts.PluginCtx
 	if pluginCtx == nil {
 		pluginCtx = context.Background()
+	}
+	runtimeProfile := opts.RuntimeProfile
+	if runtimeProfile == "" {
+		runtimeProfile = capability.ProfileBalanced
 	}
 	c := &Controller{
 		runner:                            opts.Runner,
@@ -468,6 +476,7 @@ func New(opts Options) *Controller {
 		balanceClient:                     opts.BalanceClient,
 		jobs:                              opts.Jobs,
 		mcp:                               newMcpManager(opts.Host, opts.Registry, pluginCtx),
+		runtimeProfile:                    runtimeProfile,
 		workspaceRoot:                     opts.WorkspaceRoot,
 		externalFolderToolRefs:            opts.ExternalFolderToolRefs,
 		approval:                          newApprovalManager(opts.Policy, ToolApprovalAsk, opts.ApprovalTimeout),

@@ -84,6 +84,7 @@ func hasStrongMatch(d RouteDecision) bool {
 
 func semanticPool(text string, entries []Entry) []Entry {
 	var scored []Entry
+	crossLanguageFallback := containsHan(text)
 	for _, e := range entries {
 		if e.Status == StatusDisabled || e.Status == StatusFailed {
 			continue
@@ -101,10 +102,9 @@ func semanticPool(text string, entries []Entry) []Entry {
 		if blob == "" {
 			continue
 		}
-		// Cheap lexical filter only: share a token (len>=3) with the task text.
-		// Do not dump every auto-use skill into the pool — that would fire a
-		// semantic model call on every Delivery turn and pollute the main
-		// provider turn counter / cost without improving recall.
+		// Prefer a cheap lexical match. For Han-script tasks, also admit the
+		// bounded built-in/high-policy Skill set so English metadata does not make
+		// the semantic router blind to Chinese requests.
 		matched := false
 		for _, tok := range strings.Fields(text) {
 			if len(tok) < 3 {
@@ -115,7 +115,7 @@ func semanticPool(text string, entries []Entry) []Entry {
 				break
 			}
 		}
-		if !matched {
+		if !matched && !(crossLanguageFallback && e.Kind == KindSkill && (e.Source == "builtin" || e.AutoUse == AutoUsePrefer || e.AutoUse == AutoUseRequire)) {
 			continue
 		}
 		scored = append(scored, e)
@@ -124,6 +124,15 @@ func semanticPool(text string, entries []Entry) []Entry {
 		scored = scored[:semanticMaxCandidates]
 	}
 	return scored
+}
+
+func containsHan(text string) bool {
+	for _, r := range text {
+		if r >= '\u3400' && r <= '\u9fff' {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *SemanticRouter) callModel(ctx context.Context, input string, candidates []Entry) ([]string, error) {

@@ -42,6 +42,11 @@ type runMetrics struct {
 	ReadinessChecks            int     `json:"readiness_checks,omitempty"`
 	ReadinessRecoveries        int     `json:"readiness_recoveries,omitempty"`
 	CapabilityRoutes           int     `json:"capability_routes,omitempty"`
+	CapabilityRoutedCandidates int     `json:"capability_routed_candidates,omitempty"`
+	CapabilityRoutedRequire    int     `json:"capability_routed_require,omitempty"`
+	CapabilityRoutedPrefer     int     `json:"capability_routed_prefer,omitempty"`
+	CapabilityRoutedSuggest    int     `json:"capability_routed_suggest,omitempty"`
+	CapabilityDeclines         int     `json:"capability_declines,omitempty"`
 	CapabilitySemanticRoutes   int     `json:"capability_semantic_routes,omitempty"`
 	CapabilitySkillInvocations int     `json:"capability_skill_invocations,omitempty"`
 	CapabilityMCPCall          int     `json:"capability_mcp_call,omitempty"`

@@ -169,6 +169,12 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	tokenMode := NormalizeTokenMode(opts.TokenMode)
 	tokenEconomy := tokenMode == TokenModeEconomy
 	tokenDelivery := tokenMode == TokenModeDelivery
+	runtimeProfile := capability.ProfileBalanced
+	if tokenEconomy {
+		runtimeProfile = capability.ProfileEconomy
+	} else if tokenDelivery {
+		runtimeProfile = capability.ProfileDelivery
+	}
 	keepPolicy := agentKeepPolicy(cfg.Agent.Keep)
 	entry, ok := cfg.ResolveModel(modelName)
 	if !ok {
@@ -323,6 +329,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		MaxDepth:      cfg.SkillMaxDepth(),
 		Stderr:        opts.Stderr,
 	})
+	// Install the static profile filter before building the prompt index and
+	// dedicated skill tools. The dependency checker is attached once the live
+	// registry/plugin host has been assembled below.
+	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), nil)
 	skills := skillStore.List()
 	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
 	allSkills := allSkillStore.List()
@@ -1074,7 +1084,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// on-demand MCP servers connect through the proxy.
 	var capLedger *capability.Ledger
 	var capAudit *capability.Audit
-	var capSpecs []plugin.Spec
+	capSpecs := PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions)
+	cachedTools, cacheHashOK := capability.LoadCachedToolsForSpecs(capSpecs)
+	var capProxy *agent.UseCapabilityTool
 	if tokenDelivery {
 		capLedger = capability.NewLedger()
 		capAudit = &capability.Audit{}
@@ -1087,9 +1099,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		// The proxy and the catalog share the boot-converted specs (env
 		// expansion, workspace overrides, timeouts, trusted read-only tools) —
 		// every configured server, including auto_start=false, is proxy-callable.
-		capSpecs = PluginSpecsForRootWithOptions(cfg.Plugins, root, pluginSpecOptions)
-		cachedTools, cacheHashOK := capability.LoadCachedToolsForSpecs(capSpecs)
-		var capProxy *agent.UseCapabilityTool
 		catalogFn := func() capability.Catalog {
 			conn := map[string]bool{}
 			if pluginHost != nil {
@@ -1120,6 +1129,35 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		capProxy = agent.NewUseCapabilityTool(ctx, pluginHost, capSpecs, reg, capLedger, capAudit, catalogFn)
 		reg.Add(capProxy)
 	}
+	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), func(requires []string) []string {
+		connected := map[string]bool{}
+		failed := map[string]string{}
+		if pluginHost != nil {
+			for _, name := range pluginHost.ServerNames() {
+				connected[name] = true
+			}
+			for _, failure := range pluginHost.Failures() {
+				failed[failure.Name] = failure.Error
+			}
+		}
+		var proxyTools map[string][]plugin.CachedTool
+		if capProxy != nil {
+			proxyTools = capProxy.ConnectedProxyTools()
+		}
+		catalog := capability.BuildCatalog(capability.CatalogOptions{
+			Tools:       reg.ContractEntries(),
+			Skills:      skillStore.List(),
+			Plugins:     cfg.Plugins,
+			Profile:     runtimeProfile,
+			Connected:   connected,
+			Failed:      failed,
+			CachedTools: cachedTools,
+			CacheHashOK: cacheHashOK,
+			ProxyTools:  proxyTools,
+		})
+		_, missing := catalog.RequiresReady(requires)
+		return missing
+	})
 
 	execSess := agent.NewSession(sysPrompt)
 	var memCompiler *memorycompiler.Runtime
@@ -1240,6 +1278,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Shell:                  shell,
 		PlanModeAllowedTools:   cfg.Agent.PlanModeAllowedTools,
 		ApprovalTimeout:        opts.ApprovalTimeout,
+		RuntimeProfile:         runtimeProfile,
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},
@@ -1290,6 +1329,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			router = &capability.SemanticRouter{Provider: execProv, Sink: sink, Pricing: entry.Price, Audit: capAudit}
 		}
 		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, router, capAudit)
+	} else if tokenEconomy {
+		ctrl.WireCapabilityRouting(cfg.Plugins, capSpecs, nil, nil)
 	}
 	return ctrl, nil
 }

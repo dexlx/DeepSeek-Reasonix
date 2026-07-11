@@ -141,9 +141,20 @@ func ToolEntries(tools []tool.ContractEntry) []Entry {
 }
 
 func Route(input string, entries []Entry) RouteDecision {
+	return RouteDecision{Candidates: limitRouteCandidates(routeCandidates(input, entries))}
+}
+
+// RouteDelivery routes against the full matched set before promoting built-in
+// playbooks, so candidates that become prefer are never discarded by the
+// ordinary suggest budget first.
+func RouteDelivery(input string, entries []Entry) RouteDecision {
+	return PromoteDelivery(RouteDecision{Candidates: routeCandidates(input, entries)})
+}
+
+func routeCandidates(input string, entries []Entry) []RouteCandidate {
 	text := normalize(input)
 	if text == "" {
-		return RouteDecision{}
+		return nil
 	}
 	var candidates []RouteCandidate
 	for _, e := range entries {
@@ -163,10 +174,52 @@ func Route(input string, entries []Entry) RouteDecision {
 		}
 		return candidates[i].Entry.ID < candidates[j].Entry.ID
 	})
-	if len(candidates) > 5 {
-		candidates = candidates[:5]
+	return candidates
+}
+
+// PromoteDelivery strengthens matched built-in playbooks in Delivery. Custom
+// skills keep their authored auto-use policy; only shipped workflows with a
+// concrete trigger match move from suggest to prefer.
+func PromoteDelivery(decision RouteDecision) RouteDecision {
+	decision.Delivery = true
+	for i := range decision.Candidates {
+		candidate := &decision.Candidates[i]
+		if candidate.Policy == AutoUseSuggest && candidate.Entry.Kind == KindSkill && candidate.Entry.Source == string(skill.ScopeBuiltin) {
+			candidate.Policy = AutoUsePrefer
+			candidate.Reason += "; Delivery prefers matched built-in playbooks"
+		}
 	}
-	return RouteDecision{Candidates: candidates}
+	sort.SliceStable(decision.Candidates, func(i, j int) bool {
+		if rank(decision.Candidates[i].Policy) != rank(decision.Candidates[j].Policy) {
+			return rank(decision.Candidates[i].Policy) > rank(decision.Candidates[j].Policy)
+		}
+		if decision.Candidates[i].Entry.Kind != decision.Candidates[j].Entry.Kind {
+			return decision.Candidates[i].Entry.Kind < decision.Candidates[j].Entry.Kind
+		}
+		return decision.Candidates[i].Entry.ID < decision.Candidates[j].Entry.ID
+	})
+	return RouteDecision{Candidates: limitRouteCandidates(decision.Candidates), Delivery: true}
+}
+
+func limitRouteCandidates(candidates []RouteCandidate) []RouteCandidate {
+	const targetCandidates = 5
+	strong := make([]RouteCandidate, 0, len(candidates))
+	suggested := make([]RouteCandidate, 0, targetCandidates)
+	for _, candidate := range candidates {
+		if candidate.Policy == AutoUseRequire || candidate.Policy == AutoUsePrefer {
+			strong = append(strong, candidate)
+		} else if candidate.Policy == AutoUseSuggest {
+			suggested = append(suggested, candidate)
+		}
+	}
+	slots := targetCandidates - len(strong)
+	if slots < 0 {
+		slots = 0
+	}
+	if len(suggested) > slots {
+		suggested = suggested[:slots]
+	}
+	return append(strong, suggested...)
 }
 
 func RenderTransientBlock(d RouteDecision) string {

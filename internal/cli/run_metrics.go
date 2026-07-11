@@ -35,6 +35,11 @@ type RunMetrics struct {
 	ReadinessMissingMutation       int     `json:"readiness_missing_mutation"`
 	// Capability / Delivery routing counters (optional; zero for older readers).
 	CapabilityRoutes               int                        `json:"capability_routes,omitempty"`
+	CapabilityRoutedCandidates     int                        `json:"capability_routed_candidates,omitempty"`
+	CapabilityRoutedRequire        int                        `json:"capability_routed_require,omitempty"`
+	CapabilityRoutedPrefer         int                        `json:"capability_routed_prefer,omitempty"`
+	CapabilityRoutedSuggest        int                        `json:"capability_routed_suggest,omitempty"`
+	CapabilityDeclines             int                        `json:"capability_declines,omitempty"`
 	CapabilitySemanticRoutes       int                        `json:"capability_semantic_routes,omitempty"`
 	CapabilitySemanticFallbacks    int                        `json:"capability_semantic_fallbacks,omitempty"`
 	CapabilityRequireMissing       int                        `json:"capability_require_missing,omitempty"`
@@ -201,7 +206,8 @@ func (s *metricsSink) RecordReadinessAudit(a evidence.ReadinessAudit) {
 
 // MergeCapabilityAuditCounters copies capability counters into RunMetrics.
 func (m *RunMetrics) MergeCapabilityAuditCounters(
-	routes, semantic, fallbacks, requireMiss, requireRec, preferMiss, preferRec int,
+	routes, routedCandidates, routedRequire, routedPrefer, routedSuggest, declines int,
+	semantic, fallbacks, requireMiss, requireRec, preferMiss, preferRec int,
 	skillInv, skillFail, skillUnavail int,
 	mcpInspect, mcpCall, mcpFail int,
 	reviewBlocks, securityBlocks int,
@@ -213,6 +219,11 @@ func (m *RunMetrics) MergeCapabilityAuditCounters(
 		return
 	}
 	m.CapabilityRoutes += routes
+	m.CapabilityRoutedCandidates += routedCandidates
+	m.CapabilityRoutedRequire += routedRequire
+	m.CapabilityRoutedPrefer += routedPrefer
+	m.CapabilityRoutedSuggest += routedSuggest
+	m.CapabilityDeclines += declines
 	m.CapabilitySemanticRoutes += semantic
 	m.CapabilitySemanticFallbacks += fallbacks
 	m.CapabilityRequireMissing += requireMiss

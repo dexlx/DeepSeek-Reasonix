@@ -92,6 +92,20 @@ func TestRecordRouterUsageAccumulates(t *testing.T) {
 	}
 }
 
+func TestAuditRecordsDecisionFunnelAndDecline(t *testing.T) {
+	a := &Audit{}
+	a.RecordDecision(RouteDecision{Candidates: []RouteCandidate{
+		{Policy: AutoUseRequire},
+		{Policy: AutoUsePrefer},
+		{Policy: AutoUseSuggest},
+	}})
+	a.RecordDecline()
+	snap := a.Snapshot()
+	if snap.RoutedCandidates != 3 || snap.RoutedRequire != 1 || snap.RoutedPrefer != 1 || snap.RoutedSuggest != 1 || snap.Declines != 1 {
+		t.Fatalf("decision funnel audit = %+v", snap)
+	}
+}
+
 func TestDeliveryRouteRenderKeepsCapabilityIDAndProxyInstruction(t *testing.T) {
 	entry := Entry{
 		ID: "mcp-tool:gh/search_issues", Kind: KindMCPTool, Name: "gh/search_issues",

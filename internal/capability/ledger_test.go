@@ -63,3 +63,14 @@ func TestSemanticPoolRequiresLexicalOverlap(t *testing.T) {
 		t.Fatalf("unrelated text should not open semantic pool: %+v", pool2)
 	}
 }
+
+func TestSemanticPoolAllowsBoundedChineseBuiltinFallback(t *testing.T) {
+	entries := []Entry{
+		{ID: "skill:explore", Kind: KindSkill, Name: "explore", Source: "builtin", Description: "inspect architecture", AutoUse: AutoUseSuggest},
+		{ID: "skill:custom", Kind: KindSkill, Name: "custom", Source: "project", Description: "unrelated custom workflow", AutoUse: AutoUseSuggest},
+	}
+	pool := semanticPool("帮我梳理一下这个功能", entries)
+	if len(pool) != 1 || pool[0].ID != "skill:explore" {
+		t.Fatalf("Chinese fallback pool = %+v, want only the bounded built-in candidate", pool)
+	}
+}

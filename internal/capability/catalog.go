@@ -113,7 +113,7 @@ func SkillEntriesFiltered(skills []skill.Skill, tools []tool.ContractEntry, prof
 	filtered := make([]Entry, 0, len(out))
 	for i, e := range out {
 		sk := skills[i]
-		if !skillAllowedInProfile(sk, profile) {
+		if !skill.AllowedInProfile(sk, string(profile)) {
 			continue
 		}
 		e.Requires = cleanList(sk.Requires)
@@ -207,19 +207,6 @@ func MCPServerEntries(opts CatalogOptions) []Entry {
 		}
 	}
 	return out
-}
-
-func skillAllowedInProfile(sk skill.Skill, profile Profile) bool {
-	if len(sk.Profiles) == 0 {
-		return true
-	}
-	want := string(profile)
-	for _, p := range sk.Profiles {
-		if strings.EqualFold(strings.TrimSpace(p), want) {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeProfiles(in []string) []string {
