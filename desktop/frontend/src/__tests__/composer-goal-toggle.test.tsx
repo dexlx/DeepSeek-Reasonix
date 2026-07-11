@@ -1110,5 +1110,93 @@ console.log("\ncomposer goal toggle");
   dom.window.close();
 }
 
+{
+  const dom = installDom();
+  let savedFiles = 0;
+  mockApp({
+    Commands: async () => [{ name: "skill", description: "Manage skills", kind: "builtin" }],
+    ListDirForTab: async () => [fileEntry("README.md")],
+    SearchFileRefsForTab: async () => [],
+    ListSessions: async () => [{ path: "/sessions/recent.jsonl", title: "Recent session", current: false }],
+    SavePastedFile: async () => {
+      savedFiles += 1;
+      return ".reasonix/attachments/notes.txt";
+    },
+  });
+  const { root, rerender } = await renderComposer();
+  const textarea = document.querySelector("textarea") as HTMLTextAreaElement | null;
+  if (!textarea) throw new Error("composer textarea did not render");
+
+  const contentTrigger = document.querySelector(".composer-content-trigger") as HTMLButtonElement | null;
+  if (!contentTrigger) throw new Error("content menu trigger did not render");
+  await act(async () => {
+    contentTrigger.click();
+    await flushTimers();
+  });
+  ok(Boolean(document.querySelector(".composer-content-menu")), "plus trigger opens the add-content menu");
+  const initialContentItems = Array.from(document.querySelectorAll<HTMLButtonElement>(".composer-content-menu__item"));
+  eq(initialContentItems.length, 4, "add-content menu exposes four focused actions");
+  eq(initialContentItems[1]?.querySelector("kbd")?.textContent, "@", "add-content menu exposes the workspace reference shortcut");
+  eq(initialContentItems[2]?.querySelector("kbd")?.textContent, "#", "add-content menu exposes the recent-session shortcut");
+  eq(initialContentItems[3]?.querySelector("kbd")?.textContent, "/", "add-content menu exposes commands and skills");
+
+  const attachmentButton = initialContentItems[0];
+  const fileInput = document.querySelector(".composer-content-file-input") as HTMLInputElement | null;
+  if (!attachmentButton || !fileInput) throw new Error("attachment picker controls did not render");
+  await act(async () => {
+    attachmentButton.click();
+    Object.defineProperty(fileInput, "files", { configurable: true, value: [new File(["notes"], "notes.txt", { type: "text/plain" })] });
+    fileInput.dispatchEvent(new Event("change", { bubbles: true }));
+    await flushTimers();
+  });
+  await waitFor("attachment chosen from add-content menu", () => savedFiles === 1);
+  eq(savedFiles, 1, "attachment action reuses the existing file-save path");
+
+  await replaceComposerDraft(rerender, 3001, "@");
+  await waitFor("workspace menu before plus toggle", () => Boolean(document.querySelector(".slashmenu")));
+  await act(async () => {
+    contentTrigger.click();
+    await flushTimers();
+  });
+  ok(!document.querySelector(".slashmenu"), "opening add-content closes the active suggestion panel");
+  ok(Boolean(document.querySelector(".composer-content-menu")), "add-content remains the only open composer surface");
+
+  const sessionButton = document.querySelectorAll<HTMLButtonElement>(".composer-content-menu__item")[2];
+  if (!sessionButton) throw new Error("recent-session action did not render");
+  await act(async () => {
+    sessionButton.click();
+    await flushTimers();
+  });
+  await waitFor("direct recent-session picker", () => Boolean(document.querySelector(".slashmenu__search")));
+  eq(textarea.value, "@ #", "recent-session action inserts # at the remembered caret");
+  ok(!document.querySelector(".composer-content-menu"), "recent-session picker replaces the add-content menu");
+  const sessionSearch = document.querySelector(".slashmenu__search") as HTMLInputElement | null;
+  if (!sessionSearch) throw new Error("recent-session search did not render");
+  await act(async () => {
+    sessionSearch.dispatchEvent(new KeyboardEvent("keydown", { key: "Escape", bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(textarea.value, "@", "Escape closes the direct recent-session picker and removes its # token");
+
+  await replaceComposerDraft(rerender, 3002, "");
+  await act(async () => {
+    contentTrigger.click();
+    await flushTimers();
+  });
+  const commandButton = document.querySelectorAll<HTMLButtonElement>(".composer-content-menu__item")[3];
+  if (!commandButton) throw new Error("command action did not render");
+  await act(async () => {
+    commandButton.click();
+    await flushTimers();
+  });
+  eq(textarea.value, "/", "command action inserts / at the caret");
+  await waitFor("slash menu from add-content action", () => Boolean(document.querySelector(".slashmenu")));
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
