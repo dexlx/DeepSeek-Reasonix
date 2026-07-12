@@ -1410,6 +1410,7 @@ export const zhTW: Record<DictKey, string> = {
   "tool.stepOne": "{n} 步",
   "tool.stepOther": "{n} 步",
   "tool.error": "錯誤",
+  "tool.receivingArgs": "接收參數中 ↓ {chars}…",
   "tool.errorReceiptMismatch": "證據命令沒有匹配的成功執行記錄",
   "tool.truncated": "輸出已截斷",
   "tool.showAllLines": "顯示全部 {n} 行",

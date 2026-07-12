@@ -45,6 +45,7 @@ export interface WireTool {
   truncated?: boolean;
   durationMs?: number;
   partial?: boolean; // an early dispatch (name only) — a full one with args follows
+  argChars?: number; // partial only: cumulative argument chars streamed so far
   parentId?: string; // set on a sub-agent's calls — the parent `task` call's id
   diff?: string;
   added?: number;

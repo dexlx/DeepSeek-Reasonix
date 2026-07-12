@@ -2145,6 +2145,7 @@ export const en = {
   "tool.stepOne": "{n} step",
   "tool.stepOther": "{n} steps",
   "tool.error": "error",
+  "tool.receivingArgs": "receiving arguments ↓ {chars}…",
   "tool.errorReceiptMismatch": "verification command has no matching successful receipt",
   "tool.truncated": "output truncated",
   "tool.showAllLines": "show all {n} lines",

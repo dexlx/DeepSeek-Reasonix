@@ -3724,6 +3724,13 @@ func topicTitleUserTurnsFromSession(path string) []string {
 	}
 	var users []string
 	for _, msg := range msgs {
+		// Host-injected synthetic turns (readiness nudges, recovery retries) and
+		// mid-turn steers are persisted as role "user" but are not user-authored:
+		// counting them inflated userTurns past the stage-3 threshold and let
+		// "Host final-answer readiness check failed…" become a topic title.
+		if !agent.IsUserAuthoredTurn(msg.Text) {
+			continue
+		}
 		content := control.StripComposePrefixes(agent.HandoffTask(msg.Text))
 		content = control.StripReferencedContextPrefix(content)
 		if strings.TrimSpace(content) != "" {

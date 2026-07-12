@@ -514,6 +514,7 @@ export function Composer({
   turnWaitAccumMs = 0,
   promptWaitStartedAt,
   turnTokens,
+  turnArgChars = 0,
   retry,
   suspendedByDecision = false,
   pendingApprovalLabel,
@@ -574,6 +575,10 @@ export function Composer({
   turnWaitAccumMs?: number;
   promptWaitStartedAt?: number;
   turnTokens?: number;
+  // Streaming tool-call argument chars (no usage event yet) — folded into the
+  // pill as an estimated-token tail so a long write_file body reads as
+  // progress, not a stall.
+  turnArgChars?: number;
   retry?: { attempt: number; max: number };
   // True while a footer decision surface (approval / ask / clear context) owns
   // the UI. Pauses the model-work ticker without rendering a "waiting approval"
@@ -2863,7 +2868,8 @@ export function Composer({
         const elapsedMs = Math.max(0, now - turnStartAt - waitAccumMs);
         const words = SPINNER_WORDS[locale];
         const word = words[Math.floor(elapsedMs / 3000) % words.length];
-        const tok = turnTokens && turnTokens > 0 ? ` · ↓ ${fmtTokens(turnTokens)} ${t("status.tokens")}` : "";
+        const liveTokens = (turnTokens ?? 0) + Math.round((turnArgChars ?? 0) / 4);
+        const tok = liveTokens > 0 ? ` · ↓ ${fmtTokens(liveTokens)} ${t("status.tokens")}` : "";
         return `${word}… ${fmtElapsed(elapsedMs)}${tok}`;
       })()
     : null;

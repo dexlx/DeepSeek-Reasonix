@@ -219,7 +219,7 @@ func (a *Agent) deliveryReviewGateFailure() string {
 			return "structured review reported blocking findings; fix them and re-run review"
 		}
 		if !ok {
-			return "medium-risk changes require a successful review (run the review skill and submit review_report) after the latest mutation" + reviewCoverageHint(paths)
+			return "medium-risk changes require a successful review after the latest mutation (run the review skill; its subagent submits review_report)" + reviewCoverageHint(paths)
 		}
 		if report != nil {
 			a.pendingReviewWarnings = append(a.pendingReviewWarnings, report.WarningSummaries()...)

@@ -3839,6 +3839,7 @@ export default function App() {
               turnWaitAccumMs={state.turnWaitAccumMs}
               promptWaitStartedAt={state.promptWaitStartedAt}
               turnTokens={state.turnTokens}
+              turnArgChars={state.turnArgChars}
               retry={state.retry}
               suspendedByDecision={Boolean(decisionSurface)}
               transientDismissSignal={transientOverlayDismissSignal}
@@ -3954,6 +3955,7 @@ export default function App() {
                   balance={state.balance}
                   sessionGen={state.sessionGen}
                   refreshKey={dockRefreshKey}
+                  usageSeq={state.usageSeq}
                 />
               ) : (
                 <WorkspacePanel

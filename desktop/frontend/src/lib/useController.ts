@@ -88,6 +88,7 @@ export type Item =
       isShell?: boolean; // true for !-prefix shell commands (controls default expand)
       parentId?: string; // a sub-agent call nests under the `task` call with this id
       profile?: { model?: string; effort?: string }; // subagent model/effort from tool event
+      argChars?: number; // args still streaming from the model: cumulative chars received
     };
 
 type ToolItem = Extract<Item, { kind: "tool" }>;
@@ -143,12 +144,21 @@ interface State {
   turnTokens: number;
   turnTotalTokens: number;
   turnCost: number;
+  // Cumulative argument characters of the tool call currently streaming its
+  // args (partial dispatch progress). Folded into the composer pill as an
+  // estimated-token tail; cleared when the round's usage arrives (which then
+  // includes those tokens for real) and on turn start.
+  turnArgChars: number;
   sessionTokens: number;
   sessionCost: number;
   sessionCurrency: string;
   retry?: { attempt: number; max: number };
   seq: number;
   sessionGen: number;
+  // Monotonic count of usage events from ANY source (executor, subagent,
+  // title…). Drives right-panel snapshot refreshes so sub-agent activity keeps
+  // the session metrics live; state.usage stays executor-gated for the gauge.
+  usageSeq: number;
 }
 
 export const initialState: State = {
@@ -173,11 +183,13 @@ export const initialState: State = {
   turnTokens: 0,
   turnTotalTokens: 0,
   turnCost: 0,
+  turnArgChars: 0,
   sessionTokens: 0,
   sessionCost: 0,
   sessionCurrency: "¥",
   seq: 0,
   sessionGen: 0,
+  usageSeq: 0,
 };
 
 function usageTotalTokens(usage?: WireUsage): number {
@@ -646,7 +658,7 @@ function endPromptWaitIfIdle(s: State, now = Date.now()): State {
   return endPromptWait(s, now);
 }
 
-function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnCost"> {
+function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnWaitAccumMs" | "promptWaitStartedAt" | "turnTokens" | "turnTotalTokens" | "turnCost" | "turnArgChars"> {
   return {
     turnStartAt: now,
     turnWaitAccumMs: 0,
@@ -654,6 +666,7 @@ function resetTurnTiming(now = Date.now()): Pick<State, "turnStartAt" | "turnWai
     turnTokens: 0,
     turnTotalTokens: 0,
     turnCost: 0,
+    turnArgChars: 0,
   };
 }
 
@@ -769,11 +782,37 @@ function applyEvent(s: State, e: WireEvent): State {
     case "tool_dispatch": {
       const t = e.tool;
       if (!t) return s;
-      // Skip partial dispatches (name-only, no args yet) — the full dispatch
-      // with complete args follows from executeBatch. Waiting for the full
-      // dispatch means the tool card appears with name + subject at once,
-      // avoiding a "name → command" visual jump.
-      if (t.partial) return s;
+      // A partial dispatch (args still streaming from the model) upserts a
+      // lightweight "receiving" card immediately. Dropping it entirely — the
+      // old behavior — left a 30KB write_file body streaming for a minute with
+      // zero visible activity, indistinguishable from a hang. The full
+      // dispatch that follows merges by ID and fills in args/summary.
+      if (t.partial) {
+        const turnArgChars = t.argChars && t.argChars > 0 ? t.argChars : s.turnArgChars;
+        // Some OpenAI-compatible streams surface the call name before its ID.
+        // Without a stable ID the card could never be merged with the full
+        // dispatch (a synthetic `tool${seq}` id would orphan it as a forever-
+        // running duplicate), so count the progress but wait for the ID before
+        // creating the card.
+        if (!t.id) return { ...s, turnArgChars };
+        const id = t.id;
+        const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
+        if (idx >= 0) {
+          const next = [...s.items];
+          const it = next[idx];
+          if (it.kind === "tool" && it.status === "running" && !it.args) {
+            next[idx] = { ...it, argChars: t.argChars || it.argChars };
+            return { ...s, items: next, turnArgChars };
+          }
+          return { ...s, turnArgChars };
+        }
+        return {
+          ...s,
+          turnArgChars,
+          seq: s.seq + 1,
+          items: [...s.items, { kind: "tool", id, name: t.name, args: "", readOnly: t.readOnly, status: "running", argChars: t.argChars || undefined, parentId: t.parentId }],
+        };
+      }
       const id = t.id || `tool${s.seq}`;
       const idx = s.items.findIndex((it) => it.kind === "tool" && it.id === id);
       if (idx >= 0) {
@@ -783,7 +822,7 @@ function applyEvent(s: State, e: WireEvent): State {
           const args = t.args ? t.args : it.args;
           const fileDiff = fileDiffFromWire(t);
           const summary = summarizeFileDiff(fileDiff) || summarize(t.name, args) || (t.name === it.name && args === it.args ? it.summary : undefined);
-          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff };
+          next[idx] = { ...it, name: t.name, args, readOnly: t.readOnly, profile: t.profile ?? it.profile, summary, fileDiff, argChars: undefined };
         }
         return { ...s, items: next };
       }
@@ -846,7 +885,9 @@ function applyEvent(s: State, e: WireEvent): State {
       const sessionCost = s.sessionCost + usageCost;
       const sessionCurrency = e.usage?.currency || s.sessionCurrency || "¥";
       const usage = updateContextGauge ? e.usage : s.usage;
-      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, sessionTokens, sessionCost, sessionCurrency };
+      // The completed round's usage now accounts for the streamed tool-call
+      // arguments, so drop the live estimate rather than double-count it.
+      return { ...s, usage, context: { ...s.context, used, sessionTokens }, turnTokens, turnTotalTokens, turnCost, turnArgChars: 0, sessionTokens, sessionCost, sessionCurrency, usageSeq: s.usageSeq + 1 };
     }
     case "notice":
       return appendNoticeToState(s, e.level ?? "info", e.text ?? "", e.detail, e.code);
@@ -1088,7 +1129,17 @@ export function reducer(s: State, a: Action): State {
         ? a.context.sessionCost
         : s.sessionCost;
       const sessionCurrency = a.context.sessionCurrency || s.sessionCurrency;
-      return { ...s, context: a.context, sessionTokens, sessionCost, sessionCurrency };
+      // Mid-turn snapshot refreshes can race a rebuilt executor whose
+      // LastUsage is still nil: the backend then reports used=0 for a session
+      // that visibly holds tokens, and the gauge collapses to "0/1M" until the
+      // next executor usage arrives. Keep the last known fill while a turn is
+      // live; genuine resets flow through the "reset" action or land when the
+      // session is idle.
+      const context =
+        a.context.used === 0 && s.context.used > 0 && (s.running || s.turnActive) && a.context.window === s.context.window
+          ? { ...a.context, used: s.context.used }
+          : a.context;
+      return { ...s, context, sessionTokens, sessionCost, sessionCurrency };
     }
     case "balance": return { ...s, balance: a.balance };
     case "effort": return { ...s, effort: a.effort };
