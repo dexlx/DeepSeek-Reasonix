@@ -39,11 +39,16 @@ func explainError(err error) error {
 		if authErr.HasKey {
 			msg = i18n.M.ProviderErrAuthRejected
 		}
-		if authErr.KeyEnv != "" {
-			if authErr.KeySource != "" {
-				return fmt.Errorf("%s (%s from %s)", msg, authErr.KeyEnv, authErr.KeySource)
-			}
-			return fmt.Errorf("%s (%s)", msg, authErr.KeyEnv)
+		switch {
+		case authErr.KeyEnv != "" && authErr.KeySource != "":
+			msg = fmt.Sprintf("%s (%s from %s)", msg, authErr.KeyEnv, authErr.KeySource)
+		case authErr.KeyEnv != "":
+			msg = fmt.Sprintf("%s (%s)", msg, authErr.KeyEnv)
+		}
+		// Relays explain *why* auth failed in the body ("token expired", key
+		// not entitled to the model) — as diagnostic here as on APIError.
+		if reason := providerBodyReason(authErr.Body); reason != "" {
+			return fmt.Errorf("%s\n%s", msg, reason)
 		}
 		return errors.New(msg)
 	}

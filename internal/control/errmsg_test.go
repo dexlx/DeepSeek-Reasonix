@@ -41,6 +41,13 @@ func TestExplainError(t *testing.T) {
 		t.Errorf("401 should name the key source: %q", sourced.Error())
 	}
 
+	authBody := explainError(&provider.AuthError{Provider: "relay", KeyEnv: "RELAY_API_KEY", Status: 401, HasKey: true, Body: `{"error":{"message":"令牌已过期","type":"new_api_error"}}`})
+	for _, want := range []string{i18n.M.ProviderErrAuthRejected, "RELAY_API_KEY", "令牌已过期"} {
+		if !strings.Contains(authBody.Error(), want) {
+			t.Errorf("401 with a body = %q, want it to contain %q", authBody.Error(), want)
+		}
+	}
+
 	for _, status := range []int{400, 422, 429, 500, 503} {
 		got := explainError(&provider.APIError{Provider: "p", Status: status})
 		if got.Error() == "" || got.Error() == (&provider.APIError{Provider: "p", Status: status}).Error() {

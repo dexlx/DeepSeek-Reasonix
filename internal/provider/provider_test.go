@@ -354,6 +354,18 @@ func TestAuthErrorWithKeyEnv(t *testing.T) {
 	}
 }
 
+func TestAuthErrorWithBody(t *testing.T) {
+	e := &AuthError{Provider: "relay", Status: 401, Body: `{"error":{"message":"token expired"}}`}
+	msg := e.Error()
+	if !contains(msg, "server said:") || !contains(msg, "token expired") {
+		t.Errorf("AuthError.Error() should carry the server's reason: %s", msg)
+	}
+	bare := &AuthError{Provider: "relay", Status: 401}
+	if contains(bare.Error(), "server said:") {
+		t.Errorf("AuthError without a body should not mention a server reason: %s", bare.Error())
+	}
+}
+
 func TestAuthErrorWithoutKeyEnv(t *testing.T) {
 	e := &AuthError{Provider: "openai", Status: 403}
 	msg := e.Error()
