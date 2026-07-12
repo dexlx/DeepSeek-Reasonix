@@ -2345,6 +2345,6 @@ export const zhTW: Record<DictKey, string> = {
   "crash.privacyNote": "報告僅包含上方錯誤文字（路徑中的使用者名稱已移除）以及應用版本和作業系統。",
   "performanceReport.title": "Reasonix 偵測到回應卡頓",
   "performanceReport.dismiss": "關閉",
-  "performanceReport.privacyNote": "上傳前桌面端會移除路徑與密鑰；診斷資訊只用於記錄耗時、記憶體、網路狀態、近期 breadcrumbs、應用版本和作業系統。",
+  "performanceReport.privacyNote": "上傳前桌面端會移除路徑與密鑰；診斷資訊只用於記錄耗時、記憶體、網路狀態、取樣到的應用函式名、近期 breadcrumbs、應用版本和作業系統。",
   "mock.topicSysException": "異常處理與恢復演練",
 };

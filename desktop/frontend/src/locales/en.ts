@@ -2292,7 +2292,7 @@ export const en = {
   "crash.privacyNote": "The report contains only the error text above (user names in paths removed) plus app version and OS.",
   "performanceReport.title": "Reasonix noticed a responsiveness issue",
   "performanceReport.dismiss": "Dismiss",
-  "performanceReport.privacyNote": "Before upload, the desktop scrubber removes paths and secrets. The diagnostic is intended to contain timing, memory, network state, recent breadcrumbs, app version, and OS.",
+  "performanceReport.privacyNote": "Before upload, the desktop scrubber removes paths and secrets. The diagnostic is intended to contain timing, memory, network state, sampled app function names, recent breadcrumbs, app version, and OS.",
 
   // mock / demo seed data (browser dev only)
   "mock.sessionFixLogin": "fix the login bug in auth.go",
