@@ -10,7 +10,8 @@ import { Welcome } from "./Welcome";
 import { ReadOnlyBatch } from "./ReadOnlyBatch";
 import { ToolGroup, isCreationGroupableTool, toolGroupKind, type ToolGroupKind } from "./ToolGroup";
 import { getDisplayMode, onDisplayModeChange, type DisplayMode } from "../lib/displayMode";
-import { isReadOnlyTool } from "../lib/useController";
+import { getProcessFoldPreference, onProcessFoldPreferenceChange, type ProcessFoldPreference } from "../lib/processFoldPreference";
+import { STEER_NOTICE_PREFIX, isReadOnlyTool, isSteerNoticeText } from "../lib/useController";
 import { useGSAPCollapse } from "../lib/useGSAPCollapse";
 import { useEntranceAnimation } from "../lib/useEntranceAnimation";
 import { useScrollManager } from "../lib/useScrollManager";
@@ -80,6 +81,9 @@ const LiveAssistantMessage = memo(function LiveAssistantMessage({
 function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
   const t = useT();
   const live = useContext(LiveStreamContext);
+  const [open, setOpen] = useState(true);
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useGSAPCollapse(bodyRef, open);
   const shown = live && live.id === item.id
     ? {
         reasoning: live.reasoning,
@@ -95,13 +99,19 @@ function InlineAssistantReasoning({ item }: { item: AssistantItem }) {
   });
   const running = shown.streaming && !shown.reasoningComplete;
   return (
-    <div className="turn-collapse__reasoning-phase">
-      <div className="turn-collapse__reasoning-head" data-running={running ? "" : undefined}>
+    <div className={`turn-collapse__reasoning-phase${open ? " turn-collapse__reasoning-phase--open" : ""}`}>
+      <button
+        type="button"
+        className="turn-collapse__reasoning-head"
+        data-running={running ? "" : undefined}
+        onClick={() => setOpen((v) => !v)}
+        aria-expanded={open}
+      >
         <ProcessBrainIcon size={12} />
         <span>{running ? t("msg.thinkingRunning") : t("msg.thinking")}</span>
-        <ChevronRight className="reasoning__chevron reasoning__chevron--open" size={12} />
-      </div>
-      <div className="turn-collapse__inline-reasoning">{visibleReasoning}</div>
+        <ChevronRight className={`reasoning__chevron${open ? " reasoning__chevron--open" : ""}`} size={12} />
+      </button>
+      <div ref={bodyRef} className="turn-collapse__inline-reasoning">{visibleReasoning}</div>
     </div>
   );
 }
@@ -184,27 +194,23 @@ type TurnDisplayParts = {
   outsideItems: Array<NoticeItem | AssistantItem>;
 };
 
+// Splits a turn by channel, not by position: reasoning, tools, phases, info
+// notices, and compaction cards are process material and fold; every assistant
+// message with answer text is model output addressed to the user and stays
+// outside the fold, in order. Warnings must survive the fold auto-closing on
+// completion, and steers are the user's own words — neither belongs to the
+// model's work process.
 function partitionTurnItems(
   items: readonly Item[],
   liveId?: string,
   liveHasAnswerText = false,
   liveHasReasoning = false,
 ): TurnDisplayParts {
-  let finalAssistantIndex = -1;
-  for (let i = items.length - 1; i >= 0; i--) {
-    const item = items[i];
-    if (item.kind === "assistant" && assistantHasVisibleAnswer(item, liveId, liveHasAnswerText)) {
-      finalAssistantIndex = i;
-      break;
-    }
-  }
-
   const processItems: Item[] = [];
   const outsideItems: Array<NoticeItem | AssistantItem> = [];
-  for (let i = 0; i < items.length; i++) {
-    const item = items[i];
+  for (const item of items) {
     if (item.kind === "user") continue;
-    if (item.kind === "notice" && item.level === "warn") {
+    if (item.kind === "notice" && (item.level === "warn" || isSteerNoticeText(item.text))) {
       outsideItems.push(item);
       continue;
     }
@@ -212,16 +218,13 @@ function partitionTurnItems(
       processItems.push(item);
       continue;
     }
-    if (i === finalAssistantIndex) {
+    const hasReasoning = Boolean(item.reasoning || (liveId === item.id && liveHasReasoning));
+    if (assistantHasVisibleAnswer(item, liveId, liveHasAnswerText)) {
       outsideItems.push(item);
-      if (item.reasoning || (liveId === item.id && liveHasReasoning)) {
-        processItems.push(assistantReasoningOnly(item));
-      }
+      if (hasReasoning) processItems.push(assistantReasoningOnly(item));
       continue;
     }
-    if (item.text.trim() || item.reasoning || (liveId === item.id && liveHasReasoning)) {
-      processItems.push(item);
-    }
+    if (hasReasoning) processItems.push(item);
   }
   return { processItems, outsideItems };
 }
@@ -594,11 +597,16 @@ export function Transcript({
             turnStartAt={turnIsActive ? turnStartAt : undefined}
             turnActive={turnIsActive}
             preferredKind="reasoning"
+            hasOutsideContent={parts.outsideItems.length > 0}
           />,
         );
       }
       for (const item of parts.outsideItems) {
         if (item.kind === "notice") {
+          if (isSteerNoticeText(item.text)) {
+            out.push(<SteerCard key={item.id} text={item.text} />);
+            continue;
+          }
           out.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
         } else {
           out.push(
@@ -941,11 +949,16 @@ function WarmTurnItems({
         tabId={tabId}
         creationMode={creationMode}
         preferredKind="reasoning"
+        hasOutsideContent={parts.outsideItems.length > 0}
       />,
     );
   }
   for (const item of parts.outsideItems) {
     if (item.kind === "notice") {
+      if (isSteerNoticeText(item.text)) {
+        nodes.push(<SteerCard key={item.id} text={item.text} />);
+        continue;
+      }
       nodes.push(<NoticeCard key={item.id} level={item.level} text={item.text} detail={item.detail} />);
     } else {
       nodes.push(
@@ -1058,22 +1071,29 @@ type TurnCollapseProps = {
   turnStartAt?: number;
   turnActive?: boolean;
   preferredKind?: "tool" | "reasoning" | "process";
+  // Whether the turn renders anything outside this fold (answer text, warning,
+  // steer). When nothing is outside, the fold is the turn's only content and
+  // must not collapse it away.
+  hasOutsideContent?: boolean;
 };
 
-function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, turnStartAt, turnActive = false, preferredKind }: TurnCollapseProps) {
+function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode = false, turnStartAt, turnActive = false, preferredKind, hasOutsideContent = true }: TurnCollapseProps) {
   const t = useT();
   const live = useContext(LiveStreamContext);
-  const [open, setOpen] = useState(false);
+  const [foldPreference, setFoldPreference] = useState<ProcessFoldPreference>(getProcessFoldPreference);
+  const [open, setOpen] = useState(() => getProcessFoldPreference() === "expanded" || !hasOutsideContent);
   const userOverriddenOpen = useRef(false);
   const prevRunningRef = useRef(false);
   const bodyRef = useRef<HTMLDivElement>(null);
+  useEffect(() => onProcessFoldPreferenceChange(setFoldPreference), []);
 
   // Keep only items the body will actually render — an expandable fold over
-  // nothing is worse than no fold.
+  // nothing is worse than no fold. Assistant items reach the fold stripped to
+  // their reasoning (answer text renders outside), so reasoning presence is
+  // the only thing that keeps them.
   const displayItems = useMemo(() => {
     return items.filter((it) => {
       if (it.kind === "assistant") {
-        if (it.text.trim() !== "") return true;
         return Boolean(it.reasoning || (live?.id === it.id && live.reasoning));
       }
       if (it.kind === "phase") return true;
@@ -1112,10 +1132,10 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
     if (hasRunningWork) {
       if (!wasRunning) userOverriddenOpen.current = false;
       if (!userOverriddenOpen.current) setOpen(true);
-    } else if (wasRunning && !userOverriddenOpen.current) {
+    } else if (wasRunning && !userOverriddenOpen.current && hasOutsideContent && foldPreference !== "expanded") {
       setOpen(false);
     }
-  }, [hasRunningWork]);
+  }, [hasRunningWork, hasOutsideContent, foldPreference]);
 
   if (displayItems.length === 0) return null;
 
@@ -1124,11 +1144,19 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
     : displayItems.some((it) => it.kind === "assistant" && Boolean(it.reasoning))
       ? "reasoning"
       : "process");
-  const label = collapseKind === "reasoning"
+  const baseLabel = collapseKind === "reasoning"
     ? workStatusLabel(effectiveDurationMs, hasRunningWork, t)
     : seconds > 0
       ? t("transcript.processedDuration", { s: seconds })
       : t("transcript.processed");
+  // Surface what the closed fold hides — a bare duration reads as pure timing
+  // and users have no way to know process detail sits behind it.
+  const toolCount = displayItems.reduce((n, it) => n + (it.kind === "tool" ? 1 : 0), 0);
+  const thoughtCount = displayItems.reduce((n, it) => n + (it.kind === "assistant" ? 1 : 0), 0);
+  const countParts: string[] = [];
+  if (toolCount > 0) countParts.push(t("transcript.toolCount", { n: toolCount }));
+  if (thoughtCount > 0) countParts.push(t("transcript.thoughtCount", { n: thoughtCount }));
+  const label = countParts.length > 0 ? `${baseLabel} · ${countParts.join(" · ")}` : baseLabel;
   const creationLabel = collapseKind === "tool"
     ? t("creation.toolCallsLabel")
     : collapseKind === "reasoning"
@@ -1183,23 +1211,11 @@ function TurnCollapse({ items, durationMs, mode, subcalls, tabId, creationMode =
       case "phase": body.push(<PhaseCard key={it.id} text={it.text} />); break;
       case "notice": body.push(<NoticeCard key={it.id} level={it.level} text={it.text} detail={it.detail} />); break;
       case "compaction": body.push(<CompactionCard key={it.id} item={it} />); break;
-      case "assistant": {
-        const assistant = it as AssistantItem;
-        if (assistant.reasoning || (live?.id === assistant.id && live.reasoning)) {
-          body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={assistant} />);
-        }
-        if (assistant.text.trim()) {
-          body.push(
-            <AssistantMessage
-              key={`${it.id}-text`}
-              item={assistantAnswerOnly(assistant)}
-              defaultExpanded={false}
-              creationMode={creationMode}
-            />,
-          );
-        }
+      case "assistant":
+        // Answer text renders outside the fold (partitionTurnItems strips it),
+        // so the fold only ever shows the reasoning segment.
+        body.push(<InlineAssistantReasoning key={`${it.id}-reasoning`} item={it as AssistantItem} />);
         break;
-      }
     }
   }
   flushToolBatch();
@@ -1358,6 +1374,21 @@ type CompactionItem = Extract<Item, { kind: "compaction" }>;
 
 function PhaseCard({ text }: { text: string }) {
   return <div className="phase" data-entrance="true"><ProcessPhaseIcon size={12} /><span>{text}</span></div>;
+}
+
+// A mid-turn steer is the user's own message, so it renders on the user side
+// of the transcript instead of disappearing into the work fold.
+function SteerCard({ text }: { text: string }) {
+  const t = useT();
+  const body = text.startsWith(STEER_NOTICE_PREFIX) ? text.slice(STEER_NOTICE_PREFIX.length) : text;
+  return (
+    <div className="steer-line" data-entrance="true">
+      <div className="steer-line__bubble" title={t("transcript.steer")}>
+        <span className="steer-line__icon" aria-hidden="true">↪</span>
+        <span className="steer-line__text">{body}</span>
+      </div>
+    </div>
+  );
 }
 
 function NoticeCard({ level, text, detail }: { level: NoticeItem["level"]; text: string; detail?: string }) {
