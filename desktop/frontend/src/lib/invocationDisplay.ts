@@ -229,6 +229,43 @@ function segmentsForSelection(
   return segments;
 }
 
+// hydratedSlashFallbackSegments restores badges for a hydrated structured
+// message: session reload resolves the recorded display — the serialized
+// slash form ("/name task") — while the submit side is the composed model
+// text with no slash tokens, so the display/submit pairing above never
+// matches. Only the dominant serialized shape is restored: consecutive
+// known-command tokens at the very start followed by the task text. Prose
+// slashes, unknown names, and mid-text entities all bail to plain text.
+function hydratedSlashFallbackSegments(
+  display: string,
+  invocationMetadata: InvocationMetadataMap,
+): InvocationTextSegment[] | null {
+  const matches = slashMatches(display);
+  if (matches.length === 0 || matches.length > 10) return null;
+  const leading: SlashMatch[] = [];
+  let cursor = 0;
+  for (const match of matches) {
+    if (match.start !== cursor || !invocationMetadata[match.name]) break;
+    leading.push(match);
+    cursor = display[match.end] === " " ? match.end + 1 : match.end;
+  }
+  if (leading.length === 0 || leading.length !== matches.length) return null;
+  const segments: InvocationTextSegment[] = leading.map((match) => ({
+    type: "invocation" as const,
+    offset: 0,
+    invocation: {
+      name: match.name,
+      label: invocationLabel(match.name),
+      source: match.name.includes(":") ? match.name.split(":").slice(0, -1).join(":") : undefined,
+      kind: invocationMetadata[match.name]?.kind ?? (knownSubagents.has(match.name) ? "subagent" : "skill"),
+      color: invocationMetadata[match.name]?.color,
+    },
+  }));
+  const remainder = display.slice(cursor);
+  if (remainder) segments.push({ type: "text", content: remainder, start: 0 });
+  return segments;
+}
+
 export function invocationSegmentsFromMessage(
   displayText: string,
   submitText?: string,
@@ -239,13 +276,14 @@ export function invocationSegmentsFromMessage(
   if (!submit || submit === display) return [{ type: "text", content: display, start: 0 }];
 
   const matches = slashMatches(submit);
-  if (matches.length === 0 || matches.length > 10) return [{ type: "text", content: display, start: 0 }];
-  const masks = 1 << matches.length;
-  for (let mask = masks - 1; mask > 0; mask -= 1) {
-    const segments = segmentsForSelection(submit, display, matches, mask, invocationMetadata);
-    if (segments) return segments;
+  if (matches.length > 0 && matches.length <= 10) {
+    const masks = 1 << matches.length;
+    for (let mask = masks - 1; mask > 0; mask -= 1) {
+      const segments = segmentsForSelection(submit, display, matches, mask, invocationMetadata);
+      if (segments) return segments;
+    }
   }
-  return [{ type: "text", content: display, start: 0 }];
+  return hydratedSlashFallbackSegments(display, invocationMetadata) ?? [{ type: "text", content: display, start: 0 }];
 }
 
 export function invocationDisplayFromMessage(displayText: string, submitText?: string): InvocationDisplay | null {

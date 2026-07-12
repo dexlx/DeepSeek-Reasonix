@@ -1606,6 +1606,14 @@ export function Composer({
     const currentWorkspaceRefs = workspaceRefsRef.current;
     const inlineInvocationCount = trimmedDraft.invocations.filter((invocation) => invocation.command.kind === "skill").length;
     const subagentInvocationCount = trimmedDraft.invocations.filter((invocation) => invocation.command.kind === "subagent").length;
+    if (goalModeOn && !activeGoal && trimmedDraft.invocations.length > 0) {
+      // The first goal-mode message becomes the goal itself (App wraps it in
+      // /goal ...), which would swallow entity invocations as goal prose and
+      // never run them. Ask for a plain-text goal first.
+      setComposerPrompt(t("composer.goalEntityBlocked"));
+      requestAnimationFrame(focusComposerInput);
+      return;
+    }
     if (!trimmedText && currentAttachments.length === 0 && currentWorkspaceRefs.length === 0 && inlineInvocationCount === 0) {
       if (goalModeOn && !activeGoal) {
         setComposerPrompt(t("composer.goalInputRequired"));
@@ -2108,8 +2116,12 @@ export function Composer({
     // A user-requested cancel must not let the natural-completion effect submit
     // the queued follow-up. Fold it back into the draft: cancelling means "stop
     // acting", not "discard what I typed" — the same contract onCancel already
-    // honors for un-sent text.
-    const queued = pendingGuidance.map((item) => item.text).filter((part) => part.trim() !== "");
+    // honors for un-sent text. Structured items fold back as their slash form
+    // (structured.display is valid /name syntax) so the invocation survives the
+    // round trip instead of degrading to its bare task text.
+    const queued = pendingGuidance
+      .map((item) => item.structured?.display ?? item.text)
+      .filter((part) => part.trim() !== "");
     if (queued.length === 0) {
       if (typeof restored === "string") setTextCaretEnd(restored);
       return;

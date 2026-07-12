@@ -287,13 +287,40 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 		return "", fmt.Errorf("system prompt is required")
 	}
 
+	// One try run at a time, cancellable from the settings page and aborted
+	// with the app context on shutdown — a runaway model loop must not burn
+	// through all 12 steps with no way to stop it.
+	base := a.ctx
+	if base == nil {
+		base = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(base)
+	a.tryRunMu.Lock()
+	if a.tryRunCancel != nil {
+		a.tryRunMu.Unlock()
+		cancel()
+		return "", fmt.Errorf("another try run is still in progress — cancel it or wait for it to finish")
+	}
+	a.tryRunCancel = cancel
+	a.tryRunMu.Unlock()
+	defer func() {
+		a.tryRunMu.Lock()
+		a.tryRunCancel = nil
+		a.tryRunMu.Unlock()
+		cancel()
+	}()
+
 	// Resolve config against the active tab's workspace, not the desktop
 	// process's CWD — project-level reasonix.toml (sandbox roots, permissions)
 	// must apply to the try run exactly as it would to a real session there.
+	// Snapshot under the lock: WorkspaceRoot is rewritten under a.mu (spelling
+	// normalization, session-binding redirects) and must not be read bare.
 	root := ""
-	if tab, _ := a.activeTabAndCtrl(); tab != nil {
+	a.mu.RLock()
+	if tab := a.activeTabLocked(); tab != nil {
 		root = tab.WorkspaceRoot
 	}
+	a.mu.RUnlock()
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
 		return "", err
@@ -332,7 +359,7 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 	// to answer a prompt).
 	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny)
 
-	result, err := agent.RunSubAgentWithSession(context.Background(), prov, reg, agent.NewSession(prompt), task, agent.Options{
+	result, err := agent.RunSubAgentWithSession(runCtx, prov, reg, agent.NewSession(prompt), task, agent.Options{
 		MaxSteps:      12,
 		Temperature:   cfg.Agent.Temperature,
 		Pricing:       me.Price,
@@ -343,6 +370,17 @@ func (a *App) TrySubagentProfile(input SubagentProfileInput, task string) (strin
 		return "", err
 	}
 	return result, nil
+}
+
+// CancelTrySubagentProfile aborts the in-flight settings-page try run, if
+// any. The pending TrySubagentProfile call returns its context error.
+func (a *App) CancelTrySubagentProfile() {
+	a.tryRunMu.Lock()
+	cancel := a.tryRunCancel
+	a.tryRunMu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
 }
 
 // trySubagentToolRegistry builds the read-only, workspace-rooted tool set a

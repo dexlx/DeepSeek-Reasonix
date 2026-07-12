@@ -360,7 +360,7 @@ func TestSkillsSettingsCarriesSubagentProfileFields(t *testing.T) {
 func TestAvailableSubagentToolsExcludesAlwaysHiddenTools(t *testing.T) {
 	a := NewApp()
 	for _, view := range a.AvailableSubagentTools() {
-		for _, hidden := range []string{"install_skill", "install_source", "parallel_tasks"} {
+		for _, hidden := range []string{"install_skill", "install_source", "parallel_tasks", "wait", "bash_output", "kill_shell"} {
 			if view.Name == hidden {
 				t.Fatalf("AvailableSubagentTools should exclude always-hidden tool %q", hidden)
 			}

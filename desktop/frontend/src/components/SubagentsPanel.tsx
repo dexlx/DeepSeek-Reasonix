@@ -648,7 +648,7 @@ function SubagentProfileForm({
         onChange={(e) => setName(e.target.value)}
       />
       {trimmedName !== "" && !nameValid && <div className="subagents-field-error">{t("subagents.nameInvalid")}</div>}
-      {nameTaken && <div className="subagents-field-error">{t("subagents.nameBuiltinCollision")}</div>}
+      {nameTaken && <div className="subagents-field-error">{t("subagents.nameTaken")}</div>}
 
       <label className="set-label">{t("subagents.color")}</label>
       <ColorSwatchPicker value={color} onChange={setColor} />
@@ -726,10 +726,10 @@ function SubagentProfileForm({
         <button
           className="btn btn--small"
           type="button"
-          onClick={() => void runTry()}
-          disabled={tryRunning || !promptReady || tryTask.trim() === ""}
+          onClick={() => (tryRunning ? void app.CancelTrySubagentProfile() : void runTry())}
+          disabled={!tryRunning && (!promptReady || tryTask.trim() === "")}
         >
-          {tryRunning ? t("subagents.running") : t("subagents.run")}
+          {tryRunning ? t("subagents.cancelRun") : t("subagents.run")}
         </button>
       </div>
       {tryError && <div className="banner banner--error">{tryError}</div>}

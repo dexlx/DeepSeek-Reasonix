@@ -144,6 +144,12 @@ type App struct {
 	// would replace the winner's and leak it without Close.
 	runtimeRebuildMu sync.Mutex
 
+	// tryRunMu guards tryRunCancel — the cancel handle for the single
+	// in-flight settings-page subagent try run (TrySubagentProfile /
+	// CancelTrySubagentProfile).
+	tryRunMu     sync.Mutex
+	tryRunCancel context.CancelFunc
+
 	// deferredRebuild tracks tabs whose settings were saved but whose runtime
 	// could not refresh because the session lease was held by another process.
 	deferredRebuild deferredRebuildState
@@ -5907,7 +5913,7 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 		configuredEfforts = cfg.Agent.SubagentEfforts
 	}
 	for _, s := range ctrl.AllSkills() {
-		out.Skills = append(out.Skills, SkillView{
+		view := SkillView{
 			Name: s.Name, Description: s.Description,
 			Scope: string(s.Scope), RunAs: string(s.RunAs),
 			Enabled:          !disabled[config.SkillNameKey(s.Name)],
@@ -5918,10 +5924,17 @@ func (a *App) SkillsSettings() SkillsSettingsView {
 			Color:            s.Color,
 			Invocation:       "/" + s.SlashName(),
 			InvocationMode:   s.Invocation,
-			Body:             s.Body,
 			ConfiguredModel:  subagentOverrideFor(configuredModels, s.Name),
 			ConfiguredEffort: subagentOverrideFor(configuredEfforts, s.Name),
-		})
+		}
+		// Body feeds only the Subagents editor's prompt prefill. Inline skills
+		// fold references/ into Body at load time (hundreds of KB for a rich
+		// skill library), and every Capabilities/Settings fetch would ship all
+		// of it across the JSON bridge for nothing.
+		if s.RunAs == skill.RunSubagent {
+			view.Body = s.Body
+		}
+		out.Skills = append(out.Skills, view)
 	}
 	out.SkillRoots = a.cachedSkillRootsView()
 	return out

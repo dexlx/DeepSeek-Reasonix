@@ -3,10 +3,14 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"reasonix/internal/command"
 	"reasonix/internal/config"
@@ -765,5 +769,109 @@ func TestSubagentProfileCRUDRefusesWhileControllerBusy(t *testing.T) {
 		Name: "busy-new", Description: "d", SystemPrompt: "body", Scope: "global",
 	}); err != nil {
 		t.Fatalf("create after the turn settled: %v", err)
+	}
+}
+
+// A try run must be cancellable (it is otherwise an unstoppable 12-step
+// provider loop) and single-flight: a second concurrent try is refused
+// instead of racing the first one's cancel handle.
+func TestTrySubagentProfileCancelAbortsRunAndIsSingleFlight(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	setDesktopTestCredential(t, "REASONIX_TEST_KEY", "sk-test")
+
+	requestStarted := make(chan struct{})
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case <-requestStarted:
+		default:
+			close(requestStarted)
+		}
+		select {
+		case <-r.Context().Done():
+		case <-release:
+		}
+	}))
+	defer srv.Close()
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+
+	cfg := config.Default()
+	cfg.DefaultModel = "prov-t/model-t1"
+	cfg.Providers = []config.ProviderEntry{
+		{Name: "prov-t", Kind: "openai", BaseURL: srv.URL, Model: "model-t1", APIKeyEnv: "REASONIX_TEST_KEY"},
+	}
+	if err := cfg.SaveTo(config.UserConfigPath()); err != nil {
+		t.Fatalf("save config: %v", err)
+	}
+
+	a := NewApp()
+	done := make(chan error, 1)
+	go func() {
+		_, err := a.TrySubagentProfile(SubagentProfileInput{SystemPrompt: "be helpful"}, "do something")
+		done <- err
+	}()
+
+	select {
+	case <-requestStarted:
+	case <-time.After(10 * time.Second):
+		t.Fatal("try run never reached the provider")
+	}
+	if _, err := a.TrySubagentProfile(SubagentProfileInput{SystemPrompt: "p"}, "task"); err == nil || !strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("concurrent try error = %v, want the single-flight refusal", err)
+	}
+
+	a.CancelTrySubagentProfile()
+	select {
+	case err := <-done:
+		if err == nil {
+			t.Fatal("cancelled try run should return an error")
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("cancelled try run did not return")
+	}
+
+	// The slot frees up after the run settles: a fresh cancel is a no-op and
+	// a new try is admitted. Release the handler first so this run fails
+	// fast on the invalid empty response instead of blocking on the hang.
+	releaseAll()
+	a.CancelTrySubagentProfile()
+	if _, err := a.TrySubagentProfile(SubagentProfileInput{SystemPrompt: "p"}, "task"); err != nil && strings.Contains(err.Error(), "in progress") {
+		t.Fatalf("slot did not free after cancel: %v", err)
+	}
+}
+
+// SkillView.Body is the Subagents editor's prompt prefill and must ship only
+// for runAs=subagent skills — inline skills fold references/ into Body at
+// load time and would bloat every Capabilities/Settings fetch.
+func TestSkillsSettingsBodyOnlyForSubagentSkills(t *testing.T) {
+	a := newTestSubagentApp(t)
+	if _, err := a.CreateSubagentProfile(SubagentProfileInput{
+		Name: "body-agent", Description: "d", SystemPrompt: "subagent prompt body", Scope: "global",
+	}); err != nil {
+		t.Fatalf("create profile: %v", err)
+	}
+	if _, err := a.activeCtrl().CreateSkill("plain-notes", skill.ScopeGlobal,
+		"---\nname: plain-notes\ndescription: notes\n---\n\nbig inline body\n"); err != nil {
+		t.Fatalf("create inline skill: %v", err)
+	}
+	var sawProfile, sawInline bool
+	for _, view := range a.SkillsSettings().Skills {
+		switch view.Name {
+		case "body-agent":
+			sawProfile = true
+			if view.Body != "subagent prompt body" {
+				t.Fatalf("subagent profile Body = %q, want the prompt", view.Body)
+			}
+		case "plain-notes":
+			sawInline = true
+			if view.Body != "" {
+				t.Fatalf("inline skill Body should be omitted, got %q", view.Body)
+			}
+		}
+	}
+	if !sawProfile || !sawInline {
+		t.Fatalf("views missing: profile=%v inline=%v", sawProfile, sawInline)
 	}
 }

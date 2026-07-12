@@ -74,11 +74,14 @@ const subagentToolBoundarySummary = "Recursive agent/skill tools are exposed onl
 // AlwaysHiddenSubagentTools returns the tool names excluded from every
 // subagent's registry regardless of an explicit allowlist or delegation
 // depth (unlike subagentRecursiveTools, which depends on remaining depth).
-// Host UIs offering a tool picker for a subagent profile's allowed-tools
-// should exclude these from the offered choices — selecting them would be
-// silently ignored at runtime.
+// That covers both subagentAlwaysHiddenTools and subagentJobTools —
+// SubagentToolRegistryForDepth and its read-only variant strip the job tools
+// unconditionally too. Host UIs offering a tool picker for a subagent
+// profile's allowed-tools should exclude these from the offered choices —
+// selecting them would be silently ignored at runtime.
 func AlwaysHiddenSubagentTools() []string {
-	return append([]string(nil), subagentAlwaysHiddenTools...)
+	names := append([]string(nil), subagentAlwaysHiddenTools...)
+	return append(names, subagentJobTools...)
 }
 
 // SubagentMetaTools returns the tool names that spawned agents should not inherit

@@ -95,5 +95,45 @@ eq(
   "spaced English messages restore every inline invocation",
 );
 
+const sessionPrefix = "以下是用户引用的历史会话上下文：\n\n[会话：Earlier]\n...\n\n---\n\n当前用户问题：\n";
+eq(
+  replaySubmitText(
+    `${sessionPrefix}/reasonix-develop review this change`,
+    "review this change",
+    "review the updated change",
+    "review the updated change",
+  ),
+  `${sessionPrefix}/reasonix-develop review the updated change`,
+  "editing a structured message keeps the hidden referenced-session prefix",
+);
+
+// Hydrated structured messages: reload resolves the recorded display (the
+// serialized slash form) while submit is the composed model text, so badge
+// restoration relies on the leading-known-token fallback.
+const segmentNames = (display: string, submit: string, metadata: Record<string, { kind: "skill" | "subagent" }>) =>
+  invocationSegmentsFromMessage(display, submit, metadata)
+    .map((segment) => segment.type === "invocation" ? `[${segment.invocation.name}]` : segment.content)
+    .join("|");
+eq(
+  segmentNames("/my-formatter fix the tests", "plan-wrapped composed body", { "my-formatter": { kind: "subagent" } }),
+  "[my-formatter]|fix the tests",
+  "hydrated slash-form display restores its leading known invocation",
+);
+eq(
+  segmentNames("/my-formatter /explore fix", "composed body", { "my-formatter": { kind: "subagent" }, explore: { kind: "subagent" } }),
+  "[my-formatter]|[explore]|fix",
+  "hydrated display restores consecutive leading invocations",
+);
+eq(
+  segmentNames("/unknown-name fix", "composed body", {}),
+  "/unknown-name fix",
+  "unknown leading slash names stay plain text after reload",
+);
+eq(
+  segmentNames("see /my-formatter later", "composed body", { "my-formatter": { kind: "subagent" } }),
+  "see /my-formatter later",
+  "mid-text slash tokens stay plain text after reload",
+);
+
 console.log(`\n${passed} passed, ${failed} failed`);
 if (failed > 0) process.exit(1);
