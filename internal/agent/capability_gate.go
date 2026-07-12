@@ -260,7 +260,7 @@ func (a *Agent) deliveryReviewGateFailure() string {
 
 func reviewCoverageHint(paths []string) string {
 	if len(paths) == 0 {
-		return "; first inspect `git status --short` and `git diff` to identify the changed files, then submit reviewed_paths for the files inspected because the mutation did not report file paths"
+		return "; the mutation did not report file paths, so first inspect `git status --short` and `git diff` to identify the changed files, then submit reviewed_paths for the files inspected"
 	}
 	return " covering: " + strings.Join(paths, ", ")
 }
