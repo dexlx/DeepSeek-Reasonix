@@ -14,8 +14,11 @@ import (
 // TestBuildUnknownModelErrorIsActionable: a default_model that doesn't resolve
 // (e.g. a stale preset name after [[providers]] replaced the built-in presets) must
 // fail with a message that names the model, lists what IS configured, and hints
-// at the [[providers]] trap — not a silent empty model.
+// at the [[providers]] trap — not a silent empty model. This contract holds when
+// the project file is the only config, so isolate REASONIX_HOME: a user-global
+// config with an explicit default_model would instead rescue the boot (#4218).
 func TestBuildUnknownModelErrorIsActionable(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
 	dir := robustTempDir(t)
 	t.Chdir(dir)
 	writeFile(t, dir, "reasonix.toml", `
