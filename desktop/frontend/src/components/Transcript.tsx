@@ -204,9 +204,10 @@ type TurnDisplayParts = {
 //
 // The turn is returned as ordered segments so the conversation keeps its real
 // timeline: process that ran after an answer or steer opens a new segment
-// (and thus a new fold) instead of being pulled ahead of it. Warn notices
-// stay visible but do not split the fold — a mid-turn warning is not a
-// conversational boundary.
+// (and thus a new fold) instead of being pulled ahead of it. Warn notices and
+// delivery status cards stay visible but do not split the fold — a mid-turn
+// warning is not a conversational boundary, and a delivery pause must keep its
+// continue action reachable instead of collapsing with the process items.
 function partitionTurnItems(
   items: readonly Item[],
   liveId?: string,
@@ -232,7 +233,7 @@ function partitionTurnItems(
       if (isSteerNoticeText(item.text)) {
         current.outsideItems.push(item);
         currentHasConversation = true;
-      } else if (item.level === "warn") {
+      } else if (item.level === "warn" || item.variant === "delivery") {
         current.outsideItems.push(item);
       } else {
         pushProcess(item);
