@@ -22,14 +22,18 @@ function ok(value: unknown, label: string) {
 
 console.log("\nturn actions rendering");
 
+const creationTranscriptRule = styles.match(
+  /\.app--creation \.transcript\.transcript--creation-scrollbar,\s*:root\[data-theme-style\] \.app--creation \.transcript\.transcript--creation-scrollbar\s*\{([^}]+)\}/,
+)?.[1] ?? "";
+
 ok(
-  /\.app--creation \.transcript,\n:root\[data-theme-style\] \.app--creation \.transcript \{\n  background-color: var\(--bg\);\n\}/.test(styles),
-  "creation transcript paints an opaque backdrop so removed turn actions repaint (#6359)",
+  /background-color:\s*var\(--bg\);/.test(creationTranscriptRule),
+  "creation scrollbar layer paints an opaque backdrop so removed turn actions repaint (#6359)",
 );
 
 ok(
-  /:root\[data-theme="dark"\]\[data-theme-style\] \.app--creation \{[^}]*\n  background: var\(--bg\);\n\}/.test(styles),
-  "dark creation canvas stays opaque so the transcript backdrop matches it",
+  /scrollbar-width:\s*none;/.test(creationTranscriptRule),
+  "opaque backdrop preserves the custom Creation scrollbar contract",
 );
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
