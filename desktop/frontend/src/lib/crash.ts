@@ -117,6 +117,10 @@ const STARTUP_GRACE_MS = 15_000;
 const PROMPT_COOLDOWN_MS = 10 * 60_000;
 const MAX_LAG_SAMPLES = 60;
 const VISIBILITY_RESUME_GRACE_MS = 5_000;
+// Timer callbacks that were suspended (hidden-view throttling, system sleep, debugger
+// pauses) report the whole pause as "lag" when they finally run; past this bound the
+// reading describes scheduler suspension rather than main-thread jank.
+const EVENT_LOOP_SUSPEND_LAG_MS = 30_000;
 
 const longTasks: LongTaskSample[] = [];
 const lagSamples: number[] = [];
@@ -512,9 +516,11 @@ export function shouldRecordEventLoopLagSample(
   visibilityHidden: boolean,
   msSinceVisible: number,
   focused = true,
+  lagMs = 0,
 ): boolean {
   if (!focused) return false;
   if (visibilityHidden) return false;
+  if (lagMs >= EVENT_LOOP_SUSPEND_LAG_MS) return false;
   return msSinceVisible >= VISIBILITY_RESUME_GRACE_MS;
 }
 
@@ -592,11 +598,65 @@ function sendButton(
       await report(payload.kind, JSON.stringify(payload));
       send.textContent = t("crash.sent");
       onSent?.();
-    } catch {
+    } catch (err) {
       send.textContent = t("crash.sendFailed");
+      send.title = err instanceof Error ? err.message : String(err);
+      send.disabled = false;
     }
   };
   return send;
+}
+
+const COPY_FEEDBACK_MS = 2_000;
+
+function fallbackCopyToClipboard(text: string): boolean {
+  if (typeof document === "undefined") return false;
+  const area = document.createElement("textarea");
+  area.value = text;
+  area.setAttribute("readonly", "");
+  area.style.position = "fixed";
+  area.style.opacity = "0";
+  document.body.appendChild(area);
+  area.select();
+  let copied = false;
+  try {
+    copied = document.execCommand("copy");
+  } catch {
+    copied = false;
+  }
+  area.remove();
+  return copied;
+}
+
+// WebViews can leave navigator.clipboard undefined or reject writes (focus and
+// permission rules differ per platform), so fall back to an execCommand copy.
+export async function copyReportText(text: string): Promise<boolean> {
+  const clipboard = typeof navigator !== "undefined" ? navigator.clipboard : undefined;
+  try {
+    if (clipboard?.writeText) {
+      await clipboard.writeText(text);
+      return true;
+    }
+  } catch {
+    // fall through to the legacy path
+  }
+  return fallbackCopyToClipboard(text);
+}
+
+function copyButton(text: string, className: string): HTMLButtonElement {
+  const copy = document.createElement("button");
+  copy.className = className;
+  copy.textContent = t("crash.copy");
+  copy.onclick = async () => {
+    copy.disabled = true;
+    const copied = await copyReportText(text);
+    copy.textContent = copied ? t("crash.copied") : t("crash.copyFailed");
+    copy.disabled = false;
+    window.setTimeout(() => {
+      copy.textContent = t("crash.copy");
+    }, COPY_FEEDBACK_MS);
+  };
+  return copy;
 }
 
 function paintPerformancePrompt(payload: CrashPayload, snapshot: PerformanceSnapshot) {
@@ -616,10 +676,7 @@ function paintPerformancePrompt(payload: CrashPayload, snapshot: PerformanceSnap
   const actions = document.createElement("div");
   actions.className = "performance-report__actions";
   const send = sendButton(payload, "performance-report__send", () => markPerfReported(payload.label));
-  const copy = document.createElement("button");
-  copy.className = "performance-report__copy";
-  copy.textContent = t("crash.copy");
-  copy.onclick = () => void navigator.clipboard?.writeText(payload.message);
+  const copy = copyButton(payload.message, "performance-report__copy");
   const dismiss = document.createElement("button");
   dismiss.className = "performance-report__dismiss";
   dismiss.textContent = t("performanceReport.dismiss");
@@ -648,10 +705,7 @@ function paint(payload: CrashPayload) {
   const body = document.createElement("pre");
   body.className = "crash-overlay__body";
   body.textContent = payload.message;
-  const copy = document.createElement("button");
-  copy.className = "crash-overlay__copy";
-  copy.textContent = t("crash.copy");
-  copy.onclick = () => void navigator.clipboard?.writeText(payload.message);
+  const copy = copyButton(payload.message, "crash-overlay__copy");
   const actions = document.createElement("div");
   actions.className = "crash-overlay__actions";
   const send = sendButton(payload);
@@ -785,6 +839,11 @@ export function installPerformancePressureMonitor() {
   let visibleSince = isHidden() ? Number.POSITIVE_INFINITY : startedAt;
   let expected = performance.now() + 1000;
   let eventLoopLagPrimed = false;
+  // When the view is shown again, overdue timer callbacks can run before the queued
+  // visibilitychange task, so visibleSince may still describe the previous visible
+  // period at that point. The sampler tracks hidden observations itself and restarts
+  // the visible window on the first visible tick instead of trusting visibleSince.
+  let pendingResume = isHidden();
 
   const pastGrace = () => performance.now() >= graceUntil;
   const inspectLongTasks = () => {
@@ -804,7 +863,12 @@ export function installPerformancePressureMonitor() {
       lagSamples.length = 0;
       expected = performance.now() + 1000;
       eventLoopLagPrimed = false;
-      if (!isHidden()) visibleSince = performance.now();
+      if (isHidden()) {
+        pendingResume = true;
+      } else {
+        visibleSince = performance.now();
+        pendingResume = false;
+      }
     });
   }
 
@@ -834,6 +898,17 @@ export function installPerformancePressureMonitor() {
 
   window.setInterval(() => {
     const now = performance.now();
+    if (isHidden()) {
+      pendingResume = true;
+    } else if (pendingResume) {
+      pendingResume = false;
+      visibleSince = now;
+      longTasks.length = 0;
+      lagSamples.length = 0;
+      expected = now + 1000;
+      eventLoopLagPrimed = false;
+      return;
+    }
     if (!pastGrace()) {
       expected = now + 1000;
       return;
@@ -845,7 +920,7 @@ export function installPerformancePressureMonitor() {
     }
     const lagMs = Math.max(0, now - expected);
     expected = now + 1000;
-    if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused())) return;
+    if (!shouldRecordEventLoopLagSample(isHidden(), now - visibleSince, isFocused(), lagMs)) return;
     lagSamples.push(lagMs);
     if (lagSamples.length > MAX_LAG_SAMPLES) lagSamples.shift();
     if (lagMs >= EVENT_LOOP_LAG_PROMPT_MS) promptPerformanceReport(`event loop lag ${fmtNumber(lagMs)}ms`, lagMs);

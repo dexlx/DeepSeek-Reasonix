@@ -4,6 +4,7 @@ import {
   aggregateLongTaskProfile,
   buildCrashPayload,
   buildPerformancePayload,
+  copyReportText,
   formatLongTaskAttribution,
   formatPerformanceContext,
   globalCrashReportReason,
@@ -225,6 +226,8 @@ eq(shouldRecordEventLoopLagSample(true, 60_000), false, "ignores event-loop lag 
 eq(shouldRecordEventLoopLagSample(false, 3_000), false, "ignores event-loop lag immediately after visibility resumes");
 eq(shouldRecordEventLoopLagSample(false, 6_000), true, "records event-loop lag after the visibility resume grace period");
 eq(shouldRecordEventLoopLagSample(false, 60_000, false), false, "ignores event-loop lag while unfocused");
+eq(shouldRecordEventLoopLagSample(false, 60_000, true, 29_000), true, "records large lag spikes while visible and focused");
+eq(shouldRecordEventLoopLagSample(false, 60_000, true, 30_000), false, "treats suspension-scale lag readings as paused timers, not jank");
 
 eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false), true, "prompts an unhandled label past cooldown while visible");
 eq(shouldPromptForPerformanceLabel(true, 11 * 60_000, false), false, "suppresses an already reported or dismissed label");
@@ -243,6 +246,7 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   (globalThis as any).performance = { now: () => now };
   (globalThis as any).window = {
     runtime: {},
+    location: { protocol: "app:", host: "test", pathname: "/", hash: "" },
     setInterval: (cb: () => void) => {
       interval = cb;
       return 1;
@@ -262,6 +266,48 @@ eq(shouldPromptForPerformanceLabel(false, 11 * 60_000, false, false), false, "ne
   now = 26_000;
   interval?.();
   eq(promptPainted, false, "first post-grace event-loop tick primes without reporting startup backlog");
+
+  // Hidden-view timer throttling defers ticks; when the view is shown again the
+  // overdue tick can run before any visibilitychange handler. The accumulated
+  // delay must read as suspension, not as an event-loop lag report.
+  now = 27_000;
+  interval?.(); // records a 0ms sample in the steady visible state
+  (globalThis as any).document.visibilityState = "hidden";
+  now = 47_000;
+  interval?.(); // hidden tick: observed hidden, sample dropped
+  (globalThis as any).document.visibilityState = "visible";
+  now = 49_500;
+  try {
+    interval?.(); // resume-boundary tick, 1.5s overdue, visibilitychange never ran
+  } catch {
+    // a regressed sampler paints into the stubbed DOM and throws; the eq below reports it
+  }
+  eq(promptPainted, false, "resume-boundary tick does not report suspended-timer delay as event-loop lag");
+
+  // The restarted visible window must not permanently mute the detector:
+  // sustained lag while visible and past the resume grace still prompts.
+  now = 50_500;
+  interval?.(); // re-primes after the restart
+  now = 51_500;
+  interval?.();
+  now = 52_500;
+  interval?.();
+  now = 53_500;
+  interval?.();
+  now = 54_500;
+  interval?.(); // grace over, steady 0ms samples resume
+  let promptAttempted = false;
+  (globalThis as any).document.getElementById = () => {
+    promptAttempted = true;
+    throw new Error("stop before painting into the stubbed DOM");
+  };
+  now = 57_000;
+  try {
+    interval?.(); // 1.5s late while visible and settled: a genuine lag spike
+  } catch {
+    // paint intentionally stopped at getElementById
+  }
+  eq(promptAttempted, true, "sustained visible lag past the restarted grace window still prompts");
   (globalThis as any).window = previousWindow;
   (globalThis as any).document = previousDocument;
   (globalThis as any).performance = previousPerformance;
@@ -273,6 +319,40 @@ eq([...parseReportedPerf(reportedPerf, "abc123")], ["performance.lag"], "round-t
 eq([...parseReportedPerf(reportedPerf, "def456")], [], "re-surfaces reported labels on a new build");
 eq([...parseReportedPerf(null, "abc123")], [], "tolerates missing storage");
 eq([...parseReportedPerf("{not json", "abc123")], [], "tolerates corrupt storage");
+
+{
+  const originalNavigator = Object.getOwnPropertyDescriptor(globalThis, "navigator");
+  const setNavigator = (value: unknown) =>
+    Object.defineProperty(globalThis, "navigator", { value, configurable: true });
+
+  setNavigator({ clipboard: { writeText: async () => {} } });
+  eq(await copyReportText("report"), true, "copy reports success through the async clipboard API");
+
+  setNavigator({
+    clipboard: {
+      writeText: async () => {
+        throw new Error("denied");
+      },
+    },
+  });
+  eq(await copyReportText("report"), false, "copy reports failure when the clipboard rejects and no DOM fallback exists");
+
+  const execCommands: string[] = [];
+  (globalThis as any).document = {
+    createElement: () => ({ value: "", style: {}, setAttribute: () => {}, select: () => {}, remove: () => {} }),
+    body: { appendChild: () => {} },
+    execCommand: (command: string) => {
+      execCommands.push(command);
+      return true;
+    },
+  };
+  eq(await copyReportText("report"), true, "copy falls back to execCommand when the clipboard write is rejected");
+  eq(execCommands, ["copy"], "fallback drives the execCommand copy path");
+  delete (globalThis as any).document;
+
+  if (originalNavigator) Object.defineProperty(globalThis, "navigator", originalNavigator);
+  else delete (globalThis as any).navigator;
+}
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 if (failed > 0) process.exit(1);
