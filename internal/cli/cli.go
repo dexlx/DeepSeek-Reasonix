@@ -228,25 +228,27 @@ func setupProfile(ctx context.Context, modelName string, maxStepsOverride int, r
 }
 
 type cliBuildOverrides struct {
-	Effort          *string
-	PermissionAllow []string
-	AdditionalDirs  []string
-	WorkspaceRoot   string
+	Effort               *string
+	PermissionAllow      []string
+	AdditionalDirs       []string
+	WorkspaceRoot        string
+	HeadlessApprovalMode string
 }
 
 func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOverride int, requireKey bool, sink event.Sink, profile string, overrides cliBuildOverrides) (*control.Controller, error) {
 	migrateMCPConfigForCLIWorkspace()
 	return boot.Build(ctx, boot.Options{
-		Model:           modelName,
-		MaxSteps:        maxStepsOverride,
-		RequireKey:      requireKey,
-		Sink:            sink,
-		TokenMode:       profile,
-		SessionDir:      resolveCLISessionDir(),
-		WorkspaceRoot:   overrides.WorkspaceRoot,
-		EffortOverride:  overrides.Effort,
-		PermissionAllow: overrides.PermissionAllow,
-		AdditionalDirs:  overrides.AdditionalDirs,
+		Model:                modelName,
+		MaxSteps:             maxStepsOverride,
+		RequireKey:           requireKey,
+		Sink:                 sink,
+		TokenMode:            profile,
+		SessionDir:           resolveCLISessionDir(),
+		WorkspaceRoot:        overrides.WorkspaceRoot,
+		EffortOverride:       overrides.Effort,
+		PermissionAllow:      overrides.PermissionAllow,
+		AdditionalDirs:       overrides.AdditionalDirs,
+		HeadlessApprovalMode: overrides.HeadlessApprovalMode,
 	})
 }
 
@@ -562,7 +564,17 @@ func runAgent(args []string) int {
 	if strings.TrimSpace(*effort) != "" {
 		effortOverride = effort
 	}
-	overrides := cliBuildOverrides{Effort: effortOverride, PermissionAllow: allowedTools, AdditionalDirs: additionalDirs, WorkspaceRoot: workspaceRoot}
+	// `reasonix run` is headless: there is no key loop to answer approval or ask
+	// prompts, and the approval timeout defaults to infinite. Installing the
+	// interactive approver/asker here would let an Ask rule, the `ask` tool, or a
+	// sandbox/config approval wedge the run forever. Map the mode onto a
+	// non-blocking headless gate instead — passed into boot.Build so every
+	// headless-only gate it constructs (task/read_only_task, writer-capable
+	// skill sub-agents, the planner runner) gets the same contract as the parent
+	// executor, not just the top-level one. Default/ask and acceptEdits already
+	// keep the default headless gate (ask decisions resolve to allow); only
+	// auto/dontAsk/yolo need the explicit contract.
+	overrides := cliBuildOverrides{Effort: effortOverride, PermissionAllow: allowedTools, AdditionalDirs: additionalDirs, WorkspaceRoot: workspaceRoot, HeadlessApprovalMode: permissions.approval}
 	ctrl, err := setupProfileWithOverrides(ctx, *model, *maxSteps, true, sink, profile, overrides)
 	if err != nil {
 		if resultOutput != nil && format != runOutputText {
@@ -575,13 +587,6 @@ func runAgent(args []string) int {
 		return 1
 	}
 	defer ctrl.Close()
-	// `reasonix run` is headless: there is no key loop to answer approval or ask
-	// prompts, and the approval timeout defaults to infinite. Installing the
-	// interactive approver/asker here would let an Ask rule, the `ask` tool, or a
-	// sandbox/config approval wedge the run forever. Map the mode onto a
-	// non-blocking headless gate instead. Default/ask and acceptEdits already keep
-	// the headless gate (ask decisions resolve to allow); only auto/dontAsk/yolo
-	// need an explicit gate swap.
 	if permissions.approval != control.ToolApprovalAsk {
 		ctrl.ApplyHeadlessApprovalMode(permissions.approval)
 	}

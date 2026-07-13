@@ -131,6 +131,15 @@ type Options struct {
 	// terminal. Headless/bot frontends pass a positive value so an unanswered
 	// prompt can't wedge the session indefinitely (#4626, #4402).
 	ApprovalTimeout time.Duration
+	// HeadlessApprovalMode selects the non-interactive tool-approval contract
+	// (control.ToolApprovalAuto/DontAsk/Yolo) applied to every headless-only gate
+	// this boot constructs: the top-level executor, task/read_only_task,
+	// writer-capable skill sub-agents, and the planner runner. Empty (or "ask")
+	// keeps the default headless gate, which resolves ordinary ask decisions to
+	// allow. Callers that later call Controller.ApplyHeadlessApprovalMode with a
+	// different mode than they passed here should also pass it here, or
+	// sub-agent gates will not match the parent executor's mode.
+	HeadlessApprovalMode string
 	// SessionRecoveryMeta and OnSessionRecovered let richer frontends attach
 	// local UI metadata to automatic transcript recovery branches.
 	SessionRecoveryMeta func(control.SessionRecoveryRequest) agent.BranchMeta
@@ -592,16 +601,22 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		subagentStore.WithDestroyedChecker(jm.IsDestroying)
 	}
 
-	// Permission policy gates every tool call. The headless gate (no Approver)
-	// resolves ordinary "ask" decisions to allow — preserving `reasonix run`
-	// autonomy — while deny rules and fresh-human approval tools hard-block.
-	// Interactive frontends (chat, desktop) swap in an interactive gate later via
-	// Controller.EnableInteractiveApproval.
+	// Permission policy gates every tool call. With no HeadlessApprovalMode
+	// (interactive default), the headless gate resolves ordinary "ask" decisions
+	// to allow — preserving `reasonix run` autonomy — while deny rules and
+	// fresh-human approval tools hard-block. Interactive frontends (chat,
+	// desktop) swap in an interactive gate later via
+	// Controller.EnableInteractiveApproval. When the caller selects a headless
+	// approval mode (`reasonix run --permission-mode auto/dontAsk/yolo`), this
+	// gate is built with that mode's contract instead — the same contract
+	// ApplyHeadlessApprovalMode installs on the parent executor — so the
+	// mode-vs-explicit-ask-rule boundary is not weaker for sub-agents than for
+	// the parent.
 	// Sub-agents always run headless: they have no UI to answer a prompt, so they
 	// inherit this same gate.
 	policy := permission.New(cfg.Permissions.Mode, cfg.Permissions.Allow, cfg.Permissions.Ask, cfg.Permissions.Deny).
 		WithSessionAllow(opts.PermissionAllow)
-	headlessGate := control.NewHeadlessPermissionGate(policy)
+	headlessGate := control.BuildHeadlessApprovalGate(policy, opts.HeadlessApprovalMode)
 
 	// Hooks: load the global settings.json plus the project's (only when trusted —
 	// project hooks run arbitrary shell commands, so cloning a repo must not

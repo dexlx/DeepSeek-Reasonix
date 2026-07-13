@@ -143,6 +143,53 @@ func TestApplyHeadlessApprovalModeDontAskDeniesWithoutPrompting(t *testing.T) {
 	}
 }
 
+// TestBuildHeadlessApprovalGateMatchesParentExecutorContract pins boot's single
+// construction point for every headless-only sub-agent gate (task,
+// writer-capable skill runners, the planner) to the identical mode contract
+// ApplyHeadlessApprovalMode installs on the parent executor. Before this fix,
+// boot always built the mode-unaware default gate (nil approver, ask resolves
+// to allow) for those surfaces regardless of the CLI-selected headless
+// approval mode, so a task sub-agent could run a write_file call an explicit
+// ask rule was supposed to deny under auto. runSubagentGateWriteOnce drives a
+// write_file tool call through a gate exactly the way TaskTool.runSubSession
+// does — a plain agent.New(...).Run(...) with the gate on agent.Options — so
+// this exercises the same mechanism a real sub-agent uses, not a mock.
+func TestBuildHeadlessApprovalGateMatchesParentExecutorContract(t *testing.T) {
+	runSubagentGateWriteOnce := func(t *testing.T, mode string) []string {
+		t.Helper()
+		writer := &recordingWriter{}
+		reg := tool.NewRegistry()
+		reg.Add(writer)
+		prov := &scriptedTurns{turns: [][]provider.Chunk{
+			toolCallTurn("c1", "write_file", `{"path":"a.txt"}`),
+			textTurn("Done."),
+		}}
+		gate := BuildHeadlessApprovalGate(permission.New("ask", nil, []string{"write_file"}, nil), mode)
+		ag := agent.New(prov, reg, agent.NewSession(""), agent.Options{Gate: gate}, event.Discard)
+
+		done := make(chan error, 1)
+		go func() { done <- ag.Run(context.Background(), "edit") }()
+		select {
+		case err := <-done:
+			if err != nil {
+				t.Fatalf("Run: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatalf("sub-agent gate in %s mode must not block", mode)
+		}
+		writer.mu.Lock()
+		defer writer.mu.Unlock()
+		return append([]string(nil), writer.paths...)
+	}
+
+	if got := runSubagentGateWriteOnce(t, ToolApprovalAuto); len(got) != 0 {
+		t.Fatalf("auto: executed writes = %v, want none (a sub-agent must fail closed on an explicit ask rule too)", got)
+	}
+	if got := runSubagentGateWriteOnce(t, ToolApprovalYolo); len(got) != 1 || got[0] != "a.txt" {
+		t.Fatalf("yolo: executed writes = %v, want [a.txt] (bypass runs even explicit ask rules)", got)
+	}
+}
+
 // TestInteractiveGateIgnoresSessionAllowForFreshHumanTools guards the memory
 // contract: --allowed-tools (SessionAllow) must never satisfy a tool that
 // requires fresh human approval every call, even though SessionAllow outranks Ask

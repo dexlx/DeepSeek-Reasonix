@@ -78,6 +78,32 @@ func NewHeadlessPermissionGate(policy permission.Policy) *freshHumanHeadlessGate
 	return &freshHumanHeadlessGate{gate: permission.NewGate(policy, nil)}
 }
 
+// BuildHeadlessApprovalGate constructs the non-interactive gate for a given
+// approval mode, matching the contract ApplyHeadlessApprovalMode installs on a
+// running controller's parent executor. boot uses this as the single
+// construction point for every headless-only gate — the top-level executor,
+// the `task`/`read_only_task` sub-agent, writer-capable skill sub-agents
+// (run_skill/install_skill), and the planner runner — so all of them share the
+// CLI-selected headless approval mode instead of only the parent executor
+// getting it while the rest silently keep the mode-unaware default (ask
+// resolves to allow), which let a task sub-agent run a write an explicit ask
+// rule was supposed to deny under auto.
+func BuildHeadlessApprovalGate(policy permission.Policy, mode string) *freshHumanHeadlessGate {
+	switch normalizeToolApprovalMode(mode) {
+	case ToolApprovalYolo:
+		policy.Mode = permission.Allow
+		return NewHeadlessPermissionGate(policy)
+	case ToolApprovalAuto:
+		policy.Mode = permission.Allow
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
+	case ToolApprovalDontAsk:
+		policy.Mode = permission.Deny
+		return &freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})}
+	default:
+		return NewHeadlessPermissionGate(policy)
+	}
+}
+
 type freshHumanHeadlessGate struct {
 	gate *permission.Gate
 }

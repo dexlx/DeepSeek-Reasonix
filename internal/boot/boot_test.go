@@ -979,6 +979,130 @@ func (p *headlessTaskTestProvider) Stream(context.Context, provider.Request) (<-
 	return ch, nil
 }
 
+// TestBuildHeadlessApprovalModePropagatesToTaskSubagentGate pins boot.Build's
+// actual wiring for the fix: a `task` sub-agent spawned from a headless run
+// must honor the same --permission-mode contract as the parent executor
+// instead of the mode-unaware default gate (ask resolves to allow) that boot
+// used to build unconditionally. Auto must fail closed on write_file's
+// explicit ask rule even inside the sub-agent; only yolo may bypass it.
+func TestBuildHeadlessApprovalModePropagatesToTaskSubagentGate(t *testing.T) {
+	runTaskWriteOnce := func(t *testing.T, mode string) bool {
+		t.Helper()
+		isolateConfigHome(t)
+		dir := robustTempDir(t)
+		t.Chdir(dir)
+
+		registerHeadlessTaskWriteTestProvider()
+		prov := &headlessTaskWriteTestProvider{}
+		setHeadlessTaskWriteTestProvider(t, prov)
+		writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+system_prompt = "BASE"
+
+[permissions]
+mode = "ask"
+ask = ["write_file"]
+
+[[providers]]
+name = "test-model"
+kind = "boot-headless-write-test"
+model = "x"
+`)
+
+		ctrl, err := Build(context.Background(), Options{Sink: event.Discard, HeadlessApprovalMode: mode})
+		if err != nil {
+			t.Fatalf("Build: %v", err)
+		}
+		defer ctrl.Close()
+
+		if err := ctrl.Run(context.Background(), "use a task subagent to write a file"); err != nil {
+			t.Fatalf("Run: %v", err)
+		}
+		_, statErr := os.Stat(filepath.Join(dir, "sub.txt"))
+		return statErr == nil
+	}
+
+	if written := runTaskWriteOnce(t, "auto"); written {
+		t.Fatalf("auto: task sub-agent wrote sub.txt despite the explicit ask rule on write_file")
+	}
+	if written := runTaskWriteOnce(t, "yolo"); !written {
+		t.Fatal("yolo: task sub-agent did not write sub.txt, want the ask rule bypassed")
+	}
+}
+
+const headlessTaskWriteTestProviderKind = "boot-headless-write-test"
+
+var (
+	headlessTaskWriteTestProviderOnce    sync.Once
+	headlessTaskWriteTestProviderCurrent *headlessTaskWriteTestProvider
+	headlessTaskWriteTestProviderMu      sync.Mutex
+)
+
+func registerHeadlessTaskWriteTestProvider() {
+	headlessTaskWriteTestProviderOnce.Do(func() {
+		provider.Register(headlessTaskWriteTestProviderKind, func(provider.Config) (provider.Provider, error) {
+			headlessTaskWriteTestProviderMu.Lock()
+			defer headlessTaskWriteTestProviderMu.Unlock()
+			if headlessTaskWriteTestProviderCurrent == nil {
+				return nil, errors.New("headless task write test provider is not installed")
+			}
+			return headlessTaskWriteTestProviderCurrent, nil
+		})
+	})
+}
+
+func setHeadlessTaskWriteTestProvider(t *testing.T, p *headlessTaskWriteTestProvider) {
+	t.Helper()
+	headlessTaskWriteTestProviderMu.Lock()
+	headlessTaskWriteTestProviderCurrent = p
+	headlessTaskWriteTestProviderMu.Unlock()
+	t.Cleanup(func() {
+		headlessTaskWriteTestProviderMu.Lock()
+		if headlessTaskWriteTestProviderCurrent == p {
+			headlessTaskWriteTestProviderCurrent = nil
+		}
+		headlessTaskWriteTestProviderMu.Unlock()
+	})
+}
+
+// headlessTaskWriteTestProvider scripts a parent turn that spawns a `task`
+// sub-agent, which itself calls write_file before answering — reproducing the
+// exact call shape TaskTool.runSubSession drives so the boot-level gate wiring
+// is exercised end to end, not just the gate object in isolation.
+type headlessTaskWriteTestProvider struct {
+	mu    sync.Mutex
+	calls int
+}
+
+func (p *headlessTaskWriteTestProvider) Name() string { return "boot-headless-write-test" }
+
+func (p *headlessTaskWriteTestProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	p.mu.Lock()
+	call := p.calls
+	p.calls++
+	p.mu.Unlock()
+
+	var chunks []provider.Chunk
+	switch call {
+	case 0:
+		chunks = []provider.Chunk{{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "task-1", Name: "task", Arguments: `{"prompt":"write a file"}`}}}
+	case 1:
+		chunks = []provider.Chunk{{Type: provider.ChunkToolCall, ToolCall: &provider.ToolCall{ID: "write-1", Name: "write_file", Arguments: `{"path":"sub.txt","content":"hi"}`}}}
+	case 2:
+		chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "subagent answer"}, {Type: provider.ChunkDone}}
+	default:
+		chunks = []provider.Chunk{{Type: provider.ChunkText, Text: "parent done"}, {Type: provider.ChunkDone}}
+	}
+	ch := make(chan provider.Chunk, len(chunks))
+	for _, chunk := range chunks {
+		ch <- chunk
+	}
+	close(ch)
+	return ch, nil
+}
+
 func TestNewProviderAppliesConfiguredDefaultEffort(t *testing.T) {
 	var gotReq map[string]any
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

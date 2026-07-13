@@ -1971,17 +1971,9 @@ func (c *Controller) ApplyHeadlessApprovalMode(mode string) {
 	if c.executor == nil {
 		return
 	}
-	policy := c.policy
 	switch mode {
-	case ToolApprovalYolo:
-		policy.Mode = permission.Allow
-		c.executor.SetGate(NewHeadlessPermissionGate(policy))
-	case ToolApprovalAuto:
-		policy.Mode = permission.Allow
-		c.executor.SetGate(&freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})})
-	case ToolApprovalDontAsk:
-		policy.Mode = permission.Deny
-		c.executor.SetGate(&freshHumanHeadlessGate{gate: permission.NewGate(policy, denyPermissionApprover{})})
+	case ToolApprovalYolo, ToolApprovalAuto, ToolApprovalDontAsk:
+		c.executor.SetGate(BuildHeadlessApprovalGate(c.policy, mode))
 	}
 }
 
