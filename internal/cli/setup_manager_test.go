@@ -104,6 +104,106 @@ func TestProviderSetupSessionRemovalIsExplicitAndRepairsDefault(t *testing.T) {
 	}
 }
 
+func TestProviderSetupSessionAddPromotesDefaultWhenCurrentDefaultUnusable(t *testing.T) {
+	isolateUserConfig(t)
+	cfg := setupTestConfig()
+	// desktop-provider names SHARED_API_KEY, which is neither stored nor staged.
+	s := newProviderSetupSession(cfg)
+	added := config.ProviderEntry{Name: "grok-relay", Kind: "openai", BaseURL: "https://relay.example/v1", Model: "grok-4.5", APIKeyEnv: "GROK_RELAY_API_KEY"}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.setCredential("GROK_RELAY_API_KEY", "staged-secret"); err != nil {
+		t.Fatal(err)
+	}
+	s.promoteDefaultToNewProviders([]config.ProviderEntry{added})
+	if cfg.DefaultModel != "grok-relay" {
+		t.Fatalf("default = %q, want promotion to grok-relay", cfg.DefaultModel)
+	}
+}
+
+func TestProviderSetupSessionAddKeepsUsableDefault(t *testing.T) {
+	isolateUserConfig(t)
+	added := config.ProviderEntry{Name: "grok-relay", Kind: "openai", BaseURL: "https://relay.example/v1", Model: "grok-4.5", APIKeyEnv: "GROK_RELAY_API_KEY"}
+
+	// cli-provider needs no key, so the default is usable and must not move.
+	cfg := setupTestConfig()
+	cfg.DefaultModel = "cli-provider"
+	s := newProviderSetupSession(cfg)
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.setCredential("GROK_RELAY_API_KEY", "staged-secret"); err != nil {
+		t.Fatal(err)
+	}
+	s.promoteDefaultToNewProviders([]config.ProviderEntry{added})
+	if cfg.DefaultModel != "cli-provider" {
+		t.Fatalf("keyless default was hijacked: %q", cfg.DefaultModel)
+	}
+
+	// A default whose key was staged earlier in this session is usable too.
+	cfg = setupTestConfig()
+	s = newProviderSetupSession(cfg)
+	if err := s.setCredential("SHARED_API_KEY", "staged-secret"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	s.promoteDefaultToNewProviders([]config.ProviderEntry{added})
+	if cfg.DefaultModel != "desktop-provider" {
+		t.Fatalf("staged-key default was hijacked: %q", cfg.DefaultModel)
+	}
+}
+
+func TestFirstRunAddCustomProviderPersistsPromotedDefault(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("first-run precondition: config already exists at %s", path)
+	}
+	cfg := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(cfg, path)
+	added := config.ProviderEntry{Name: "grok-relay", Kind: "openai", BaseURL: "https://relay.example/v1", Model: "grok-4.5", APIKeyEnv: "GROK_RELAY_API_KEY"}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	s.addProviderAccess([]config.ProviderEntry{added})
+	if err := s.setCredential("GROK_RELAY_API_KEY", "staged-secret"); err != nil {
+		t.Fatal(err)
+	}
+	s.promoteDefaultToNewProviders([]config.ProviderEntry{added})
+	if _, err := commitProviderSetupSession(s, path); err != nil {
+		t.Fatal(err)
+	}
+	got := config.LoadForEdit(path)
+	if got.DefaultModel != "grok-relay" {
+		t.Fatalf("persisted default = %q, want grok-relay (built-in default has no key)", got.DefaultModel)
+	}
+	if _, ok := got.ResolveModel(got.DefaultModel); !ok {
+		t.Fatalf("persisted default %q does not resolve", got.DefaultModel)
+	}
+}
+
+func TestProviderSetupSessionUpsertRepairsDanglingDefaultRef(t *testing.T) {
+	isolateUserConfig(t)
+	cfg := setupTestConfig()
+	cfg.DefaultModel = "cli-provider/cli-model"
+	s := newProviderSetupSession(cfg)
+	refreshed := cfg.Providers[1]
+	refreshed.Model = ""
+	refreshed.Models = []string{"cli-model-2"}
+	if err := s.upsert([]config.ProviderEntry{refreshed}); err != nil {
+		t.Fatal(err)
+	}
+	if cfg.DefaultModel != "cli-provider" {
+		t.Fatalf("dangling default = %q, want repair to cli-provider", cfg.DefaultModel)
+	}
+	if _, ok := cfg.ResolveModel(cfg.DefaultModel); !ok {
+		t.Fatalf("repaired default %q does not resolve", cfg.DefaultModel)
+	}
+}
+
 func TestProviderSetupSessionAddAccessRespectsExplicitEmptyList(t *testing.T) {
 	cfg := setupTestConfig()
 	cfg.Desktop.ProviderAccess = nil

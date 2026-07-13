@@ -182,8 +182,24 @@ func (s *providerSetupSession) upsert(entries []config.ProviderEntry) error {
 			s.recordProviderMutation(entry.Name, before, providerSetupEntryPtr(*current))
 		}
 		delete(s.removed, entry.Name)
+		s.repairDanglingDefaultFor(*current)
 	}
 	return nil
+}
+
+// repairDanglingDefaultFor re-points default_model at the provider's own default
+// when an edit or model refresh dropped the exact model the ref named, mirroring
+// the repair RemoveProvider performs on removal.
+func (s *providerSetupSession) repairDanglingDefaultFor(p config.ProviderEntry) {
+	if !config.ModelRefsProvider(s.cfg.DefaultModel, p.Name) || len(p.ModelList()) == 0 {
+		return
+	}
+	if _, ok := s.cfg.ResolveModel(s.cfg.DefaultModel); ok {
+		return
+	}
+	if err := s.setDefaultModel(p.Name); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+	}
 }
 
 func (s *providerSetupSession) add(entries []config.ProviderEntry) error {
@@ -348,6 +364,44 @@ func (s *providerSetupSession) setDefaultModel(model string) error {
 	return nil
 }
 
+// providerUsable reports whether the provider would be selectable once this
+// session saves: it lists models and either needs no key or has one resolvable
+// from the credential store or staged in this session.
+func (s *providerSetupSession) providerUsable(p *config.ProviderEntry) bool {
+	if p == nil || len(p.ModelList()) == 0 {
+		return false
+	}
+	return p.Configured() || s.pendingCredentials[p.APIKeyEnv] != ""
+}
+
+// defaultModelUsable reports whether default_model resolves to a provider the
+// user could actually run once this session saves.
+func (s *providerSetupSession) defaultModelUsable() bool {
+	entry, ok := s.cfg.ResolveModel(s.cfg.DefaultModel)
+	return ok && s.providerUsable(entry)
+}
+
+// promoteDefaultToNewProviders keeps the wizard's first-run contract: when the
+// current default_model cannot run (unresolvable, or its key is neither stored
+// nor staged), point it at the first usable provider the user just added, so a
+// first run that only configures a custom provider boots on that provider
+// instead of failing on the built-in default's missing key. A usable default is
+// never hijacked.
+func (s *providerSetupSession) promoteDefaultToNewProviders(entries []config.ProviderEntry) {
+	if s.defaultModelUsable() {
+		return
+	}
+	for _, entry := range entries {
+		current, ok := s.cfg.Provider(entry.Name)
+		if !ok || !s.providerUsable(current) {
+			continue
+		}
+		if err := s.setDefaultModel(current.Name); err == nil {
+			return
+		}
+	}
+}
+
 func (s *providerSetupSession) credentialLines() []string {
 	keys := make([]string, 0, len(s.pendingCredentials))
 	for key := range s.pendingCredentials {
@@ -506,6 +560,8 @@ func addProviderToSession(s *providerSetupSession, anthropic bool) bool {
 			return false
 		}
 	}
+	// After the new keys are staged, so usability sees them.
+	s.promoteDefaultToNewProviders(result.entries)
 	return true
 }
 
