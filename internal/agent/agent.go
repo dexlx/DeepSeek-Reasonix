@@ -100,7 +100,10 @@ type callContext struct {
 // withCallContext stamps ctx with the executing call's ID, the agent's sink, and
 // the asker. executeOne sets this before every Execute; `task` reads it (via
 // CallContext) to nest sub-agent events, and `ask` reads the asker to prompt.
+// The plan-mode flag is mirrored onto the leaf planmode key so tools that must
+// not import this package (for example internal/tool/builtin) can still read it.
 func withCallContext(ctx context.Context, parentID string, sink event.Sink, asker Asker, planMode bool) context.Context {
+	ctx = planmode.WithActive(ctx, planMode)
 	return context.WithValue(ctx, callContextKey{}, callContext{parentID: parentID, sink: sink, asker: asker, planMode: planMode})
 }
 
@@ -1209,6 +1212,43 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		a.evidence.Reset()
 	}
 	a.preserveEvidenceOnce = false
+	// Re-lease this session's background-job mutations that no turn has
+	// committed yet. The Reset above just wiped any lease a failed or
+	// cancelled turn held (its ledger is gone), and a process restart starts
+	// from an empty ledger too — in both cases the job manager still marks the
+	// job's evidence uncommitted. Without re-injecting it here, a turn that
+	// never re-issues wait/bash_output (the model has no reason to if it
+	// doesn't know a mutation is still pending) would ship the background
+	// change without the final-readiness gate ever seeing it. Plan-mode turns
+	// skip this like collectBackgroundEvidence does: writers are blocked, so
+	// arming delivery sign-off demands here would deadlock the turn.
+	if a.evidence != nil && a.jobs != nil && !a.planMode.Load() {
+		session := jobs.SessionFromContext(ctx)
+		for _, jobID := range a.jobs.PendingEvidenceJobIDsForSession(session) {
+			summary, ready := a.jobs.TryLeaseEvidenceForSession(session, jobID)
+			if !ready {
+				continue
+			}
+			if !a.evidence.NoteBackgroundLease(session, jobID) {
+				continue
+			}
+			a.evidence.MergeChild(summary)
+		}
+	}
+	// Commit background-job evidence leases only after this turn delivers.
+	// wait/bash_output merge a finished background writer's receipts into the
+	// ledger provisionally; if the turn reaches a final answer (runErr == nil)
+	// the delivery gates have verified and reviewed those mutations, so the
+	// job's evidence can be permanently drained. A failed or cancelled turn
+	// leaves the lease uncommitted so the next turn re-collects it.
+	defer func() {
+		if runErr != nil || a.evidence == nil || a.jobs == nil {
+			return
+		}
+		for _, lease := range a.evidence.BackgroundLeases() {
+			a.jobs.CommitEvidenceForSession(lease.Session, lease.JobID)
+		}
+	}()
 	a.deliveryCriteriaEstablished = a.hasIncompleteCanonicalCriteria()
 	// Classify delivery expectations from the task text. Sub-agent spawners
 	// pass the pristine task through Options.ClassifierTaskText (a trusted
@@ -2463,9 +2503,10 @@ type toolCallBatch struct {
 // partitionToolCalls keeps provider order while letting contiguous known
 // read-only tools run together. Unknown and writer tools are single-call serial
 // batches so they cannot reorder around reads or produce surprising errors.
-// complete_step and todo_write are read-only but never join a parallel run: they
-// read the turn's evidence ledger, so every prior call's receipt must be recorded
-// before they run.
+// complete_step and todo_write read the turn's evidence ledger. wait and
+// bash_output can merge a background task's receipts into that ledger. These
+// evidence-sensitive tools never join a parallel run, so provider order stays
+// receipt order.
 func partitionToolCalls(r *tool.Registry, calls []provider.ToolCall) []toolCallBatch {
 	var batches []toolCallBatch
 	for i := 0; i < len(calls); {
@@ -2485,7 +2526,8 @@ func partitionToolCalls(r *tool.Registry, calls []provider.ToolCall) []toolCallB
 }
 
 func parallelisable(r *tool.Registry, name string) bool {
-	if name == "complete_step" || name == "todo_write" {
+	switch name {
+	case "complete_step", "todo_write", "wait", "bash_output":
 		return false
 	}
 	t, ok := r.Get(name)
