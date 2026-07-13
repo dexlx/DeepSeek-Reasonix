@@ -409,7 +409,7 @@ func (m *Manager) writeJobMetaLocked(j *Job, st Status) error {
 	if j.artifactMetaPath == "" {
 		return nil
 	}
-	return writeMeta(j.artifactMetaPath, artifactMeta{
+	meta := artifactMeta{
 		ID:               j.ID,
 		Kind:             j.Kind,
 		Label:            j.Label,
@@ -420,7 +420,71 @@ func (m *Manager) writeJobMetaLocked(j *Job, st Status) error {
 		ArtifactComplete: j.artifactComplete && j.artifactErr == "",
 		ArtifactError:    j.artifactErr,
 		LogPath:          filepath.Base(j.artifactPath),
-	})
+	}
+	if j.Kind == "task" {
+		meta.MutationEvidenceVersion = mutationEvidenceVersion
+		meta.MutationEvidence = mutationEvidenceForArtifact(j.evidence)
+	}
+	return writeMeta(j.artifactMetaPath, meta)
+}
+
+func mutationEvidenceForArtifact(summary evidence.ChildEvidenceSummary) *artifactMutationEvidence {
+	firstMutation := -1
+	for i, receipt := range summary.Receipts {
+		if receipt.Success && receipt.Mutation {
+			firstMutation = i
+			break
+		}
+	}
+	if firstMutation < 0 {
+		return nil
+	}
+	return &artifactMutationEvidence{
+		Risk:  string(evidence.ClassifyMutationRisk(summary.Receipts, firstMutation)),
+		Paths: summary.MutationPaths(),
+	}
+}
+
+func mutationEvidenceFromArtifact(meta artifactMeta) evidence.ChildEvidenceSummary {
+	if meta.Kind != "task" {
+		return evidence.ChildEvidenceSummary{}
+	}
+	if meta.MutationEvidenceVersion != mutationEvidenceVersion {
+		return opaqueRecoveredTaskMutation()
+	}
+	if meta.MutationEvidence == nil {
+		return evidence.ChildEvidenceSummary{}
+	}
+
+	paths := append([]string(nil), meta.MutationEvidence.Paths...)
+	switch evidence.RiskLevel(meta.MutationEvidence.Risk) {
+	case evidence.RiskLow, evidence.RiskMedium:
+		// Known paths preserve the original adaptive risk level while still
+		// requiring fresh inspection and verification after recovery.
+	case evidence.RiskHigh:
+		// The original risk may have come from an opaque or privileged tool,
+		// which the sanitized artifact intentionally does not retain. Recover it
+		// as opaque so restart cannot downgrade the security-review requirement.
+		paths = nil
+	default:
+		return opaqueRecoveredTaskMutation()
+	}
+	return evidence.ChildEvidenceSummary{Receipts: []evidence.Receipt{{
+		ToolName: recoveredBackgroundTaskToolName,
+		Success:  true,
+		Write:    true,
+		Mutation: true,
+		Paths:    paths,
+	}}}
+}
+
+func opaqueRecoveredTaskMutation() evidence.ChildEvidenceSummary {
+	return evidence.ChildEvidenceSummary{Receipts: []evidence.Receipt{{
+		ToolName: recoveredBackgroundTaskToolName,
+		Success:  true,
+		Write:    true,
+		Mutation: true,
+	}}}
 }
 
 func (m *Manager) artifactTargetDirForJob(j *Job) string {
@@ -1245,6 +1309,7 @@ func (m *Manager) loadSessionArtifacts(parentSession, dir string) {
 			artifactComplete: meta.ArtifactComplete,
 			artifactErr:      meta.ArtifactError,
 			tombstone:        true,
+			evidence:         mutationEvidenceFromArtifact(meta),
 		})
 	}
 	m.mu.Lock()
@@ -1598,5 +1663,6 @@ func (m *Manager) TakeEvidenceForSession(parentSession, id string) evidence.Chil
 	j.evidenceTaken = true
 	out := make([]evidence.Receipt, len(j.evidence.Receipts))
 	copy(out, j.evidence.Receipts)
+	j.evidence = evidence.ChildEvidenceSummary{}
 	return evidence.ChildEvidenceSummary{Receipts: out}
 }
