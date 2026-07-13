@@ -2,6 +2,7 @@ package acp
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
 	"time"
 
@@ -11,6 +12,90 @@ import (
 type snapshotLockProbeController struct {
 	*control.Controller
 	onSnapshot func()
+}
+
+func TestACPRebuildSerializesCollaborationAndApprovalChanges(t *testing.T) {
+	buildStarted := make(chan struct{})
+	releaseBuild := make(chan struct{})
+	factory := &configurableFactory{
+		onBuild: func(index int, _ SessionParams) {
+			if index != 0 {
+				return
+			}
+			close(buildStarted)
+			<-releaseBuild
+		},
+	}
+	sink := newUpdateSink(&fakeNotifier{}, "sess-axis-race")
+	sess := &acpSession{
+		id:               "sess-axis-race",
+		ctrl:             control.New(control.Options{}),
+		sink:             sink,
+		cwd:              t.TempDir(),
+		model:            "fast",
+		runtimeProfile:   "balanced",
+		toolApprovalMode: control.ToolApprovalAsk,
+		modeID:           sessionModeNormal,
+	}
+	svc := &service{factory: factory, sessions: map[string]*acpSession{sess.id: sess}}
+
+	rebuildErr := make(chan error, 1)
+	go func() {
+		rebuildErr <- svc.rebuildSession(context.Background(), sess, SessionConfigState{
+			Model:          "pro",
+			RuntimeProfile: "delivery",
+		})
+	}()
+	select {
+	case <-buildStarted:
+	case <-time.After(time.Second):
+		t.Fatal("controller rebuild did not reach blocked build")
+	}
+
+	modeRaw, err := json.Marshal(SessionSetModeParams{SessionID: sess.id, ModeID: sessionModePlan})
+	if err != nil {
+		t.Fatal(err)
+	}
+	modeDone := make(chan error, 1)
+	approvalDone := make(chan error, 1)
+	go func() {
+		_, err := svc.sessionSetMode(context.Background(), modeRaw)
+		modeDone <- err
+	}()
+	go func() {
+		_, err := svc.switchSessionToolApproval(context.Background(), sess, control.ToolApprovalAuto)
+		approvalDone <- err
+	}()
+	select {
+	case err := <-modeDone:
+		t.Fatalf("mode change completed before controller swap: %v", err)
+	case err := <-approvalDone:
+		t.Fatalf("approval change completed before controller swap: %v", err)
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseBuild)
+
+	for name, ch := range map[string]<-chan error{
+		"rebuild":  rebuildErr,
+		"mode":     modeDone,
+		"approval": approvalDone,
+	} {
+		select {
+		case err := <-ch:
+			if err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("%s did not finish", name)
+		}
+	}
+	ctrl := sess.currentCtrl()
+	if !ctrl.PlanMode() || ctrl.ToolApprovalMode() != control.ToolApprovalAuto {
+		t.Fatalf("post-rebuild axes = plan:%v approval:%q, want plan + auto", ctrl.PlanMode(), ctrl.ToolApprovalMode())
+	}
+	if sess.runtimeProfile != "delivery" || sess.currentModeID() != sessionModePlan {
+		t.Fatalf("post-rebuild session = profile:%q mode:%q, want delivery + plan", sess.runtimeProfile, sess.currentModeID())
+	}
 }
 
 func (c *snapshotLockProbeController) Snapshot() error {
