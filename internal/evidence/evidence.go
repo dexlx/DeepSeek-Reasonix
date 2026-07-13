@@ -790,6 +790,7 @@ func (l *Ledger) hasSuccessfulPaths(paths []string, accept func(Receipt) bool) b
 
 type contextKey struct{}
 type sessionMessagesKey struct{}
+type deliveryProfileKey struct{}
 
 func WithLedger(ctx context.Context, ledger *Ledger) context.Context {
 	if ledger == nil {
@@ -801,6 +802,20 @@ func WithLedger(ctx context.Context, ledger *Ledger) context.Context {
 func FromContext(ctx context.Context) (*Ledger, bool) {
 	ledger, ok := ctx.Value(contextKey{}).(*Ledger)
 	return ledger, ok && ledger != nil
+}
+
+// WithDeliveryProfile marks tool execution as subject to the delivery-first
+// final-readiness contract. Tools use this only for stricter evidence validation;
+// it is ephemeral host state and is never serialized into sessions or prompts.
+func WithDeliveryProfile(ctx context.Context) context.Context {
+	return context.WithValue(ctx, deliveryProfileKey{}, true)
+}
+
+// DeliveryProfileFromContext reports whether the current tool call must produce
+// evidence that the delivery final-readiness gate can accept.
+func DeliveryProfileFromContext(ctx context.Context) bool {
+	enabled, _ := ctx.Value(deliveryProfileKey{}).(bool)
+	return enabled
 }
 
 // WithSessionMessages attaches the full conversation history so verifyStepEvidence
@@ -998,6 +1013,14 @@ func bashCommandIsVerification(command string) bool {
 	return found
 }
 
+// IsDeliveryVerificationCommand reports whether command is a host-recognized
+// verification command for delivery finalization. Keep complete_step and the
+// final-readiness gate on this single classifier so a sign-off cannot claim a
+// command that the final gate will immediately reject.
+func IsDeliveryVerificationCommand(command string) bool {
+	return bashCommandIsVerification(command)
+}
+
 func bashSegmentIsVerification(fields []string) bool {
 	if len(fields) == 0 {
 		return false
@@ -1025,6 +1048,8 @@ func bashSegmentIsVerification(fields []string) bool {
 			return true
 		}
 		return len(args) > 1 && args[0] == "run" && hasCommandArg(args[1:2], "test", "check", "lint", "typecheck")
+	case "node":
+		return nodeSegmentIsVerification(args)
 	case "make", "just":
 		return len(args) > 0 && hasCommandArg(args[:1], "test", "check", "lint", "verify", "ci")
 	case "python", "python3":
@@ -1035,6 +1060,54 @@ func bashSegmentIsVerification(fields []string) bool {
 		return len(args) > 0 && hasCommandArg(args, "test", "check", "verify")
 	}
 	return false
+}
+
+func nodeSegmentIsVerification(args []string) bool {
+	if len(args) == 0 {
+		return false
+	}
+	// Node CLI flags are case-sensitive: -c/--check is the syntax-only mode,
+	// while -C/--conditions executes the target with custom export conditions.
+	switch args[0] {
+	case "--check", "-c":
+		// Syntax-check mode does not execute the target. Fail closed on any
+		// additional option: preload/eval/import flags could execute code before
+		// the check and turn a purported verifier into an opaque mutation.
+		for _, arg := range args[1:] {
+			if arg != "-" && strings.HasPrefix(arg, "-") {
+				return false
+			}
+		}
+		return true
+	case "--test":
+		// Match the repository's treatment of other conventional test runners,
+		// but fail closed on test-runner and Node runtime flags that write files.
+		for _, arg := range args[1:] {
+			if nodeTestFlagWritesFile(arg) {
+				return false
+			}
+		}
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeTestFlagWritesFile(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	switch name {
+	case "--cpu-prof", "--heap-prof", "--heapsnapshot-near-heap-limit", "--heapsnapshot-signal",
+		"--localstorage-file", "--perf-basic-prof", "--perf-basic-prof-only-functions", "--perf-prof",
+		"--prof", "--redirect-warnings", "--report-on-fatalerror", "--report-on-signal",
+		"--report-uncaught-exception", "--test-reporter-destination", "--test-rerun-failures",
+		"--test-update-snapshots", "--tls-keylog", "--trace-events-enabled":
+		return true
+	default:
+		return false
+	}
 }
 
 func bashReadOnlyCommandWrites(base, sub string, fields []string) bool {
