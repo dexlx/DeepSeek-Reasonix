@@ -435,6 +435,9 @@ func TestLoadIncludesPluginClaudeCompatibilityHooks(t *testing.T) {
 	if h := byEvent[PostToolUse]; h.Env["CLAUDE_PROJECT_DIR"] != "/workspace" || h.Env["REASONIX_PLUGIN_NAME"] != "claude-pack" {
 		t.Fatalf("plugin env = %#v", h.Env)
 	}
+	if h := byEvent[PostToolUse]; h.PayloadFormat != "claude" || h.Env["CLAUDE_PLUGIN_ROOT"] != root {
+		t.Fatalf("Claude compatibility metadata = %+v", h)
+	}
 }
 
 func TestReasonixHomeOverridesGlobalHookPaths(t *testing.T) {
@@ -655,6 +658,67 @@ func TestRunFiltersByEventAndTool(t *testing.T) {
 	if len(ran) != 1 || ran[0] != "a" {
 		t.Errorf("only the matching PreToolUse hook should run, got %v", ran)
 	}
+}
+
+func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
+	hooks := []ResolvedHook{{
+		HookConfig: HookConfig{Command: "/tmp/agent-critter", Argv: []string{"--hook"}, PayloadFormat: "claude"},
+		Event:      PostToolUseFailure,
+	}}
+	var input SpawnInput
+	Run(context.Background(), Payload{
+		Event: PostToolUseFailure, SessionID: "session-1", Cwd: "/workspace",
+		ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"false"}`),
+		ToolResult: `{"exit_code":1,"stderr":"failed"}`, Error: "exit 1",
+	}, hooks, func(_ context.Context, in SpawnInput) SpawnResult { input = in; return SpawnResult{ExitCode: 0} })
+	if input.Command != "/tmp/agent-critter" || len(input.Args) != 1 || input.Args[0] != "--hook" {
+		t.Fatalf("direct hook input = %+v", input)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(input.Stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["hook_event_name"] != string(PostToolUseFailure) || payload["session_id"] != "session-1" || payload["error"] != "exit 1" {
+		t.Fatalf("Claude payload = %#v", payload)
+	}
+	response, ok := payload["tool_response"].(map[string]any)
+	if !ok || response["exit_code"] != float64(1) {
+		t.Fatalf("Claude tool_response = %#v, want a structured JSON object", payload["tool_response"])
+	}
+	if _, exists := payload["event"]; exists {
+		t.Fatalf("native payload field leaked into Claude payload: %#v", payload)
+	}
+}
+
+func TestClaudeToolResponsePreservesPlainText(t *testing.T) {
+	stdin := marshalPayload(Payload{Event: PostToolUse, ToolResult: "plain output"}, "claude")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["tool_response"] != "plain output" {
+		t.Fatalf("tool_response = %#v, want plain output", payload["tool_response"])
+	}
+}
+
+func TestRunAsyncHookReturnsBeforeSpawnerFinishes(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	hooks := []ResolvedHook{{HookConfig: HookConfig{Command: "critter", Async: true}, Event: Stop}}
+	rep := Run(context.Background(), Payload{Event: Stop}, hooks, func(context.Context, SpawnInput) SpawnResult {
+		close(started)
+		<-release
+		return SpawnResult{ExitCode: 0}
+	})
+	if len(rep.Outcomes) != 1 || rep.Outcomes[0].Decision != DecisionPass {
+		t.Fatalf("report = %+v", rep)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("async hook did not start")
+	}
+	close(release)
 }
 
 func TestRunFiltersPermissionRequestByTool(t *testing.T) {

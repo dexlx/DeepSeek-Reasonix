@@ -240,18 +240,19 @@ third-party install scripts during plugin installation.
 ## Codex & Claude Compatibility
 
 Reasonix also reads Codex plugin manifests at `.codex-plugin/plugin.json` and
-Claude plugin manifests at `.claude-plugin/plugin.json`. Claude plugin
-capabilities Reasonix does not map yet (`agents/`,
-`hooks/hooks.json`, `.mcp.json`) surface as install warnings instead of being
-silently dropped. GitHub-hosted multi-plugin marketplaces with a
+Claude plugin manifests at `.claude-plugin/plugin.json`. The install preview
+reports `full`, `partial`, or `none` compatibility, lists mapped capabilities,
+and identifies every skipped entry. A non-native package with no mapped
+capabilities is blocked instead of being recorded as an unusable installation.
+GitHub-hosted multi-plugin marketplaces with a
 `.claude-plugin/marketplace.json` can be installed from the repository root
 when their plugin entries use relative string sources such as
 `./plugins/example` or `plugins/example`; preview shows one action per plugin
 before anything is written. Set the optional install name to a marketplace
-plugin name to select only that entry. External/object, npm, `strict: false`,
-and other advanced marketplace source protocols are not implemented yet:
-those entries are skipped with a warning during a full-marketplace install,
-and reported as an error when one of them is selected by name. For packages
+plugin name to select only that entry. Object sources are accepted only for a
+GitHub repository URL pinned to a full commit SHA. Unpinned external strings,
+npm, `strict: false`, and other advanced marketplace protocols are skipped in
+a bulk install and rejected when selected by name. For packages
 such as Superpowers and Claude-style skill packs, Reasonix maps:
 
 - `skills` to Reasonix skill roots. A Claude manifest that declares no
@@ -274,13 +275,24 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   explicit custom command can also occupy the qualified name; desktop plugin
   details report that conflict. Native `reasonix-plugin.json` manifests can
   declare the same thing explicitly with a `"commands"` path list.
+- `agents/*.md` to manually invoked, plugin-owned subagent profiles. Claude
+  model aliases inherit the active Reasonix model; inline `tools` lists map to
+  Reasonix tool names, including wildcard MCP names such as `mcp__*__search`.
+  Agents use `/<plugin>:agent:<name>`, so an upstream agent and skill may share
+  the same name without shadowing one another.
 - `hooks/session-start-codex` to the Reasonix `SessionStart` hook when present.
 - A plugin-root `CLAUDE.md` file to a built-in `SessionStart` context hook. The
   file is read directly by Reasonix, without spawning a shell command.
-- `.claude/settings.json` command hooks to Reasonix hook events when the event
-  names match. Claude's `matcher` field maps to Reasonix `match`; hook commands
-  run as shell commands with the plugin root as `cwd`; Claude `timeout` values
-  are interpreted as seconds.
+- `.claude/settings.json` and `hooks/hooks.json` command hooks to Reasonix hook
+  events when the event names match. `matcher`, `args`, `async`, `env`, and
+  timeout are preserved. Imported hooks receive Claude-compatible snake_case
+  stdin payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
+  expanded by the host before process launch.
+- A plugin-root `.mcp.json` to installed MCP entries. Claude `local` maps to
+  stdio, non-ASCII display names receive stable internal IDs, and duplicate
+  declarations are deduplicated. Imported servers default to
+  `auto_start=false`; users connect them on demand so startup does not change
+  the provider-visible tool schema.
 
 Unsupported Claude hook item types are skipped with a warning. Reasonix does not
 run third-party install scripts.
@@ -293,6 +305,7 @@ Plugin hooks receive these environment variables:
 - `REASONIX_HOME`
 - `REASONIX_WORKSPACE_ROOT`
 - `CLAUDE_PROJECT_DIR`
+- `CLAUDE_PLUGIN_ROOT`
 
 ## Desktop Backend Methods
 

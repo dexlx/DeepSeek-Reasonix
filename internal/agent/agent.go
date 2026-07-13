@@ -234,6 +234,7 @@ func NormalizeMaxSubagentDepth(depth int) int {
 type ToolHooks interface {
 	PreToolUse(ctx context.Context, name string, args json.RawMessage) (block bool, message string)
 	PostToolUse(ctx context.Context, name string, args json.RawMessage, result string)
+	PostToolUseFailure(ctx context.Context, name string, args json.RawMessage, result string, err error)
 	// PostLLMCall fires after each model turn completes (streaming finishes)
 	// but before reasoning_content is stored. It returns the (possibly
 	// translated) reasoning string — the original when no hook is configured.
@@ -2982,10 +2983,14 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	// Track skill/capability outcomes for Delivery gates.
 	a.noteCapabilityInvocation(call.Name, json.RawMessage(call.Arguments), err)
-	// PostToolUse hooks observe the result (they can't block); fired whether the
-	// call succeeded or errored, since the tool did run. Use real target name.
+	// Success and failure hooks observe the result after the tool ran. Use the
+	// real target name for proxied tools.
 	if a.hooks != nil {
-		a.hooks.PostToolUse(ctx, permName, permArgs, result)
+		if err != nil {
+			a.hooks.PostToolUseFailure(ctx, permName, permArgs, result, err)
+		} else {
+			a.hooks.PostToolUse(ctx, permName, permArgs, result)
+		}
 	}
 	if err != nil {
 		detail := result

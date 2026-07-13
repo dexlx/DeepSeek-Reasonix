@@ -3,8 +3,10 @@ package hook
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -111,6 +113,22 @@ func TestRunnerPostToolUseWarn(t *testing.T) {
 	}
 }
 
+func TestRunnerPostToolUseFailurePreservesNativeObserver(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "claude-failure", PayloadFormat: "claude"}, Event: PostToolUseFailure},
+		{HookConfig: HookConfig{Command: "native-post"}, Event: PostToolUse},
+	}
+	var commands []string
+	r := NewRunner(hooks, "/tmp", func(_ context.Context, in SpawnInput) SpawnResult {
+		commands = append(commands, in.Command)
+		return SpawnResult{ExitCode: 0}
+	}, nil)
+	r.PostToolUseFailure(context.Background(), "bash", json.RawMessage(`{}`), "failed", errors.New("exit 1"))
+	if got := strings.Join(commands, ","); got != "claude-failure,native-post" {
+		t.Fatalf("failure observers = %q", got)
+	}
+}
+
 // --- Runner.PermissionRequest ---
 
 func TestRunnerPermissionRequestPayload(t *testing.T) {
@@ -192,6 +210,22 @@ func TestRunnerStopWithHooks(t *testing.T) {
 	r.Stop(context.Background(), "done", 1)
 }
 
+func TestRunnerStopResultPreservesNativeStopObserver(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "claude-stop-failure", PayloadFormat: "claude"}, Event: StopFailure},
+		{HookConfig: HookConfig{Command: "native-stop"}, Event: Stop},
+	}
+	var commands []string
+	r := NewRunner(hooks, "/tmp", func(_ context.Context, in SpawnInput) SpawnResult {
+		commands = append(commands, in.Command)
+		return SpawnResult{ExitCode: 0}
+	}, nil)
+	r.StopResult(context.Background(), "partial", 1, errors.New("turn failed"))
+	if got := strings.Join(commands, ","); got != "claude-stop-failure,native-stop" {
+		t.Fatalf("stop failure observers = %q", got)
+	}
+}
+
 func TestRunnerSessionStartReturnsAdditionalContexts(t *testing.T) {
 	hooks := []ResolvedHook{
 		{HookConfig: HookConfig{Command: "plain"}, Event: SessionStart},
@@ -251,6 +285,47 @@ func TestRunnerSessionStartWarnsOnInvalidJSON(t *testing.T) {
 	}
 	if !contains(notified, "invalid JSON") {
 		t.Fatalf("notify = %q, want invalid JSON warning", notified)
+	}
+}
+
+func TestRunnerClaudeLifecyclePayloadsShareSessionID(t *testing.T) {
+	events := []Event{SessionStart, PreCompact, Notification, SessionEnd}
+	hooks := make([]ResolvedHook, 0, len(events))
+	for _, event := range events {
+		hooks = append(hooks, ResolvedHook{
+			HookConfig: HookConfig{Command: string(event), PayloadFormat: "claude"},
+			Event:      event,
+		})
+	}
+	seen := map[Event]map[string]any{}
+	spawner := func(_ context.Context, in SpawnInput) SpawnResult {
+		var payload map[string]any
+		if err := json.Unmarshal([]byte(in.Stdin), &payload); err != nil {
+			t.Fatalf("payload JSON: %v", err)
+		}
+		seen[Event(payload["hook_event_name"].(string))] = payload
+		return SpawnResult{ExitCode: 0}
+	}
+	r := NewRunner(hooks, "/workspace", spawner, nil)
+	r.SetSessionID("session-42")
+	r.SessionStart(context.Background(), "resume")
+	r.PreCompact(context.Background(), "manual")
+	r.Notification(context.Background(), "approval needed", "permission_prompt")
+	r.SessionEnd(context.Background(), "clear")
+
+	for _, event := range events {
+		if seen[event]["session_id"] != "session-42" {
+			t.Fatalf("%s session_id = %#v", event, seen[event]["session_id"])
+		}
+	}
+	if seen[SessionStart]["source"] != "resume" || seen[PreCompact]["trigger"] != "manual" {
+		t.Fatalf("lifecycle details = %#v / %#v", seen[SessionStart], seen[PreCompact])
+	}
+	if seen[Notification]["notification_type"] != "permission_prompt" || seen[Notification]["message"] != "approval needed" {
+		t.Fatalf("notification payload = %#v", seen[Notification])
+	}
+	if seen[SessionEnd]["reason"] != "clear" {
+		t.Fatalf("session end payload = %#v", seen[SessionEnd])
 	}
 }
 

@@ -454,6 +454,9 @@ func New(opts Options) *Controller {
 	if runtimeProfile == "" {
 		runtimeProfile = capability.ProfileBalanced
 	}
+	if opts.Hooks != nil {
+		opts.Hooks.SetSessionID(agent.BranchID(opts.SessionPath))
+	}
 	c := &Controller{
 		runner:                            opts.Runner,
 		executor:                          opts.Executor,
@@ -1614,7 +1617,7 @@ func (c *Controller) noticeDetail(text, detail string) {
 // Run executes a turn synchronously, returning the agent's error. Used by the
 // headless `reasonix run` path, where the Sink renders to stdout and the caller
 // just needs the exit status — no TurnDone event, no cancel bookkeeping.
-func (c *Controller) Run(ctx context.Context, input string) error {
+func (c *Controller) Run(ctx context.Context, input string) (err error) {
 	c.maybeSessionStart(ctx)
 	parentSession := c.parentSessionID()
 	ctx = agent.WithParentSession(ctx, parentSession)
@@ -1635,11 +1638,12 @@ func (c *Controller) Run(ctx context.Context, input string) error {
 		if block, _ := c.hooks.PromptSubmit(ctx, input, turn); block {
 			return nil
 		}
-		defer func() { c.hooks.Stop(context.Background(), lastAssistantText(c.History()), turn) }()
+		defer func() { c.hooks.StopResult(context.Background(), lastAssistantText(c.History()), turn, err) }()
 	}
 	c.markInFlightTurn(startMessages, true)
 	defer c.clearInFlightTurn()
-	return c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
+	err = c.runner.Run(ctx, c.withCapabilityRoute(input, rawInput))
+	return err
 }
 
 // RunSubagentProfile executes one named runAs=subagent skill synchronously and
@@ -2471,6 +2475,7 @@ func (c *Controller) Compact(ctx context.Context, instructions string) error {
 // on the first turn — by then the sink/notify is wired, and a resumed session
 // fires it too (its first post-resume turn).
 func (c *Controller) maybeSessionStart(ctx context.Context) {
+	c.hooks.SetSessionID(c.parentSessionID())
 	c.mu.Lock()
 	if c.startedOnce {
 		c.mu.Unlock()
@@ -2500,7 +2505,7 @@ func (c *Controller) NewSession() error {
 	if err := c.Snapshot(); err != nil {
 		return err
 	}
-	c.hooks.SessionEnd(context.Background())
+	c.hooks.SessionEnd(context.Background(), "clear")
 	// Hold snapshotMu across the swap so an in-flight save cannot pair the old
 	// path with the fresh session (or the fresh path with the old session).
 	c.snapshotMu.Lock()
@@ -2527,7 +2532,8 @@ func (c *Controller) NewSession() error {
 	c.mu.Lock()
 	c.startedOnce = true // NewSession fires SessionStart itself; don't re-fire on the next turn
 	c.mu.Unlock()
-	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
+	c.hooks.SetSessionID(c.parentSessionID())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background(), "clear"))
 	return nil
 }
 
@@ -2569,7 +2575,7 @@ func (c *Controller) ClearSession() error {
 		}
 		destroy.Finish()
 	}
-	c.hooks.SessionEnd(context.Background())
+	c.hooks.SessionEnd(context.Background(), "clear")
 	if c.sessionDir != "" {
 		c.mu.Lock()
 		c.sessionPath = agent.NewSessionPath(c.sessionDir, c.label)
@@ -2589,7 +2595,8 @@ func (c *Controller) ClearSession() error {
 	c.mu.Lock()
 	c.startedOnce = true
 	c.mu.Unlock()
-	c.enqueueHookContexts(c.hooks.SessionStart(context.Background()))
+	c.hooks.SetSessionID(c.parentSessionID())
+	c.enqueueHookContexts(c.hooks.SessionStart(context.Background(), "clear"))
 	if destroy.Async {
 		go func() {
 			result := destroy.Wait()
@@ -4373,7 +4380,7 @@ func (c *Controller) close(fireSessionEnd bool, jobsMode closeJobsMode) {
 		c.parkedTurns = nil
 		c.mu.Unlock()
 		if fireSessionEnd && started {
-			c.hooks.SessionEnd(context.Background())
+			c.hooks.SessionEnd(context.Background(), "other")
 		}
 		if c.jobs != nil {
 			switch jobsMode {
@@ -5118,7 +5125,7 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 	}
 	// The agent now needs the user's attention; a Notification hook can ping an
 	// external channel (desktop notice, phone) while the run blocks on the reply.
-	go c.hooks.Notification(ctx, approvalNotificationText(tool, subject))
+	go c.hooks.Notification(ctx, approvalNotificationText(tool, subject), "permission_prompt")
 
 	waitCtx, cancelWait := c.approval.waitContext(ctx)
 	defer cancelWait()

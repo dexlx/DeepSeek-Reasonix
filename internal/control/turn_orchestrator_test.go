@@ -417,13 +417,13 @@ func TestTurnOrchestratorSyntheticTurnDoesNotCreateCheckpoint(t *testing.T) {
 	}
 }
 
-func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
+func TestTurnOrchestratorStopFailureHookCancelledContext(t *testing.T) {
 	prov := &scriptedTurns{turns: [][]provider.Chunk{textTurn("done")}}
 	ag := agent.New(prov, tool.NewRegistry(), agent.NewSession(""), agent.Options{}, event.Discard)
 	var stopCalls int
 	hooks := hook.NewRunner([]hook.ResolvedHook{{
 		HookConfig: hook.HookConfig{Command: "stop"},
-		Event:      hook.Stop,
+		Event:      hook.StopFailure,
 		Scope:      hook.ScopeProject,
 	}}, "", func(ctx context.Context, in hook.SpawnInput) hook.SpawnResult {
 		if ctx.Err() != nil {
@@ -431,7 +431,10 @@ func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
 		}
 		var p hook.Payload
 		json.Unmarshal([]byte(in.Stdin), &p)
-		if p.Event == hook.Stop {
+		if p.Event == hook.StopFailure {
+			if p.Error == "" || !p.IsInterrupt {
+				t.Errorf("failure payload = %+v", p)
+			}
 			stopCalls++
 		}
 		return hook.SpawnResult{ExitCode: 0}
@@ -444,7 +447,7 @@ func TestTurnOrchestratorStopHookCancelledContext(t *testing.T) {
 		t.Fatal(err)
 	}
 	if stopCalls != 1 {
-		t.Fatalf("Stop hooks called = %d; want 1", stopCalls)
+		t.Fatalf("StopFailure hooks called = %d; want 1", stopCalls)
 	}
 }
 

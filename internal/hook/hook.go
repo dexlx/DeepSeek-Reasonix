@@ -37,11 +37,13 @@ import (
 type Event string
 
 const (
-	PreToolUse        Event = "PreToolUse"
-	PostToolUse       Event = "PostToolUse"
-	PermissionRequest Event = "PermissionRequest"
-	UserPromptSubmit  Event = "UserPromptSubmit"
-	Stop              Event = "Stop"
+	PreToolUse         Event = "PreToolUse"
+	PostToolUse        Event = "PostToolUse"
+	PostToolUseFailure Event = "PostToolUseFailure"
+	PermissionRequest  Event = "PermissionRequest"
+	UserPromptSubmit   Event = "UserPromptSubmit"
+	Stop               Event = "Stop"
+	StopFailure        Event = "StopFailure"
 	// PostLLMCall fires after every model turn completes (streaming finishes) but
 	// before the reasoning_content is stored in the session. The hook receives the
 	// raw reasoning text in the payload; its stdout, if non-empty on exit 0,
@@ -62,7 +64,7 @@ const (
 
 // Events is every event, in a stable order — drives loading and `/hooks`.
 var Events = []Event{
-	PreToolUse, PostToolUse, PermissionRequest, UserPromptSubmit, Stop,
+	PreToolUse, PostToolUse, PostToolUseFailure, PermissionRequest, UserPromptSubmit, Stop, StopFailure,
 	PostLLMCall,
 	SessionStart, SessionEnd, SubagentStop, Notification, PreCompact,
 }
@@ -101,6 +103,9 @@ type HookConfig struct {
 	Match string `json:"match,omitempty"`
 	// Command is the shell command to run (spawned through the platform shell).
 	Command string `json:"command"`
+	// Argv bypasses the shell and is used by imported Claude hooks whose
+	// command and args are separate manifest fields.
+	Argv []string `json:"-"`
 	// ContextFile is an internal plugin-package helper: when set, the hook reads
 	// this file and treats it as stdout instead of spawning a shell command.
 	ContextFile string `json:"contextFile,omitempty"`
@@ -112,6 +117,10 @@ type HookConfig struct {
 	Cwd string `json:"cwd,omitempty"`
 	// Env adds environment variables for this hook invocation.
 	Env map[string]string `json:"env,omitempty"`
+	// Async and PayloadFormat are internal compatibility metadata populated for
+	// imported Claude hooks. Native Reasonix settings keep their old behavior.
+	Async         bool   `json:"-"`
+	PayloadFormat string `json:"-"`
 }
 
 // Settings is the shape of a settings.json (only hooks for now).
@@ -255,11 +264,18 @@ func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string)
 				continue
 			}
 			for _, h := range pkg.Manifest.Hooks[eventName] {
-				command := h.Command
+				command := expandPluginRoot(h.Command, pkg.Root)
 				if command != "" && !h.ShellCommand && !filepath.IsAbs(command) {
 					command = filepath.Join(pkg.Root, filepath.FromSlash(command))
 				}
 				command = NormalizeCommand(command)
+				var argv []string
+				if len(h.Args) > 0 {
+					argv = make([]string, 0, len(h.Args))
+				}
+				for _, arg := range h.Args {
+					argv = append(argv, expandPluginRoot(arg, pkg.Root))
+				}
 				contextFile := h.ContextFile
 				if contextFile != "" && !filepath.IsAbs(contextFile) {
 					contextFile = filepath.Join(pkg.Root, filepath.FromSlash(contextFile))
@@ -276,18 +292,25 @@ func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string)
 				env["REASONIX_HOME"] = reasonixHomeDir
 				env["REASONIX_WORKSPACE_ROOT"] = projectRoot
 				env["CLAUDE_PROJECT_DIR"] = projectRoot
+				env["CLAUDE_PLUGIN_ROOT"] = pkg.Root
+				for key, value := range env {
+					env[key] = expandPluginRoot(value, pkg.Root)
+				}
 				if item.Installed.Version != "" {
 					env["REASONIX_PLUGIN_VERSION"] = item.Installed.Version
 				}
 				*out = append(*out, ResolvedHook{
 					HookConfig: HookConfig{
-						Match:       h.Match,
-						Command:     command,
-						ContextFile: contextFile,
-						Description: h.Description,
-						Timeout:     h.Timeout,
-						Cwd:         cwd,
-						Env:         env,
+						Match:         h.Match,
+						Command:       command,
+						Argv:          argv,
+						ContextFile:   contextFile,
+						Description:   h.Description,
+						Timeout:       h.Timeout,
+						Cwd:           cwd,
+						Env:           env,
+						Async:         h.Async,
+						PayloadFormat: h.PayloadFormat,
 					},
 					Event:  event,
 					Scope:  ScopePlugin,
@@ -296,6 +319,11 @@ func appendPluginHooks(out *[]ResolvedHook, reasonixHomeDir, projectRoot string)
 			}
 		}
 	}
+}
+
+func expandPluginRoot(value, root string) string {
+	value = strings.ReplaceAll(value, "${CLAUDE_PLUGIN_ROOT}", root)
+	return strings.ReplaceAll(value, "$CLAUDE_PLUGIN_ROOT", root)
 }
 
 func validEvent(event Event) bool {
@@ -321,7 +349,7 @@ func cloneEnv(in map[string]string) map[string]string {
 // anchored regex; non-tool events always match. A malformed regex never fires
 // (safer than firing on everything).
 func MatchesTool(h ResolvedHook, toolName string) bool {
-	if h.Event != PreToolUse && h.Event != PostToolUse && h.Event != PermissionRequest {
+	if h.Event != PreToolUse && h.Event != PostToolUse && h.Event != PostToolUseFailure && h.Event != PermissionRequest {
 		return true
 	}
 	m := h.Match
@@ -337,18 +365,24 @@ func MatchesTool(h ResolvedHook, toolName string) bool {
 
 // Payload is the JSON envelope written to a hook's stdin.
 type Payload struct {
-	Event         Event           `json:"event"`
-	Cwd           string          `json:"cwd"`
-	ToolName      string          `json:"toolName,omitempty"`
-	ToolArgs      json.RawMessage `json:"toolArgs,omitempty"`
-	Subject       string          `json:"subject,omitempty"`
-	ToolResult    string          `json:"toolResult,omitempty"`
-	Prompt        string          `json:"prompt,omitempty"`
-	LastAssistant string          `json:"lastAssistantText,omitempty"`
-	Turn          int             `json:"turn,omitempty"`
-	Message       string          `json:"message,omitempty"`   // Notification: what needs attention
-	Trigger       string          `json:"trigger,omitempty"`   // PreCompact: "auto" | "manual"
-	Reasoning     string          `json:"reasoning,omitempty"` // PostLLMCall: the model's raw reasoning text
+	Event            Event           `json:"event"`
+	SessionID        string          `json:"sessionId,omitempty"`
+	Cwd              string          `json:"cwd"`
+	ToolName         string          `json:"toolName,omitempty"`
+	ToolArgs         json.RawMessage `json:"toolArgs,omitempty"`
+	Subject          string          `json:"subject,omitempty"`
+	ToolResult       string          `json:"toolResult,omitempty"`
+	Prompt           string          `json:"prompt,omitempty"`
+	LastAssistant    string          `json:"lastAssistantText,omitempty"`
+	Turn             int             `json:"turn,omitempty"`
+	Message          string          `json:"message,omitempty"`   // Notification: what needs attention
+	Trigger          string          `json:"trigger,omitempty"`   // PreCompact: "auto" | "manual"
+	Reasoning        string          `json:"reasoning,omitempty"` // PostLLMCall: the model's raw reasoning text
+	Error            string          `json:"error,omitempty"`
+	Source           string          `json:"source,omitempty"`
+	Reason           string          `json:"reason,omitempty"`
+	NotificationType string          `json:"notificationType,omitempty"`
+	IsInterrupt      bool            `json:"isInterrupt,omitempty"`
 }
 
 // Decision is a single hook invocation's verdict.
@@ -441,6 +475,7 @@ func decideOutcome(event Event, r SpawnResult) Decision {
 // SpawnInput / SpawnResult / Spawner are the test seam around the real spawn.
 type SpawnInput struct {
 	Command string
+	Args    []string
 	Cwd     string
 	Env     map[string]string
 	Stdin   string
@@ -470,9 +505,6 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 		spawner = DefaultSpawner
 	}
 	event := payload.Event
-	stdinBytes, _ := json.Marshal(payload)
-	stdin := string(stdinBytes) + "\n"
-
 	report := Report{Event: event}
 	for _, h := range hooks {
 		if h.Event != event || !MatchesTool(h, payload.ToolName) {
@@ -483,8 +515,16 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 			cwd = payload.Cwd
 		}
 		timeout := h.timeout()
+		stdin := marshalPayload(payload, h.PayloadFormat)
+		input := SpawnInput{Command: h.Command, Args: h.Argv, Cwd: cwd, Env: h.Env, Stdin: stdin, Timeout: timeout}
+		if h.Async {
+			asyncCtx := context.WithoutCancel(ctx)
+			go runResolvedHook(asyncCtx, h, input, spawner)
+			report.Outcomes = append(report.Outcomes, Outcome{Hook: h, Decision: DecisionPass})
+			continue
+		}
 		start := time.Now()
-		r := runResolvedHook(ctx, h, SpawnInput{Command: h.Command, Cwd: cwd, Env: h.Env, Stdin: stdin, Timeout: timeout}, spawner)
+		r := runResolvedHook(ctx, h, input, spawner)
 		decision := decideOutcome(event, r)
 		report.Outcomes = append(report.Outcomes, Outcome{
 			Hook:      h,
@@ -502,6 +542,41 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 		}
 	}
 	return report
+}
+
+func marshalPayload(payload Payload, format string) string {
+	var body []byte
+	if format == "claude" {
+		claude := map[string]any{
+			"hook_event_name":        payload.Event,
+			"session_id":             payload.SessionID,
+			"cwd":                    payload.Cwd,
+			"tool_name":              payload.ToolName,
+			"tool_input":             payload.ToolArgs,
+			"tool_response":          claudeToolResponse(payload.ToolResult),
+			"prompt":                 payload.Prompt,
+			"last_assistant_message": payload.LastAssistant,
+			"source":                 payload.Source,
+			"reason":                 payload.Reason,
+			"notification_type":      payload.NotificationType,
+			"message":                payload.Message,
+			"trigger":                payload.Trigger,
+			"error":                  payload.Error,
+			"is_interrupt":           payload.IsInterrupt,
+		}
+		body, _ = json.Marshal(claude)
+	} else {
+		body, _ = json.Marshal(payload)
+	}
+	return string(body) + "\n"
+}
+
+func claudeToolResponse(result string) any {
+	trimmed := strings.TrimSpace(result)
+	if trimmed == "" || !json.Valid([]byte(trimmed)) {
+		return result
+	}
+	return json.RawMessage(trimmed)
 }
 
 func runResolvedHook(ctx context.Context, h ResolvedHook, in SpawnInput, spawner Spawner) SpawnResult {
@@ -546,7 +621,7 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 	cctx, cancel := context.WithTimeout(ctx, in.Timeout)
 	defer cancel()
 
-	cmd := spawnCommand(cctx, in.Command)
+	cmd := spawnCommand(cctx, in.Command, in.Args)
 	proc.HideWindow(cmd)
 	cmd.Dir = in.Cwd
 	env := secrets.ProcessEnv()
@@ -607,7 +682,10 @@ func DefaultSpawner(ctx context.Context, in SpawnInput) SpawnResult {
 // POSIX commands that were already well-formed keep their shell semantics
 // verbatim — normalizeStaticNodeEval's rendering escapes $ and backticks, so
 // even repaired commands re-entering here behave identically under sh -c.
-func spawnCommand(ctx context.Context, command string) *exec.Cmd {
+func spawnCommand(ctx context.Context, command string, argv ...[]string) *exec.Cmd {
+	if len(argv) > 0 && argv[0] != nil {
+		return exec.CommandContext(ctx, command, argv[0]...)
+	}
 	if node, flag, script, ok := repairableNodeEvalArgs(command); ok {
 		return exec.CommandContext(ctx, node, flag, script)
 	}

@@ -316,30 +316,60 @@ func TestParseClaudePluginIgnoresEmptyConventionDirAndExplicitSkillsWin(t *testi
 	}
 }
 
-func TestParseClaudePluginWarnsOnUnmappedCapabilities(t *testing.T) {
+func TestParseClaudePluginMapsConventionCapabilities(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "big-pack"}`)
 	writeTestFile(t, filepath.Join(root, "skills", "s", "SKILL.md"), "---\ndescription: s\n---\nbody")
 	writeTestFile(t, filepath.Join(root, "commands", "deploy.md"), "run deploy")
-	writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), `{}`)
-	writeTestFile(t, filepath.Join(root, ".mcp.json"), `{}`)
+	writeTestFile(t, filepath.Join(root, "agents", "reviewer.md"), "---\nname: reviewer\ndescription: review changes\nmodel: sonnet\ntools: [Read, Grep]\n---\nReview carefully.")
+	writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), `{
+  "hooks": {"SessionStart": [{"hooks": [{"type":"command","command":"bin/start","args":["--hook"],"async":true}]}]}
+}`)
+	writeTestFile(t, filepath.Join(root, ".mcp.json"), `{
+  "mcpServers": {"Google Drive": {"type":"local","command":"uvx","args":["drive-mcp"],"title":"Drive"}}
+}`)
 
-	_, warnings, err := ParseDir(root)
+	pkg, warnings, err := ParseDir(root)
 	if err != nil {
 		t.Fatalf("ParseDir: %v", err)
 	}
-	joined := strings.Join(warnings, "\n")
-	for _, want := range []string{"hooks/hooks.json", ".mcp.json"} {
-		if !strings.Contains(joined, want) {
-			t.Fatalf("warnings = %v, want mention of %s", warnings, want)
+	if len(warnings) != 0 {
+		t.Fatalf("warnings = %v, want fully mapped package", warnings)
+	}
+	if pkg.Compatibility.Status != "full" || pkg.AgentCount() != 1 {
+		t.Fatalf("compatibility = %+v agents=%d", pkg.Compatibility, pkg.AgentCount())
+	}
+	agent := pkg.Inventory().Agents[0]
+	if agent.Name != "reviewer" || agent.Model != "sonnet" || strings.Join(agent.AllowedTools, ",") != "Read,Grep" {
+		t.Fatalf("agent = %+v", agent)
+	}
+	hook := pkg.Manifest.Hooks["SessionStart"][0]
+	if !hook.Async || hook.PayloadFormat != "claude" || strings.Join(hook.Args, ",") != "--hook" {
+		t.Fatalf("hook = %+v", hook)
+	}
+	if len(pkg.Manifest.MCPServers) != 1 {
+		t.Fatalf("MCP servers = %+v", pkg.Manifest.MCPServers)
+	}
+	for name, server := range pkg.Manifest.MCPServers {
+		if !IsValidName(name) || server.Type != "stdio" || server.DisplayName != "Drive" || server.AutoStart == nil || *server.AutoStart {
+			t.Fatalf("MCP %q = %+v", name, server)
 		}
 	}
-	// commands map to custom slash commands now — they must not warn.
-	if strings.Contains(joined, "commands") {
-		t.Fatalf("warnings = %v, must not warn about the mapped commands dir", warnings)
+}
+
+func TestClaudeMCPServerIDUsesConnectionIdentityAndPreservesValidNames(t *testing.T) {
+	identity := claudeMCPIdentity{Type: "http", URL: "https://open.feishu.cn/mcp"}
+	if got := claudeMCPServerID("yuandian", identity); got != "yuandian" {
+		t.Fatalf("valid MCP ID changed to %q", got)
 	}
-	if strings.Contains(joined, "agents") {
-		t.Fatalf("warnings = %v, must not mention absent agents dir", warnings)
+	first := claudeMCPServerID("飞书", identity)
+	second := claudeMCPServerID("飞书", identity)
+	if first != second || !IsValidName(first) {
+		t.Fatalf("stable MCP IDs = %q / %q", first, second)
+	}
+	different := claudeMCPServerID("飞书", claudeMCPIdentity{Type: "http", URL: "https://example.com/other"})
+	if different == first {
+		t.Fatalf("different endpoints shared MCP ID %q", first)
 	}
 }
 
