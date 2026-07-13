@@ -553,6 +553,9 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "node syntax check pipeline", toolName: "bash", args: `{"command":"tail -n +2 app.html | head -n 20 | node --check"}`},
 		{name: "node eval stays opaque", toolName: "bash", args: `{"command":"node -e 'console.log(1)'"}`, want: true},
 		{name: "node conditions flag stays opaque", toolName: "bash", args: `{"command":"node -C production server.js"}`, want: true},
+		{name: "node test runner", toolName: "bash", args: `{"command":"node --test"}`},
+		{name: "node test snapshot update stays opaque", toolName: "bash", args: `{"command":"node --test --test-update-snapshots"}`, want: true},
+		{name: "node test reporter file stays opaque", toolName: "bash", args: `{"command":"node --test --test-reporter=junit --test-reporter-destination=result.txt"}`, want: true},
 		{name: "diff review", toolName: "bash", args: `{"command":"git diff --check"}`},
 		{name: "formatter write", toolName: "bash", args: `{"command":"gofmt -w internal/a.go"}`, want: true},
 		{name: "file redirect", toolName: "bash", args: `{"command":"printf x > generated.txt"}`, want: true},
@@ -631,6 +634,24 @@ func TestNodeConditionsFlagCannotMasqueradeAsDeliveryVerification(t *testing.T) 
 	}
 	if !ToolCallMutates("bash", json.RawMessage(`{"command":"node -C production server.js"}`), false) {
 		t.Fatal("node -C (--conditions) must remain an opaque mutation")
+	}
+}
+
+func TestNodeTestRunnerWriteFlagsCannotMasqueradeAsDeliveryVerification(t *testing.T) {
+	if !IsDeliveryVerificationCommand("node --test") {
+		t.Fatal("plain node --test should be recognized as a delivery verification")
+	}
+	// --test-update-snapshots rewrites checked-in snapshot fixtures and
+	// --test-reporter-destination can write arbitrary paths; both must stay
+	// opaque mutations so new files still require review and sign-off.
+	for _, command := range []string{
+		"node --test --test-update-snapshots",
+		"node --test --test-reporter=junit --test-reporter-destination=result.txt",
+		"node --test --test-reporter junit --test-reporter-destination result.txt",
+	} {
+		if IsDeliveryVerificationCommand(command) {
+			t.Fatalf("%q writes files and must not be recognized as delivery verification", command)
+		}
 	}
 }
 
