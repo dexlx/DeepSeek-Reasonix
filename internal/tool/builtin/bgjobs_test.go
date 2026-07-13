@@ -9,6 +9,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/planmode"
 )
 
 // End-to-end through the actual tools: a background bash job runs under a manager
@@ -109,6 +110,40 @@ func TestWaitWithoutLedgerDoesNotConsumeBackgroundEvidence(t *testing.T) {
 	}
 	if !ledger.Summary().HasMutation() {
 		t.Fatal("wait without a ledger consumed evidence before a collecting turn could merge it")
+	}
+}
+
+func TestWaitInPlanModeDefersBackgroundEvidence(t *testing.T) {
+	m := jobs.NewManager(event.Discard)
+	defer m.Close()
+	baseCtx := jobs.WithSession(jobs.WithManager(context.Background(), m), "session")
+	j := m.StartForSession("session", "task", "writer", func(jobCtx context.Context, _ io.Writer) (string, error) {
+		jobs.PublishEvidence(jobCtx, evidence.ChildEvidenceSummary{Receipts: []evidence.Receipt{{
+			ToolName: "write_file", Success: true, Mutation: true, Write: true, Paths: []string{"changed.go"},
+		}}})
+		return "done", nil
+	})
+	args := []byte(`{"job_ids":["` + j.ID + `"]}`)
+
+	// A planning turn may wait on jobs, but merging mutation receipts there
+	// would arm delivery sign-off demands the read-only turn cannot satisfy.
+	planLedger := evidence.NewLedger()
+	planCtx := planmode.WithActive(evidence.WithLedger(baseCtx, planLedger), true)
+	if _, err := (waitJob{}).Execute(planCtx, args); err != nil {
+		t.Fatalf("wait in plan mode: %v", err)
+	}
+	if planLedger.Summary().HasMutation() {
+		t.Fatal("plan-mode wait merged mutation evidence into the planning turn")
+	}
+
+	// The evidence stays on the job for the first normal turn to collect.
+	ledger := evidence.NewLedger()
+	normalCtx := planmode.WithActive(evidence.WithLedger(baseCtx, ledger), false)
+	if _, err := (waitJob{}).Execute(normalCtx, args); err != nil {
+		t.Fatalf("wait after plan mode: %v", err)
+	}
+	if !ledger.Summary().HasMutation() {
+		t.Fatal("plan-mode wait consumed the background evidence instead of deferring it")
 	}
 }
 

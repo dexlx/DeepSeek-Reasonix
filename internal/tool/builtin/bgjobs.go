@@ -9,6 +9,7 @@ import (
 
 	"reasonix/internal/evidence"
 	"reasonix/internal/jobs"
+	"reasonix/internal/planmode"
 	"reasonix/internal/tool"
 )
 
@@ -183,6 +184,14 @@ func (waitJob) Execute(ctx context.Context, args json.RawMessage) (string, error
 }
 
 func collectBackgroundEvidence(ctx context.Context, jm *jobs.Manager, jobID string) {
+	// Plan mode researches with writers blocked: merging a finished background
+	// writer's mutation receipts into a planning turn would arm delivery
+	// sign-off demands (complete_step, verification, review) that the turn
+	// cannot satisfy. Skip without consuming — the job keeps its evidence, and
+	// the first collection from a normal turn merges it.
+	if planmode.Active(ctx) {
+		return
+	}
 	ledger, ok := evidence.FromContext(ctx)
 	if !ok || ledger == nil || jm == nil {
 		return

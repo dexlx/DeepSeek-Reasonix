@@ -100,7 +100,10 @@ type callContext struct {
 // withCallContext stamps ctx with the executing call's ID, the agent's sink, and
 // the asker. executeOne sets this before every Execute; `task` reads it (via
 // CallContext) to nest sub-agent events, and `ask` reads the asker to prompt.
+// The plan-mode flag is mirrored onto the leaf planmode key so tools that must
+// not import this package (for example internal/tool/builtin) can still read it.
 func withCallContext(ctx context.Context, parentID string, sink event.Sink, asker Asker, planMode bool) context.Context {
+	ctx = planmode.WithActive(ctx, planMode)
 	return context.WithValue(ctx, callContextKey{}, callContext{parentID: parentID, sink: sink, asker: asker, planMode: planMode})
 }
 
