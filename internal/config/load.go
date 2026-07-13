@@ -447,28 +447,51 @@ func mergeTOMLProviderAccess(paths []string) ([]string, bool, error) {
 	return merged, saw, nil
 }
 
-// DesktopProviderAccessDeclared reports whether path explicitly declares
-// desktop.provider_access. A missing declaration and an explicit empty list
-// both decode to an empty slice, but they have different product semantics:
-// legacy configs infer access from configured providers, while [] means the
-// user intentionally removed every desktop access entry.
-func DesktopProviderAccessDeclared(path string) (bool, error) {
+// ConfigFileDeclarations contains provider settings explicitly declared by one
+// TOML file, without defaults or values inherited from another scope.
+type ConfigFileDeclarations struct {
+	ProviderNames                 []string
+	DesktopProviderAccessDeclared bool
+}
+
+// InspectConfigFileDeclarations returns the provider-related fields explicitly
+// present in one TOML file. It deliberately does not include built-in defaults
+// or values inherited from another config scope.
+func InspectConfigFileDeclarations(path string) (ConfigFileDeclarations, error) {
+	var declarations ConfigFileDeclarations
 	path = strings.TrimSpace(path)
 	if path == "" {
-		return false, nil
+		return declarations, nil
 	}
 	if _, err := os.Stat(path); err != nil {
 		if os.IsNotExist(err) {
-			return false, nil
+			return declarations, nil
 		}
-		return false, err
+		return declarations, err
 	}
 	var f Config
 	meta, err := decodeTOMLFile(path, &f)
 	if err != nil {
-		return false, fmt.Errorf("config %s: %w", path, err)
+		return declarations, fmt.Errorf("config %s: %w", path, err)
 	}
-	return meta.IsDefined("desktop", "provider_access"), nil
+	seen := make(map[string]bool, len(f.Providers))
+	for _, provider := range f.Providers {
+		name := strings.TrimSpace(provider.Name)
+		if name == "" || seen[name] {
+			continue
+		}
+		seen[name] = true
+		declarations.ProviderNames = append(declarations.ProviderNames, name)
+	}
+	declarations.DesktopProviderAccessDeclared = meta.IsDefined("desktop", "provider_access")
+	return declarations, nil
+}
+
+// DesktopProviderAccessDeclared reports whether path explicitly declares
+// desktop.provider_access. It distinguishes omission from an intentional [].
+func DesktopProviderAccessDeclared(path string) (bool, error) {
+	declarations, err := InspectConfigFileDeclarations(path)
+	return declarations.DesktopProviderAccessDeclared, err
 }
 
 // LoadForEdit returns a config to seed the `reasonix setup` wizard when reconfiguring:
@@ -477,43 +500,51 @@ func DesktopProviderAccessDeclared(path string) (bool, error) {
 // of resetting to defaults. Reasonix's global .env is loaded so api_key_env
 // resolution works while the wizard decides which keys are still missing.
 func LoadForEdit(path string) *Config {
-	cfg, err := loadForEditStrict(path, true)
+	return loadForEdit(path, true, true)
+}
+
+// LoadForEditReadOnlyStrict is the error-returning commit-time variant. It must
+// not fall back to defaults when another writer leaves malformed TOML, because
+// saving that fallback would overwrite the user's recoverable file.
+func LoadForEditReadOnlyStrict(path string) (*Config, error) {
+	return loadForEditStrict(path, true, false)
+}
+
+func loadForEdit(path string, loadCredentials, persistMigrations bool) *Config {
+	cfg, err := loadForEditStrict(path, loadCredentials, persistMigrations)
 	if err == nil {
 		return cfg
 	}
 	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
-	loadDotEnvForEditPath(path)
+	if loadCredentials {
+		loadDotEnvForEditPath(path)
+	}
 	cfg = Default()
 	normalizeConfigForEdit(cfg)
 	return cfg
 }
 
 func LoadForEditWithoutCredentials(path string) *Config {
-	cfg, err := loadForEditStrict(path, false)
-	if err == nil {
-		return cfg
-	}
-	slog.Warn("config: load for edit failed, using defaults", "path", path, "err", err)
-	cfg = Default()
-	normalizeConfigForEdit(cfg)
-	return cfg
+	return loadForEdit(path, false, true)
 }
 
-func loadForEditStrict(path string, loadCredentials bool) (*Config, error) {
+func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*Config, error) {
 	if loadCredentials {
 		loadDotEnvForEditPath(path)
 	}
 	cfg := Default()
-	if _, err := os.Stat(path); err == nil {
-		if err := migrateLegacyMCPTiersFile(path); err != nil {
-			return nil, fmt.Errorf("config %s: %w", path, err)
+	if persistMigrations {
+		if _, err := os.Stat(path); err == nil {
+			if err := migrateLegacyMCPTiersFile(path); err != nil {
+				return nil, fmt.Errorf("config %s: %w", path, err)
+			}
 		}
 	}
 	if err := mergeFile(cfg, path); err != nil {
 		return nil, err
 	}
 	changed := normalizeConfigForEdit(cfg)
-	if changed && strings.TrimSpace(path) != "" {
+	if persistMigrations && changed && strings.TrimSpace(path) != "" {
 		if _, err := os.Stat(path); err == nil {
 			if err := cfg.SaveTo(path); err != nil {
 				return nil, err

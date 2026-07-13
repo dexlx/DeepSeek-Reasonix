@@ -327,6 +327,7 @@ var ChineseTraditional = Messages{
 	SetupManagerTitle:        "供應商設定",
 	SetupAddOpenAI:           "新增 OpenAI 相容供應商",
 	SetupAddAnthropic:        "新增 Anthropic 相容供應商",
+	SetupProviderExistsFmt:   "供應商 %q 已存在。請進入現有供應商管理來編輯模型或設定。",
 	SetupSaveExit:            "儲存並離開",
 	SetupSaveExitDesc:        "寫入目前暫存的修改",
 	SetupCancel:              "取消",
@@ -355,6 +356,7 @@ var ChineseTraditional = Messages{
 	SetupSummaryKeysFmt:      "更新 API Key：%d 項",
 	SetupSummaryNoChanges:    "沒有修改",
 	SetupConfirmSave:         "儲存這些修改？",
+	SetupConcurrentChangeFmt: "setup 開啟期間設定已被修改（%s）。本次暫存修改未寫入，請重新執行 setup 檢查最新設定。",
 
 	// model fetching
 	FetchingModelsFmt:          "正在取得 %s 的模型列表...",

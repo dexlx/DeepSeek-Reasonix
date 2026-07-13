@@ -384,6 +384,7 @@ type Messages struct {
 	SetupManagerTitle        string
 	SetupAddOpenAI           string
 	SetupAddAnthropic        string
+	SetupProviderExistsFmt   string
 	SetupSaveExit            string
 	SetupSaveExitDesc        string
 	SetupCancel              string
@@ -412,6 +413,7 @@ type Messages struct {
 	SetupSummaryKeysFmt      string
 	SetupSummaryNoChanges    string
 	SetupConfirmSave         string
+	SetupConcurrentChangeFmt string
 
 	// model fetching
 	FetchingModelsFmt          string // "Fetching models for %s..."

@@ -1266,7 +1266,7 @@ func TestAPIKeyEnvFromProviderName(t *testing.T) {
 }
 
 func TestPromptCustomProviderManualDefaultsKeyEnvFromBaseURL(t *testing.T) {
-	entries, err := promptCustomProviderManualWith(
+	result, err := promptCustomProviderManualWith(
 		bufio.NewScanner(strings.NewReader("sensenova-chat\n\n\n")),
 		"https://token.sensenova.cn/v1",
 		"",
@@ -1275,6 +1275,7 @@ func TestPromptCustomProviderManualDefaultsKeyEnvFromBaseURL(t *testing.T) {
 	if err != nil {
 		t.Fatalf("promptCustomProviderManualWith: %v", err)
 	}
+	entries := result.entries
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -1284,7 +1285,7 @@ func TestPromptCustomProviderManualDefaultsKeyEnvFromBaseURL(t *testing.T) {
 }
 
 func TestPromptCustomProviderManualPreservesExplicitKeyEnv(t *testing.T) {
-	entries, err := promptCustomProviderManualWith(
+	result, err := promptCustomProviderManualWith(
 		bufio.NewScanner(strings.NewReader("manual-chat\n\n")),
 		"https://token.sensenova.cn/v1",
 		"CUSTOM_API_KEY",
@@ -1293,6 +1294,7 @@ func TestPromptCustomProviderManualPreservesExplicitKeyEnv(t *testing.T) {
 	if err != nil {
 		t.Fatalf("promptCustomProviderManualWith: %v", err)
 	}
+	entries := result.entries
 	if len(entries) != 1 {
 		t.Fatalf("entries = %d, want 1", len(entries))
 	}
@@ -1319,7 +1321,7 @@ func TestPromptAPIKeyEnvNameRejectsModelName(t *testing.T) {
 }
 
 func TestPromptCustomProviderManualAsksForModelBeforeCredentialName(t *testing.T) {
-	entries, err := promptCustomProviderManualWith(
+	result, err := promptCustomProviderManualWith(
 		bufio.NewScanner(strings.NewReader("grok-4.5\ngrok-4.5\n\n\n")),
 		"https://api.example.com/v1",
 		"",
@@ -1328,11 +1330,47 @@ func TestPromptCustomProviderManualAsksForModelBeforeCredentialName(t *testing.T
 	if err != nil {
 		t.Fatalf("promptCustomProviderManualWith: %v", err)
 	}
+	entries := result.entries
 	if got := entries[0].Model; got != "grok-4.5" {
 		t.Fatalf("model = %q, want grok-4.5", got)
 	}
 	if got := entries[0].APIKeyEnv; got != "CUSTOM_API_EXAMPLE_COM_API_KEY" {
 		t.Fatalf("APIKeyEnv = %q, want generated default after invalid model-like input", got)
+	}
+}
+
+func TestPromptCustomProviderStagesExplicitKeyEvenWhenProcessEnvMatches(t *testing.T) {
+	const key = "CUSTOM_API_EXAMPLE_COM_API_KEY"
+	t.Setenv(key, "same-secret")
+	result, err := promptCustomProviderManualWith(
+		bufio.NewScanner(strings.NewReader("grok-4.5\n")),
+		"https://api.example.com/v1",
+		key,
+		"same-secret",
+	)
+	if err != nil {
+		t.Fatalf("promptCustomProviderManualWith: %v", err)
+	}
+	if got := result.credentials[key]; got != "same-secret" {
+		t.Fatalf("staged credential = %q, want explicitly entered value", got)
+	}
+	if got := os.Getenv(key); got != "same-secret" {
+		t.Fatalf("prompt changed process environment to %q", got)
+	}
+	result, err = promptCustomProviderManualWith(
+		bufio.NewScanner(strings.NewReader("grok-4.5\n")),
+		"https://api.example.com/v1",
+		key,
+		"new-secret",
+	)
+	if err != nil {
+		t.Fatalf("promptCustomProviderManualWith with replacement key: %v", err)
+	}
+	if got := result.credentials[key]; got != "new-secret" {
+		t.Fatalf("replacement staged credential = %q", got)
+	}
+	if got := os.Getenv(key); got != "same-secret" {
+		t.Fatalf("prompt leaked replacement credential into process environment: %q", got)
 	}
 }
 

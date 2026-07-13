@@ -346,6 +346,7 @@ var English = Messages{
 	SetupManagerTitle:        "Provider configuration",
 	SetupAddOpenAI:           "Add OpenAI-compatible provider",
 	SetupAddAnthropic:        "Add Anthropic-compatible provider",
+	SetupProviderExistsFmt:   "Provider %q already exists. Manage the existing provider to edit its models or settings.",
 	SetupSaveExit:            "Save and exit",
 	SetupSaveExitDesc:        "write staged changes",
 	SetupCancel:              "Cancel",
@@ -374,6 +375,7 @@ var English = Messages{
 	SetupSummaryKeysFmt:      "API keys updated: %d",
 	SetupSummaryNoChanges:    "No changes",
 	SetupConfirmSave:         "Save these changes?",
+	SetupConcurrentChangeFmt: "Configuration changed while setup was open (%s). No staged setup changes were saved; run setup again to review the latest configuration.",
 
 	// model fetching
 	FetchingModelsFmt:          "Fetching models for %s...",

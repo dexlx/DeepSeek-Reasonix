@@ -2,7 +2,9 @@ package cli
 
 import (
 	"bufio"
+	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -21,9 +23,68 @@ type providerSetupSession struct {
 	pendingCredentials map[string]string
 	removed            map[string]bool
 	accessDeclared     bool
+	projectScoped      bool
+	declaredProviders  []string
+	operations         []providerSetupOperation
 }
 
 const setupManagerContinue = 2
+
+type providerSetupOperationKind uint8
+
+const (
+	setupOpProvider providerSetupOperationKind = iota
+	setupOpDefaultModel
+	setupOpLanguage
+	setupOpMaterializeAccess
+	setupOpAccessMembership
+)
+
+type providerSetupOperation struct {
+	kind           providerSetupOperationKind
+	providerName   string
+	beforeProvider *config.ProviderEntry
+	afterProvider  *config.ProviderEntry
+	beforeString   string
+	afterString    string
+	accessName     string
+	projectScoped  bool
+	beforeBool     bool
+	afterBool      bool
+}
+
+type providerSetupConflictError struct {
+	field string
+}
+
+type providerSetupFileSnapshot struct {
+	exists bool
+	body   []byte
+}
+
+func (e *providerSetupConflictError) Error() string {
+	return e.field
+}
+
+func providerSetupEntryPtr(entry config.ProviderEntry) *config.ProviderEntry {
+	copy := config.ProviderEntryConfigSnapshot(entry)
+	return &copy
+}
+
+func readProviderSetupFileSnapshot(path string) (providerSetupFileSnapshot, error) {
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return providerSetupFileSnapshot{}, nil
+		}
+		return providerSetupFileSnapshot{}, err
+	}
+	return providerSetupFileSnapshot{exists: true, body: body}, nil
+}
+
+func providerSetupFileSnapshotEqual(a, b providerSetupFileSnapshot) bool {
+	return a.exists == b.exists && bytes.Equal(a.body, b.body)
+}
 
 func newProviderSetupSession(cfg *config.Config) *providerSetupSession {
 	s := &providerSetupSession{
@@ -41,31 +102,114 @@ func newProviderSetupSession(cfg *config.Config) *providerSetupSession {
 
 func newProviderSetupSessionForPath(cfg *config.Config, path string) *providerSetupSession {
 	s := newProviderSetupSession(cfg)
-	declared, err := config.DesktopProviderAccessDeclared(path)
+	s.projectScoped = !config.IsUserConfigPath(path)
+	declarations, err := config.InspectConfigFileDeclarations(path)
 	if err != nil {
 		// LoadForEdit already reports malformed/unreadable config and falls back;
 		// keep the conservative policy here so setup never enables hidden siblings.
 		s.accessDeclared = true
 		return s
 	}
-	s.accessDeclared = declared
+	s.accessDeclared = declarations.DesktopProviderAccessDeclared
+	s.declaredProviders = declarations.ProviderNames
 	return s
+}
+
+func (s *providerSetupSession) recordProviderMutation(name string, before, after *config.ProviderEntry) {
+	s.operations = append(s.operations, providerSetupOperation{
+		kind:           setupOpProvider,
+		providerName:   name,
+		beforeProvider: before,
+		afterProvider:  after,
+	})
+}
+
+func (s *providerSetupSession) setLanguage(language string) {
+	if s.cfg.Language == language {
+		return
+	}
+	s.operations = append(s.operations, providerSetupOperation{
+		kind:         setupOpLanguage,
+		beforeString: s.cfg.Language,
+		afterString:  language,
+	})
+	s.cfg.Language = language
+}
+
+func (s *providerSetupSession) applyDeepSeekOfficialDefaultPricing() {
+	before := make(map[string]config.ProviderEntry, len(s.cfg.Providers))
+	for _, provider := range s.cfg.Providers {
+		before[provider.Name] = provider
+	}
+	s.cfg.ApplyDeepSeekOfficialDefaultPricing()
+	for i := range s.cfg.Providers {
+		after := s.cfg.Providers[i]
+		previous, existed := before[after.Name]
+		if existed && config.ProviderEntriesConfigEqual(previous, after) {
+			delete(before, after.Name)
+			continue
+		}
+		var previousPtr *config.ProviderEntry
+		if existed {
+			previousPtr = providerSetupEntryPtr(previous)
+		}
+		s.recordProviderMutation(after.Name, previousPtr, providerSetupEntryPtr(after))
+		delete(before, after.Name)
+	}
+	for name, previous := range before {
+		s.recordProviderMutation(name, providerSetupEntryPtr(previous), nil)
+	}
+}
+
+func (s *providerSetupSession) resetProviderSummaryBaseline() {
+	s.originalProviders = make(map[string]config.ProviderEntry, len(s.cfg.Providers))
+	for _, provider := range s.cfg.Providers {
+		s.originalProviders[provider.Name] = provider
+	}
 }
 
 func (s *providerSetupSession) upsert(entries []config.ProviderEntry) error {
 	for _, entry := range entries {
+		var before *config.ProviderEntry
+		if current, ok := s.cfg.Provider(entry.Name); ok {
+			before = providerSetupEntryPtr(*current)
+		}
 		if err := s.cfg.UpsertProvider(entry); err != nil {
 			return err
+		}
+		current, _ := s.cfg.Provider(entry.Name)
+		if before == nil || !config.ProviderEntriesConfigEqual(*before, *current) {
+			s.recordProviderMutation(entry.Name, before, providerSetupEntryPtr(*current))
 		}
 		delete(s.removed, entry.Name)
 	}
 	return nil
 }
 
+func (s *providerSetupSession) add(entries []config.ProviderEntry) error {
+	seen := make(map[string]bool, len(s.cfg.Providers)+len(entries))
+	for _, provider := range s.cfg.Providers {
+		seen[provider.Name] = true
+	}
+	for _, entry := range entries {
+		if seen[entry.Name] {
+			return fmt.Errorf(i18n.M.SetupProviderExistsFmt, entry.Name)
+		}
+		seen[entry.Name] = true
+	}
+	return s.upsert(entries)
+}
+
 func (s *providerSetupSession) remove(name string) error {
+	current, ok := s.cfg.Provider(name)
+	if !ok {
+		return fmt.Errorf("remove provider: no provider %q", name)
+	}
+	before := providerSetupEntryPtr(*current)
 	if err := s.cfg.RemoveProvider(name); err != nil {
 		return err
 	}
+	s.recordProviderMutation(name, before, nil)
 	s.removeProviderAccess(name)
 	if _, existed := s.originalProviders[name]; existed {
 		s.removed[name] = true
@@ -77,10 +221,28 @@ func (s *providerSetupSession) addProviderAccess(entries []config.ProviderEntry)
 	if len(entries) == 0 {
 		return
 	}
+	before := append([]string(nil), s.cfg.Desktop.ProviderAccess...)
 	// Preserve the legacy "undeclared means infer all configured providers"
-	// behavior before turning provider_access into an explicit list.
+	// behavior before turning provider_access into an explicit list. Project
+	// setup only seeds providers declared by that project; cfg also contains
+	// built-in defaults, which must not override the user's global access policy.
 	if !s.accessDeclared && len(s.cfg.Desktop.ProviderAccess) == 0 {
-		config.NormalizeLegacyDesktopProviderAccess(s.cfg)
+		if s.projectScoped {
+			for _, name := range s.declaredProviders {
+				provider, ok := s.cfg.Provider(name)
+				if ok && provider.Configured() && len(provider.ModelList()) > 0 {
+					s.cfg.Desktop.ProviderAccess = append(s.cfg.Desktop.ProviderAccess, name)
+				}
+			}
+		} else {
+			config.NormalizeLegacyDesktopProviderAccess(s.cfg)
+		}
+		s.accessDeclared = true
+		s.operations = append(s.operations, providerSetupOperation{
+			kind:          setupOpMaterializeAccess,
+			projectScoped: s.projectScoped,
+		})
+		before = append([]string(nil), s.cfg.Desktop.ProviderAccess...)
 	}
 	seen := make(map[string]bool, len(s.cfg.Desktop.ProviderAccess)+len(entries))
 	for _, name := range s.cfg.Desktop.ProviderAccess {
@@ -98,6 +260,7 @@ func (s *providerSetupSession) addProviderAccess(entries []config.ProviderEntry)
 		seen[name] = true
 	}
 	s.accessDeclared = true
+	s.recordAccessTransition(before)
 }
 
 func (s *providerSetupSession) removeProviderAccess(name string) {
@@ -105,6 +268,7 @@ func (s *providerSetupSession) removeProviderAccess(name string) {
 	if name == "" || len(s.cfg.Desktop.ProviderAccess) == 0 {
 		return
 	}
+	before := append([]string(nil), s.cfg.Desktop.ProviderAccess...)
 	out := s.cfg.Desktop.ProviderAccess[:0]
 	for _, current := range s.cfg.Desktop.ProviderAccess {
 		if strings.TrimSpace(current) != name {
@@ -112,6 +276,49 @@ func (s *providerSetupSession) removeProviderAccess(name string) {
 		}
 	}
 	s.cfg.Desktop.ProviderAccess = out
+	s.recordAccessTransition(before)
+}
+
+func (s *providerSetupSession) recordAccessTransition(before []string) {
+	beforeSet := make(map[string]bool, len(before))
+	afterSet := make(map[string]bool, len(s.cfg.Desktop.ProviderAccess))
+	var order []string
+	seen := map[string]bool{}
+	for _, names := range [][]string{before, s.cfg.Desktop.ProviderAccess} {
+		for _, name := range names {
+			name = strings.TrimSpace(name)
+			if name == "" {
+				continue
+			}
+			if !seen[name] {
+				seen[name] = true
+				order = append(order, name)
+			}
+		}
+	}
+	for _, name := range before {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			beforeSet[name] = true
+		}
+	}
+	for _, name := range s.cfg.Desktop.ProviderAccess {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			afterSet[name] = true
+		}
+	}
+	for _, name := range order {
+		if beforeSet[name] == afterSet[name] {
+			continue
+		}
+		s.operations = append(s.operations, providerSetupOperation{
+			kind:       setupOpAccessMembership,
+			accessName: name,
+			beforeBool: beforeSet[name],
+			afterBool:  afterSet[name],
+		})
+	}
 }
 
 func (s *providerSetupSession) setCredential(key, value string) error {
@@ -123,6 +330,21 @@ func (s *providerSetupSession) setCredential(key, value string) error {
 		return fmt.Errorf("API key for %s contains a newline", key)
 	}
 	s.pendingCredentials[key] = value
+	return nil
+}
+
+func (s *providerSetupSession) setDefaultModel(model string) error {
+	before := s.cfg.DefaultModel
+	if err := s.cfg.SetDefaultModel(model); err != nil {
+		return err
+	}
+	if before != s.cfg.DefaultModel {
+		s.operations = append(s.operations, providerSetupOperation{
+			kind:         setupOpDefaultModel,
+			beforeString: before,
+			afterString:  s.cfg.DefaultModel,
+		})
+	}
 	return nil
 }
 
@@ -185,13 +407,20 @@ func providerSetupEqual(a, b config.ProviderEntry) bool {
 		a.Default == b.Default && a.APIKeyEnv == b.APIKeyEnv
 }
 
-func runProviderSetupManager(cfg *config.Config, configPath, envPath string) int {
+func runProviderSetupManager(s *providerSetupSession, configPath, envPath string) int {
+	cfg := s.cfg
 	repaired, repairs := repairInvalidProviderKeyEnvs(cfg.Providers)
-	cfg.Providers = repaired
+	for i := range repaired {
+		if config.ProviderEntriesConfigEqual(cfg.Providers[i], repaired[i]) {
+			continue
+		}
+		before := providerSetupEntryPtr(cfg.Providers[i])
+		cfg.Providers[i] = repaired[i]
+		s.recordProviderMutation(repaired[i].Name, before, providerSetupEntryPtr(repaired[i]))
+	}
 	for _, repair := range repairs {
 		fmt.Fprintf(os.Stderr, "  %s\n", dim(fmt.Sprintf(i18n.M.RepairedAPIKeyEnvFmt, repair.provider, repair.old, repair.new)))
 	}
-	s := newProviderSetupSessionForPath(cfg, configPath)
 	for {
 		items := providerManagerItems(s)
 		idx, err := selectOne(i18n.M.SetupManagerTitle, items)
@@ -248,15 +477,12 @@ func providerManagerItems(s *providerSetupSession) []menuItem {
 }
 
 func addProviderToSession(s *providerSetupSession, anthropic bool) bool {
-	envBefore := snapshotEnvironment()
-	defer restoreEnvironment(envBefore)
-
-	var entries []config.ProviderEntry
+	var result providerPromptResult
 	var err error
 	if anthropic {
-		entries, err = promptAnthropicProvider()
+		result, err = promptAnthropicProvider()
 	} else {
-		entries, err = promptCustomProvider()
+		result, err = promptCustomProvider()
 	}
 	if err != nil {
 		if err != errCancelled {
@@ -264,22 +490,20 @@ func addProviderToSession(s *providerSetupSession, anthropic bool) bool {
 		}
 		return false
 	}
-	for _, entry := range entries {
+	for _, entry := range result.entries {
 		if !confirmSharedCredential(s.cfg, entry, "") {
 			return false
 		}
 	}
-	if err := s.upsert(entries); err != nil {
+	if err := s.add(result.entries); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		return false
 	}
-	s.addProviderAccess(entries)
-	for _, entry := range entries {
-		if entry.APIKeyEnv != "" {
-			value := os.Getenv(entry.APIKeyEnv)
-			if value != "" && value != envBefore[entry.APIKeyEnv] {
-				_ = s.setCredential(entry.APIKeyEnv, value)
-			}
+	s.addProviderAccess(result.entries)
+	for key, value := range result.credentials {
+		if err := s.setCredential(key, value); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			return false
 		}
 	}
 	return true
@@ -378,11 +602,15 @@ func confirmSharedCredential(cfg *config.Config, candidate config.ProviderEntry,
 
 func updateProviderKey(s *providerSetupSession, p config.ProviderEntry) {
 	in := bufio.NewScanner(os.Stdin)
+	keyEnvChanged := false
 	if p.APIKeyEnv == "" {
 		p.APIKeyEnv = promptAPIKeyEnvName(in, os.Stdout, i18n.M.CustomPromptKeyEnv, apiKeyEnvFromProviderName(p.Name))
-		if !confirmSharedCredential(s.cfg, p, p.Name) {
-			return
-		}
+		keyEnvChanged = true
+	}
+	if !confirmSharedCredential(s.cfg, p, p.Name) {
+		return
+	}
+	if keyEnvChanged {
 		if err := s.upsert([]config.ProviderEntry{p}); err != nil {
 			fmt.Fprintln(os.Stderr, err)
 			return
@@ -436,31 +664,6 @@ func testAndRefreshProvider(s *providerSetupSession, p config.ProviderEntry) {
 	fmt.Printf("  %s\n", green(fmt.Sprintf(i18n.M.FetchModelsSuccessFmt, len(models), p.Name)))
 }
 
-func snapshotEnvironment() map[string]string {
-	snapshot := map[string]string{}
-	for _, assignment := range os.Environ() {
-		if key, value, ok := strings.Cut(assignment, "="); ok {
-			snapshot[key] = value
-		}
-	}
-	return snapshot
-}
-
-func restoreEnvironment(snapshot map[string]string) {
-	for _, assignment := range os.Environ() {
-		key, _, ok := strings.Cut(assignment, "=")
-		if !ok {
-			continue
-		}
-		if _, existed := snapshot[key]; !existed {
-			_ = os.Unsetenv(key)
-		}
-	}
-	for key, value := range snapshot {
-		_ = os.Setenv(key, value)
-	}
-}
-
 func temporarilySetCredential(key, value string) func() {
 	if key == "" || value == "" {
 		return func() {}
@@ -489,7 +692,7 @@ func setDefaultProvider(s *providerSetupSession, p config.ProviderEntry) {
 	if err != nil {
 		return
 	}
-	if err := s.cfg.SetDefaultModel(p.Name + "/" + models[idx]); err != nil {
+	if err := s.setDefaultModel(p.Name + "/" + models[idx]); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 	}
 }
@@ -505,6 +708,128 @@ func removeProviderFromSession(s *providerSetupSession, p config.ProviderEntry) 
 	}
 }
 
+func (s *providerSetupSession) replayOperations(cfg *config.Config, accessDeclared *bool, declaredProviders []string) error {
+	for _, operation := range s.operations {
+		switch operation.kind {
+		case setupOpProvider:
+			current, exists := cfg.Provider(operation.providerName)
+			if operation.beforeProvider == nil {
+				if exists {
+					return &providerSetupConflictError{field: fmt.Sprintf("provider %q", operation.providerName)}
+				}
+			} else if !exists || !config.ProviderEntriesConfigEqual(*current, *operation.beforeProvider) {
+				return &providerSetupConflictError{field: fmt.Sprintf("provider %q", operation.providerName)}
+			}
+			if operation.afterProvider == nil {
+				if err := cfg.RemoveProvider(operation.providerName); err != nil {
+					return fmt.Errorf("replay remove provider %q: %w", operation.providerName, err)
+				}
+			} else if err := cfg.UpsertProviderPreservingRuntime(*operation.afterProvider); err != nil {
+				return fmt.Errorf("replay provider %q: %w", operation.providerName, err)
+			}
+		case setupOpDefaultModel:
+			if cfg.DefaultModel != operation.beforeString {
+				return &providerSetupConflictError{field: "default_model"}
+			}
+			if err := cfg.SetDefaultModel(operation.afterString); err != nil {
+				return fmt.Errorf("replay default_model: %w", err)
+			}
+		case setupOpLanguage:
+			if cfg.Language != operation.beforeString {
+				return &providerSetupConflictError{field: "language"}
+			}
+			cfg.Language = operation.afterString
+		case setupOpMaterializeAccess:
+			if *accessDeclared {
+				return &providerSetupConflictError{field: "desktop.provider_access"}
+			}
+			cfg.Desktop.ProviderAccess = nil
+			if operation.projectScoped {
+				for _, name := range declaredProviders {
+					provider, ok := cfg.Provider(name)
+					if ok && provider.Configured() && len(provider.ModelList()) > 0 {
+						cfg.Desktop.ProviderAccess = append(cfg.Desktop.ProviderAccess, name)
+					}
+				}
+			} else {
+				config.NormalizeLegacyDesktopProviderAccess(cfg)
+			}
+			*accessDeclared = true
+			if cfg.Desktop.ProviderAccess == nil {
+				cfg.Desktop.ProviderAccess = []string{}
+			}
+		case setupOpAccessMembership:
+			current := providerSetupAccessContains(cfg.Desktop.ProviderAccess, operation.accessName)
+			if current != operation.beforeBool {
+				return &providerSetupConflictError{field: fmt.Sprintf("desktop.provider_access[%q]", operation.accessName)}
+			}
+			if operation.afterBool {
+				cfg.Desktop.ProviderAccess = append(cfg.Desktop.ProviderAccess, operation.accessName)
+			} else {
+				out := cfg.Desktop.ProviderAccess[:0]
+				for _, name := range cfg.Desktop.ProviderAccess {
+					if strings.TrimSpace(name) != operation.accessName {
+						out = append(out, name)
+					}
+				}
+				cfg.Desktop.ProviderAccess = out
+			}
+		default:
+			return fmt.Errorf("unknown provider setup operation %d", operation.kind)
+		}
+	}
+	return nil
+}
+
+func providerSetupAccessContains(names []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, name := range names {
+		if strings.TrimSpace(name) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func commitProviderSetupSession(s *providerSetupSession, configPath string) (bool, error) {
+	if len(s.operations) == 0 {
+		return false, nil
+	}
+	unlock := func() {}
+	if config.IsUserConfigPath(configPath) {
+		unlock = config.LockUserConfigEdits()
+	}
+	defer unlock()
+
+	before, err := readProviderSetupFileSnapshot(configPath)
+	if err != nil {
+		return false, err
+	}
+	declarations, err := config.InspectConfigFileDeclarations(configPath)
+	if err != nil {
+		return false, err
+	}
+	fresh, err := config.LoadForEditReadOnlyStrict(configPath)
+	if err != nil {
+		return false, err
+	}
+	accessDeclared := declarations.DesktopProviderAccessDeclared
+	if err := s.replayOperations(fresh, &accessDeclared, declarations.ProviderNames); err != nil {
+		return false, err
+	}
+	current, err := readProviderSetupFileSnapshot(configPath)
+	if err != nil {
+		return false, err
+	}
+	if !providerSetupFileSnapshotEqual(before, current) {
+		return false, &providerSetupConflictError{field: "configuration file"}
+	}
+	if err := fresh.SaveTo(configPath); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func saveProviderSetupSession(s *providerSetupSession, configPath, envPath string) int {
 	fmt.Println()
 	fmt.Println(i18n.M.SetupSummaryTitle)
@@ -516,11 +841,19 @@ func saveProviderSetupSession(s *providerSetupSession, configPath, envPath strin
 	if answer == "n" || answer == "N" {
 		return setupManagerContinue
 	}
-	if err := s.cfg.SaveTo(configPath); err != nil {
-		fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+	configWritten, err := commitProviderSetupSession(s, configPath)
+	if err != nil {
+		var conflict *providerSetupConflictError
+		if errors.As(err, &conflict) {
+			fmt.Fprintf(os.Stderr, i18n.M.SetupConcurrentChangeFmt+"\n", conflict.field)
+		} else {
+			fmt.Fprintln(os.Stderr, i18n.M.WriteConfigErr, err)
+		}
 		return 1
 	}
-	fmt.Printf("\n%s %s\n", green("✓"), fmt.Sprintf(i18n.M.WroteFileFmt, displayPath(configPath)))
+	if configWritten {
+		fmt.Printf("\n%s %s\n", green("✓"), fmt.Sprintf(i18n.M.WroteFileFmt, displayPath(configPath)))
+	}
 	if lines := s.credentialLines(); len(lines) > 0 {
 		target, err := config.StoreCredentialLines(lines)
 		if err != nil {

@@ -347,6 +347,7 @@ var Chinese = Messages{
 	SetupManagerTitle:        "供应商配置",
 	SetupAddOpenAI:           "添加 OpenAI 兼容供应商",
 	SetupAddAnthropic:        "添加 Anthropic 兼容供应商",
+	SetupProviderExistsFmt:   "供应商 %q 已存在。请进入现有供应商管理来编辑模型或设置。",
 	SetupSaveExit:            "保存并退出",
 	SetupSaveExitDesc:        "写入当前暂存的修改",
 	SetupCancel:              "取消",
@@ -375,6 +376,7 @@ var Chinese = Messages{
 	SetupSummaryKeysFmt:      "更新 API Key：%d 项",
 	SetupSummaryNoChanges:    "没有修改",
 	SetupConfirmSave:         "保存这些修改？",
+	SetupConcurrentChangeFmt: "setup 打开期间配置已被修改（%s）。本次暂存修改未写入，请重新运行 setup 检查最新配置。",
 
 	// model fetching
 	FetchingModelsFmt:          "正在获取 %s 的模型列表...",

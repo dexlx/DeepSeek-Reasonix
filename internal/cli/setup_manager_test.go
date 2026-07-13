@@ -3,8 +3,10 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -60,6 +62,28 @@ func TestProviderSetupSessionEditPreservesSiblingAndAdvancedFields(t *testing.T)
 	}
 }
 
+func TestProviderSetupSessionAddRejectsExistingProviderWithoutChangingIt(t *testing.T) {
+	cfg := setupTestConfig()
+	baseURL := "https://desktop.example/v1"
+	name := providerSlug("custom", baseURL)
+	cfg.Providers[0].Name = name
+	cfg.DefaultModel = name
+	cfg.Providers[0].Headers = map[string]string{"X-Relay": "yes"}
+	cfg.Providers[0].NoProxy = true
+	want := cfg.Providers[0]
+	s := newProviderSetupSession(cfg)
+	replacement := config.ProviderEntry{
+		Name: providerSlug("custom", baseURL), Kind: "openai", BaseURL: baseURL,
+		Model: "new-model", APIKeyEnv: "SHARED_API_KEY",
+	}
+	if err := s.add([]config.ProviderEntry{replacement}); err == nil {
+		t.Fatal("adding an existing provider should require the edit flow")
+	}
+	if !reflect.DeepEqual(cfg.Providers[0], want) {
+		t.Fatalf("existing provider changed after rejected add:\n got: %+v\nwant: %+v", cfg.Providers[0], want)
+	}
+}
+
 func TestProviderSetupSessionRemovalIsExplicitAndRepairsDefault(t *testing.T) {
 	cfg := setupTestConfig()
 	s := newProviderSetupSession(cfg)
@@ -109,6 +133,50 @@ func TestProviderSetupSessionAddAccessSeedsUndeclaredLegacyProviders(t *testing.
 	}
 	if count != 1 {
 		t.Fatalf("added provider access should be deduplicated: %v", cfg.Desktop.ProviderAccess)
+	}
+}
+
+func TestLocalProviderSetupAccessOnlySeedsProjectProviders(t *testing.T) {
+	isolateUserConfig(t)
+	path := filepath.Join(t.TempDir(), "reasonix.toml")
+	if err := os.WriteFile(path, []byte(`
+[[providers]]
+name = "project-relay"
+kind = "openai"
+base_url = "https://project.example/v1"
+model = "project-model"
+api_key_env = ""
+`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(cfg, path)
+	added := config.ProviderEntry{Name: "grok-relay", Kind: "openai", BaseURL: "https://relay.example/v1", Model: "grok-4.5"}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	s.addProviderAccess([]config.ProviderEntry{added})
+	got := cfg.Desktop.ProviderAccess
+	if !containsString(got, "project-relay") || !containsString(got, "grok-relay") {
+		t.Fatalf("project provider access = %v, want existing and added project providers", got)
+	}
+	for _, forbidden := range []string{"deepseek", "deepseek-flash", "deepseek-pro"} {
+		if containsString(got, forbidden) {
+			t.Fatalf("project provider access unexpectedly enabled built-in %q: %v", forbidden, got)
+		}
+	}
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	reloaded := config.LoadForEditWithoutCredentials(path)
+	if got := reloaded.Desktop.ProviderAccess; !containsString(got, "project-relay") || !containsString(got, "grok-relay") {
+		t.Fatalf("reloaded project provider access = %v", got)
+	} else {
+		for _, forbidden := range []string{"deepseek", "deepseek-flash", "deepseek-pro"} {
+			if containsString(got, forbidden) {
+				t.Fatalf("reloaded project access unexpectedly enabled %q: %v", forbidden, got)
+			}
+		}
 	}
 }
 
@@ -187,19 +255,6 @@ func TestProviderSetupSessionCancelDoesNotWriteFiles(t *testing.T) {
 	}
 }
 
-func TestRestoreEnvironmentRemovesSetupPromptValues(t *testing.T) {
-	const key = "REASONIX_SETUP_MANAGER_TEMP_KEY"
-	_ = os.Unsetenv(key)
-	snapshot := snapshotEnvironment()
-	if err := os.Setenv(key, "temporary"); err != nil {
-		t.Fatal(err)
-	}
-	restoreEnvironment(snapshot)
-	if _, exists := os.LookupEnv(key); exists {
-		t.Fatalf("%s leaked after restoring setup environment", key)
-	}
-}
-
 func TestPromptOptionalAPIKeyEnvNameAllowsNoAuthProvider(t *testing.T) {
 	var out bytes.Buffer
 	got := promptOptionalAPIKeyEnvName(bufio.NewScanner(strings.NewReader("\n")), &out, "API key variable", "")
@@ -225,6 +280,338 @@ func TestProviderSetupSessionSummaryReportsChanges(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Fatalf("summary %q missing %q", text, want)
 		}
+	}
+}
+
+func TestProviderSetupOperationReplayPreservesConcurrentUnrelatedChanges(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	s.setLanguage("en")
+	edited := working.Providers[0]
+	edited.Models = []string{"desktop-model", "desktop-model-2"}
+	edited.Model = ""
+	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
+		t.Fatal(err)
+	}
+
+	external := config.LoadForEdit(path)
+	external.Agent.MaxSteps = 123
+	external.DefaultModel = "cli-provider"
+	external.Providers[1].Headers = map[string]string{"X-External": "keep"}
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := commitProviderSetupSession(s, path); err != nil {
+		t.Fatalf("commitProviderSetupSession: %v", err)
+	}
+	got := config.LoadForEdit(path)
+	if got.Agent.MaxSteps != 123 || got.DefaultModel != "cli-provider" || got.Language != "en" {
+		t.Fatalf("scalar replay lost data: max_steps=%d default=%q language=%q", got.Agent.MaxSteps, got.DefaultModel, got.Language)
+	}
+	if got.Providers[1].Headers["X-External"] != "keep" {
+		t.Fatalf("concurrent sibling provider edit was lost: %+v", got.Providers[1])
+	}
+	if models := got.Providers[0].ModelList(); !containsString(models, "desktop-model-2") {
+		t.Fatalf("setup provider edit was not replayed: %v", models)
+	}
+}
+
+func TestProviderSetupCommitWithNoOperationsDoesNotRewriteConfig(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s := newProviderSetupSessionForPath(config.LoadForEdit(path), path)
+	written, err := commitProviderSetupSession(s, path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if written {
+		t.Fatal("no-op setup reported a config write")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(before) {
+		t.Fatal("no-op setup rewrote config")
+	}
+}
+
+func TestProviderSetupOperationReplayRejectsConcurrentSameProviderEdit(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	edited := working.Providers[0]
+	edited.Model = "setup-model"
+	edited.Models = nil
+	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
+		t.Fatal(err)
+	}
+
+	external := config.LoadForEdit(path)
+	external.Providers[0].BaseURL = "https://external.example/v1"
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := commitProviderSetupSession(s, path)
+	var conflict *providerSetupConflictError
+	if !errors.As(err, &conflict) || !strings.Contains(conflict.field, "desktop-provider") {
+		t.Fatalf("commit conflict = %v, want provider conflict", err)
+	}
+	got := config.LoadForEdit(path)
+	if got.Providers[0].BaseURL != "https://external.example/v1" || got.Providers[0].Model != "desktop-model" {
+		t.Fatalf("conflicting setup edit changed disk config: %+v", got.Providers[0])
+	}
+}
+
+func TestProviderSetupSaveConflictDoesNotWriteStagedCredentials(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	edited := working.Providers[0]
+	edited.Model = "setup-model"
+	edited.Models = nil
+	if err := s.upsert([]config.ProviderEntry{edited}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.setCredential("STAGED_API_KEY", "must-not-be-written"); err != nil {
+		t.Fatal(err)
+	}
+
+	external := config.LoadForEdit(path)
+	external.Providers[0].BaseURL = "https://external.example/v1"
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	readEnd, writeEnd, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	oldStdin := os.Stdin
+	os.Stdin = readEnd
+	t.Cleanup(func() {
+		os.Stdin = oldStdin
+		_ = readEnd.Close()
+		_ = writeEnd.Close()
+	})
+	if _, err := writeEnd.WriteString("\n"); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeEnd.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	if rc := saveProviderSetupSession(s, path, config.UserCredentialsPath()); rc != 1 {
+		t.Fatalf("saveProviderSetupSession return code = %d, want 1", rc)
+	}
+	if config.CredentialStored("STAGED_API_KEY") {
+		t.Fatal("config conflict wrote staged credentials")
+	}
+}
+
+func TestProviderSetupOperationReplayRejectsConcurrentDefaultEdit(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	if err := s.setDefaultModel("cli-provider"); err != nil {
+		t.Fatal(err)
+	}
+	external := config.LoadForEdit(path)
+	external.DefaultModel = "desktop-provider/desktop-model"
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	_, err := commitProviderSetupSession(s, path)
+	var conflict *providerSetupConflictError
+	if !errors.As(err, &conflict) || conflict.field != "default_model" {
+		t.Fatalf("commit conflict = %v, want default_model conflict", err)
+	}
+	if got := config.LoadForEdit(path).DefaultModel; got != "desktop-provider/desktop-model" {
+		t.Fatalf("external default_model was overwritten: %q", got)
+	}
+}
+
+func TestProviderSetupOperationReplayMergesConcurrentAccessAddition(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	setupProvider := config.ProviderEntry{Name: "setup-provider", Kind: "openai", BaseURL: "https://setup.example/v1", Model: "setup-model"}
+	if err := s.add([]config.ProviderEntry{setupProvider}); err != nil {
+		t.Fatal(err)
+	}
+	s.addProviderAccess([]config.ProviderEntry{setupProvider})
+
+	external := config.LoadForEdit(path)
+	externalProvider := config.ProviderEntry{Name: "external-provider", Kind: "openai", BaseURL: "https://external.example/v1", Model: "external-model"}
+	if err := external.UpsertProvider(externalProvider); err != nil {
+		t.Fatal(err)
+	}
+	external.Desktop.ProviderAccess = append(external.Desktop.ProviderAccess, externalProvider.Name)
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := commitProviderSetupSession(s, path); err != nil {
+		t.Fatalf("commitProviderSetupSession: %v", err)
+	}
+	got := config.LoadForEdit(path)
+	for _, name := range []string{setupProvider.Name, externalProvider.Name} {
+		if _, ok := got.Provider(name); !ok || !containsString(got.Desktop.ProviderAccess, name) {
+			t.Fatalf("provider/access %q missing after replay: providers=%v access=%v", name, got.Providers, got.Desktop.ProviderAccess)
+		}
+	}
+}
+
+func TestProviderSetupOperationReplayRejectsConcurrentAccessDeclaration(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	initial.Desktop.ProviderAccess = nil
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	added := config.ProviderEntry{Name: "setup-provider", Kind: "openai", BaseURL: "https://setup.example/v1", Model: "setup-model"}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	s.addProviderAccess([]config.ProviderEntry{added})
+
+	external := config.LoadForEdit(path)
+	external.Desktop.ProviderAccess = []string{}
+	if err := external.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+
+	_, err := commitProviderSetupSession(s, path)
+	var conflict *providerSetupConflictError
+	if !errors.As(err, &conflict) || conflict.field != "desktop.provider_access" {
+		t.Fatalf("commit conflict = %v, want provider_access declaration conflict", err)
+	}
+	declared, err := config.DesktopProviderAccessDeclared(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := config.LoadForEdit(path)
+	if !declared || got.Desktop.ProviderAccess == nil || len(got.Desktop.ProviderAccess) != 0 {
+		t.Fatalf("external explicit empty access was overwritten: declared=%v access=%#v", declared, got.Desktop.ProviderAccess)
+	}
+}
+
+func TestProviderSetupOperationReplayMaterializesLatestProjectProviders(t *testing.T) {
+	isolateUserConfig(t)
+	path := filepath.Join(t.TempDir(), "reasonix.toml")
+	initialBody := `
+[[providers]]
+name = "initial-project"
+kind = "openai"
+base_url = "https://initial.example/v1"
+model = "initial-model"
+api_key_env = ""
+`
+	if err := os.WriteFile(path, []byte(initialBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	added := config.ProviderEntry{Name: "setup-provider", Kind: "openai", BaseURL: "https://setup.example/v1", Model: "setup-model"}
+	if err := s.add([]config.ProviderEntry{added}); err != nil {
+		t.Fatal(err)
+	}
+	s.addProviderAccess([]config.ProviderEntry{added})
+
+	externalBody := initialBody + `
+[[providers]]
+name = "external-project"
+kind = "openai"
+base_url = "https://external.example/v1"
+model = "external-model"
+api_key_env = ""
+`
+	if err := os.WriteFile(path, []byte(externalBody), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commitProviderSetupSession(s, path); err != nil {
+		t.Fatalf("commitProviderSetupSession: %v", err)
+	}
+	got := config.LoadForEditWithoutCredentials(path)
+	for _, name := range []string{"initial-project", "external-project", "setup-provider"} {
+		if _, ok := got.Provider(name); !ok || !containsString(got.Desktop.ProviderAccess, name) {
+			t.Fatalf("latest project provider/access %q missing: providers=%v access=%v", name, got.Providers, got.Desktop.ProviderAccess)
+		}
+	}
+	for _, forbidden := range []string{"deepseek", "deepseek-flash", "deepseek-pro"} {
+		if containsString(got.Desktop.ProviderAccess, forbidden) {
+			t.Fatalf("materialized project access unexpectedly enabled %q: %v", forbidden, got.Desktop.ProviderAccess)
+		}
+	}
+}
+
+func TestProviderSetupCommitDoesNotOverwriteMalformedConcurrentConfig(t *testing.T) {
+	isolateUserConfig(t)
+	path := config.UserConfigPath()
+	initial := setupTestConfig()
+	if err := initial.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	working := config.LoadForEdit(path)
+	s := newProviderSetupSessionForPath(working, path)
+	s.setLanguage("en")
+	malformed := []byte("[[providers]\nname =")
+	if err := os.WriteFile(path, malformed, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := commitProviderSetupSession(s, path); err == nil {
+		t.Fatal("commit should reject malformed concurrent config")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(malformed) {
+		t.Fatalf("malformed concurrent config was overwritten:\n%s", after)
 	}
 }
 
