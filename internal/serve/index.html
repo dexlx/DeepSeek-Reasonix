@@ -41,7 +41,7 @@ input,textarea{font:inherit;color:inherit}
 
 .app{display:grid;grid-template-columns:220px 1fr;grid-template-rows:1fr auto;height:100vh}
 .sidebar{grid-row:1/3;background:var(--bg-2);border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
-.transcript{overflow-y:auto;padding:24px 28px;scroll-behavior:smooth}
+.transcript{overflow-y:auto;padding:24px 28px}
 .footer{border-top:1px solid var(--border);background:var(--bg);padding:12px 28px 16px;display:flex;flex-direction:column;gap:8px;position:relative}
 .footer::before{content:'';position:absolute;inset:-20px 0 auto 0;height:20px;background:linear-gradient(to top,var(--bg),transparent);pointer-events:none}
 
@@ -946,7 +946,15 @@ function slashGroupLabel(group){return __('cmd_group_'+group)||group;}
 function post(path, body) {
   return fetch(path, {method:'POST',headers:{'content-type':'application/json'},body:body?JSON.stringify(body):undefined});
 }
-function scrollDown() { requestAnimationFrame(()=>{log.scrollTop=log.scrollHeight;});}
+// Follow streaming output only while the user is pinned to the bottom of the
+// transcript; scrolling up detaches so history stays readable mid-stream.
+// force re-pins (own message sent, session loaded). Scrolls are instant: a
+// smooth animation lags behind rapid chunks, and its intermediate positions
+// would read as "not at bottom" and break pin detection.
+let pinnedToBottom=true;
+function atBottom() { return log.scrollHeight-log.scrollTop-log.clientHeight<40; }
+log.addEventListener('scroll',()=>{pinnedToBottom=atBottom();});
+function scrollDown(force) { if(force)pinnedToBottom=true; if(!pinnedToBottom)return; requestAnimationFrame(()=>{if(!pinnedToBottom)return; log.scrollTo({top:log.scrollHeight,behavior:'instant'});});}
 function hideWelcome() { if(welcome) welcome.style.display='none';}
 function showWelcome() { if(welcome) welcome.style.display='';}
 function fmtTok(n) { return n>=1000?(n/1000).toFixed(1).replace(/\.0$/,'')+'k':String(n);}
@@ -1025,7 +1033,7 @@ function setConnState(state) {
 }
 
 // ── messages ──
-function addUserMsg(text) { hasVisibleHistory=true; updateActionAvailability(); hideWelcome(); const d=el('div','msg msg--user'); d.appendChild(el('span','msg__caret','›')); d.appendChild(el('div','msg__text',text)); log.appendChild(d); scrollDown(); currentMsg=null;currentText=null;currentReasoning=null; }
+function addUserMsg(text) { hasVisibleHistory=true; updateActionAvailability(); hideWelcome(); const d=el('div','msg msg--user'); d.appendChild(el('span','msg__caret','›')); d.appendChild(el('div','msg__text',text)); log.appendChild(d); scrollDown(true); currentMsg=null;currentText=null;currentReasoning=null; }
 function ensureMsg() { if(!currentMsg){hasVisibleHistory=true; updateActionAvailability(); hideWelcome();currentMsg=el('div','msg msg--assistant');log.appendChild(currentMsg);} return currentMsg; }
 function appendText(t) { const m=ensureMsg(); if(!currentText){currentText=document.createElement('span');currentText.className='msg__text'; const old=m.querySelector('.cursor');if(old)old.remove(); m.appendChild(currentText); m.appendChild(el('span','cursor'));} currentText.textContent+=t; scrollDown(); }
 function appendReasoning(t) { const m=ensureMsg(); if(!currentReasoning){const w=el('div','reasoning'); const b=el('button','reasoning__toggle'); b.innerHTML='<span class="reasoning__chevron">▶</span> '+__('thinking'); const body=el('div','reasoning__body'); body.style.display='none'; b.onclick=()=>{body.style.display=body.style.display==='none'?'':'none';b.querySelector('.reasoning__chevron').className='reasoning__chevron'+(body.style.display!=='none'?' reasoning__chevron--open':'');}; w.appendChild(b);w.appendChild(body); if(currentText) m.insertBefore(w,currentText); else m.appendChild(w); currentReasoning=body;} currentReasoning.textContent+=t; scrollDown(); }
@@ -1433,7 +1441,7 @@ function renderHistoryMessages(ms){
       renderToolResult({id,name:m.toolName||'tool',output:m.content||''});
     }
   });
-  currentMsg=null;currentText=null;currentReasoning=null; scrollDown(); updateActionAvailability(); return true;
+  currentMsg=null;currentText=null;currentReasoning=null; scrollDown(true); updateActionAvailability(); return true;
 }
 fetch('/history').then(r=>r.json()).then(msgs=>{renderHistoryMessages(msgs);fetchTodos();}).catch(()=>{});
 
