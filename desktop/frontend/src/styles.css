@@ -26863,7 +26863,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 999px;
   background: color-mix(in srgb, var(--warn, #f59e0b) 16%, var(--bg-soft));
   color: color-mix(in srgb, var(--warn, #f59e0b) 78%, var(--fg));
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   font-weight: 650;
   line-height: 1.2;
   white-space: nowrap;
@@ -27188,7 +27188,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .settings-modal__title,
 :root[data-theme-style] .app--creation .settings-modal__title {
-  font-size: 15px;
+  font-size: calc(15px * var(--font-scale));
   font-weight: 640;
 }
 
@@ -27275,14 +27275,14 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .settings-center__navitem span,
 :root[data-theme-style] .app--creation .settings-center__navitem span {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
 }
 
 .app--creation .settings-center__navitem small,
 :root[data-theme-style] .app--creation .settings-center__navitem small {
   color: color-mix(in srgb, var(--fg-dim) 76%, transparent);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.25;
 }
 
@@ -27311,7 +27311,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .settings-page__title,
 :root[data-theme-style] .app--creation .settings-page__title {
-  font-size: 24px;
+  font-size: calc(24px * var(--font-scale));
   font-weight: 760;
   letter-spacing: -0.02em;
 }
@@ -27319,7 +27319,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .settings-page__desc,
 :root[data-theme-style] .app--creation .settings-page__desc {
   color: color-mix(in srgb, var(--fg-dim) 84%, transparent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .app--creation .settings-section,
@@ -27348,13 +27348,13 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .settings-page--manager .mem-section__title,
 :root[data-theme-style] .app--creation .settings-section__title,
 :root[data-theme-style] .app--creation .settings-page--manager .mem-section__title {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 620;
 }
 
 .app--creation .settings-section__desc,
 :root[data-theme-style] .app--creation .settings-section__desc {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.35;
 }
 
@@ -27388,14 +27388,14 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .settings-field__label,
 :root[data-theme-style] .app--creation .settings-field__label {
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 600;
 }
 
 .app--creation .settings-field__hint,
 :root[data-theme-style] .app--creation .settings-field__hint {
   color: color-mix(in srgb, var(--fg-dim) 78%, transparent);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   line-height: 1.35;
 }
 
@@ -27412,7 +27412,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 5px 13px;
   border-radius: 9px;
   color: color-mix(in srgb, var(--fg-dim) 86%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
 }
 
 .app--creation .set-seg__btn--on,
@@ -27482,13 +27482,13 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .theme-card__name,
 :root[data-theme-style] .app--creation .theme-card__name {
   flex: 0 1 auto;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 600;
 }
 
 .app--creation .theme-card__zh,
 :root[data-theme-style] .app--creation .theme-card__zh {
-  font-size: 9.5px;
+  font-size: calc(9.5px * var(--font-scale));
   font-weight: 480;
 }
 
@@ -27681,7 +27681,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .topicbar__title-row h1,
 .app--creation .topicbar__title-input {
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   font-weight: 500;
 }
 
@@ -27798,7 +27798,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .composer-run-strip,
 :root[data-theme-style] .app--creation .composer-run-strip {
   color: color-mix(in srgb, var(--accent) 88%, var(--fg-muted));
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
 }
 
 .app--creation .composer-run-strip__dot,
@@ -28078,7 +28078,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .composer__input,
 :root[data-theme-style] .app--creation .composer__input {
   color: var(--fg);
-  font-size: 14.5px;
+  font-size: calc(14.5px * var(--font-scale));
   line-height: 1.55;
 }
 
@@ -28358,7 +28358,7 @@ body > .mermaid-diagram--fullscreen {
   height: 28px;
   gap: 5px;
   padding: 0 10px;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .app--creation .composer-meta .modelsw,
@@ -28439,6 +28439,16 @@ body > .mermaid-diagram--fullscreen {
 }
 
 /* popover 卡片 —— 对齐 context-panel__capacity-card 风格（portal 到 body，无 .app--creation 前缀） */
+/*
+ * NOTE (font-scale): this popover is portaled to <body>, so it has no
+ * .app--creation prefix, yet it is ONLY rendered in creation layout
+ * (Composer gates it behind showContextWindowRing = sidebarCreation =
+ * desktopLayoutStyle === "creation"). Font sizes here intentionally use
+ * calc(<px> * var(--font-scale)) to match the rest of creation and follow
+ * the interface text-size setting. Keep the calc(); do NOT revert to bare px.
+ * The typography-overflow-contract test asserts no bare-px font-size remains
+ * in .context-ring-popover rules, so a plain "12px" here will fail CI.
+ */
 .context-ring-popover,
 :root[data-theme-style] .context-ring-popover {
   min-width: 220px;
@@ -28449,7 +28459,7 @@ body > .mermaid-diagram--fullscreen {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg)) 0%, var(--bg) 100%);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.5;
 }
 /* 警告/注意态 tinted border + gradient */
@@ -28484,7 +28494,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 5px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 650;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
@@ -28543,7 +28553,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   overflow: hidden;
   color: var(--fg);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 620;
   line-height: 1.15;
   text-overflow: ellipsis;
@@ -28563,12 +28573,12 @@ body > .mermaid-diagram--fullscreen {
 }
 .context-ring-popover__label {
   color: var(--fg-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   white-space: nowrap;
 }
 .context-ring-popover__value {
   color: var(--fg-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;
@@ -28655,7 +28665,7 @@ body > .mermaid-diagram--fullscreen {
     radial-gradient(120% 95% at 12% 0%, color-mix(in srgb, var(--accent) 10%, transparent) 0%, color-mix(in srgb, var(--accent) 4%, transparent) 38%, transparent 72%),
     linear-gradient(135deg, color-mix(in srgb, var(--accent) 4%, color-mix(in srgb, var(--bg-elev) 28%, transparent)) 0%, color-mix(in srgb, var(--bg-elev) 16%, transparent) 48%, color-mix(in srgb, var(--bg) 10%, transparent) 100%);
   color: var(--fg);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   font-weight: 650;
   box-shadow: none;
 }
@@ -28692,7 +28702,7 @@ body > .mermaid-diagram--fullscreen {
   min-height: 24px;
   padding: 2px var(--sidebar-content-inset) 0;
   color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 640;
   line-height: 1.3;
 }
@@ -28717,7 +28727,7 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
   color: color-mix(in srgb, var(--fg-dim) 86%, transparent);
   font: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 540;
   text-align: left;
 }
@@ -28767,7 +28777,7 @@ body > .mermaid-diagram--fullscreen {
   min-height: 24px;
   padding: 2px var(--sidebar-content-inset) 0;
   color: color-mix(in srgb, var(--fg-faint) 78%, transparent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 560;
 }
 
@@ -28841,7 +28851,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .project-tree__folder-label,
 :root[data-theme-style] .app--creation .project-tree__folder-label {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 540;
 }
 
@@ -28905,7 +28915,7 @@ body > .mermaid-diagram--fullscreen {
   margin-right: 0;
   margin-bottom: 1px;
   border: 1px solid transparent;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .app--creation .project-tree__topic--active,
@@ -28950,7 +28960,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .project-tree__topic-label,
 :root[data-theme-style] .app--creation .project-tree__topic-label {
   color: color-mix(in srgb, var(--fg-dim) 72%, var(--fg-faint));
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 500;
   line-height: 1.35;
 }
@@ -28987,7 +28997,7 @@ body > .mermaid-diagram--fullscreen {
   width: var(--sidebar-topic-time-col);
   min-width: var(--sidebar-topic-time-col);
   color: color-mix(in srgb, var(--fg-faint) 62%, transparent);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   line-height: 1;
   white-space: nowrap;
   font-variant-numeric: tabular-nums;
@@ -29275,7 +29285,7 @@ body > .mermaid-diagram--fullscreen {
   font-family: "Source Han Sans CN", "Source Han Sans SC", "Noto Sans CJK SC",
     "Source Han Sans", "思源黑体", "Source Han Sans HC", "Microsoft YaHei UI",
     "Microsoft YaHei", sans-serif;
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   line-height: 1.74;
   letter-spacing: 0.005em;
 }
@@ -29347,7 +29357,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .msg--assistant .md .md-plain-block__diagram .code:not([data-lang]),
 :root[data-theme-style] .app--creation .msg--assistant .md .md-plain-block__diagram .code:not([data-lang]) {
   font-family: var(--font-mono);
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   letter-spacing: 0;
   line-height: 1.58;
   white-space: pre;
@@ -29372,7 +29382,7 @@ body > .mermaid-diagram--fullscreen {
   font-family: "Source Han Sans CN", "Source Han Sans SC", "Noto Sans CJK SC",
     "Source Han Sans", "思源黑体", "Source Han Sans HC", "Microsoft YaHei UI",
     "Microsoft YaHei", sans-serif;
-  font-size: 13.25px;
+  font-size: calc(13.25px * var(--font-scale));
   font-weight: 500;
   letter-spacing: 0.006em;
   line-height: 1.58;
@@ -29412,7 +29422,7 @@ body > .mermaid-diagram--fullscreen {
   font-family: "Source Han Sans CN", "Source Han Sans SC", "Noto Sans CJK SC",
     "Source Han Sans", "思源黑体", "Source Han Sans HC", "Microsoft YaHei UI",
     "Microsoft YaHei", sans-serif;
-  font-size: 12.75px;
+  font-size: calc(12.75px * var(--font-scale));
   font-variant-numeric: tabular-nums;
   font-weight: 500;
   letter-spacing: 0.01em;
@@ -29461,7 +29471,7 @@ body > .mermaid-diagram--fullscreen {
     color-mix(in srgb, var(--bg-elev) 52%, var(--bg))
   );
   color: color-mix(in srgb, var(--fg) 89%, var(--bg));
-  font-size: 12.5px;
+  font-size: calc(12.5px * var(--font-scale));
   line-height: 1.6;
   box-shadow: none;
 }
@@ -29529,7 +29539,7 @@ body > .mermaid-diagram--fullscreen {
   border-collapse: separate;
   overflow-x: auto;
   background: color-mix(in srgb, var(--bg-elev) 72%, var(--bg));
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.5;
 }
 
@@ -29589,7 +29599,7 @@ body > .mermaid-diagram--fullscreen {
   gap: 4px;
   padding: 0;
   color: color-mix(in srgb, var(--fg-dim) 72%, transparent);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   line-height: 1.4;
 }
 
@@ -29616,7 +29626,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .turn-collapse[data-kind="reasoning"] > .reasoning__head > .turn-collapse__label::before,
 :root[data-theme-style] .app--creation .turn-collapse[data-kind="reasoning"] > .reasoning__head > .turn-collapse__label::before {
   content: attr(data-creation-label);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .app--creation .readonly-batch > .reasoning__head > .readonly-batch__label::before,
@@ -29624,7 +29634,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .turn-collapse[data-kind="tool"] > .reasoning__head > .turn-collapse__label::before,
 :root[data-theme-style] .app--creation .turn-collapse[data-kind="tool"] > .reasoning__head > .turn-collapse__label::before {
   content: attr(data-creation-label);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
 }
 
 .app--creation .readonly-batch > .reasoning__head > .readonly-batch__label,
@@ -29672,7 +29682,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .tool-group__title {
   flex: 0 0 auto;
   color: color-mix(in srgb, var(--fg) 82%, transparent);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 650;
   line-height: 1.4;
   white-space: nowrap;
@@ -29682,7 +29692,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .tool-group__summary {
   min-width: 0;
   color: color-mix(in srgb, var(--fg-faint) 86%, transparent);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 500;
   line-height: 1.4;
   overflow: hidden;
@@ -29728,7 +29738,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .tool-group__body .tool__name,
 :root[data-theme-style] .app--creation .tool-group__body .tool__name {
   color: color-mix(in srgb, var(--fg) 82%, transparent);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 650;
 }
 
@@ -30087,7 +30097,7 @@ body > .mermaid-diagram--fullscreen {
   margin: 0;
   width: min(100%, 580px);
   color: var(--fg-faint);
-  font-size: clamp(34px, 4.2vw, 48px);
+  font-size: clamp(calc(34px * var(--font-scale)), 4.2vw, calc(48px * var(--font-scale)));
   font-weight: 760;
   letter-spacing: -0.055em;
   line-height: 1.06;
@@ -30162,21 +30172,21 @@ body > .mermaid-diagram--fullscreen {
   background: color-mix(in srgb, var(--accent) 8%, transparent);
   color: var(--accent);
   font-family: var(--font-mono);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 650;
   line-height: 1;
 }
 
 .app--creation .welcome-creation__card strong {
   color: var(--fg);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 650;
   line-height: 1.25;
 }
 
 .app--creation .welcome-creation__card > span:last-child {
   color: color-mix(in srgb, var(--fg-dim) 72%, transparent);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   line-height: 1.35;
   white-space: nowrap;
 }
@@ -30262,7 +30272,7 @@ body > .mermaid-diagram--fullscreen {
   gap: 4px;
   justify-content: center;
   color: color-mix(in srgb, var(--fg-dim) 72%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 560;
   letter-spacing: 0.01em;
   border: 0;
@@ -30331,7 +30341,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .workbench-dock .workspace-search input,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-search input {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 500;
 }
 
@@ -30361,7 +30371,7 @@ body > .mermaid-diagram--fullscreen {
   gap: 5px;
   border-radius: 7px;
   color: color-mix(in srgb, var(--fg-dim) 78%, var(--fg-faint));
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 500;
   background: transparent;
 }
@@ -30422,7 +30432,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .workbench-dock .workspace-tree__name,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-tree__name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 500;
   letter-spacing: 0.005em;
 }
@@ -30430,14 +30440,14 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-tree__result-name,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-tree__result-name {
   color: color-mix(in srgb, var(--fg-dim) 88%, var(--fg));
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 520;
 }
 
 .app--creation .workbench-dock .workspace-tree__result-dir,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-tree__result-dir {
   color: color-mix(in srgb, var(--fg-faint) 82%, transparent);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-tree__row--search:hover .workspace-tree__result-name,
@@ -30472,7 +30482,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .workbench-dock .workspace-change__name,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-change__name {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 540;
 }
 
@@ -30481,7 +30491,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .workbench-dock .workspace-change__path,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-change__detail {
   color: color-mix(in srgb, var(--fg-faint) 84%, transparent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-change__badge,
@@ -30491,7 +30501,7 @@ body > .mermaid-diagram--fullscreen {
   border-color: color-mix(in srgb, var(--fg-faint) 12%, transparent);
   border-radius: 5px;
   color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
-  font-size: 10px;
+  font-size: calc(10px * var(--font-scale));
   background: transparent;
 }
 
@@ -30554,7 +30564,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__name,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__name {
   color: color-mix(in srgb, var(--fg-dim) 88%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 560;
   letter-spacing: 0.005em;
 }
@@ -30562,7 +30572,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__path,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-panel--changed-overview .workspace-current-file__path {
   color: color-mix(in srgb, var(--fg-faint) 80%, transparent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
 }
 
 /* Recent-files dropdown is not useful on Changes overview. */
@@ -30603,7 +30613,7 @@ body > .mermaid-diagram--fullscreen {
   background: transparent;
   color: color-mix(in srgb, var(--fg-faint) 86%, transparent);
   font: inherit;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 540;
   text-align: left;
 }
@@ -30625,7 +30635,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .workbench-dock .workspace-commit-history__toggle small {
   margin-left: auto;
   color: color-mix(in srgb, var(--fg-faint) 64%, transparent);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
   font-weight: 500;
 }
 
@@ -30662,7 +30672,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 8px 9px 7px;
   border-radius: 8px;
   color: color-mix(in srgb, var(--fg-dim) 90%, var(--fg));
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-git-history__head:hover,
@@ -30685,7 +30695,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-git-history__message,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-git-history__message {
   color: inherit;
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 540;
 }
 
@@ -30699,14 +30709,14 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-git-history__author,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-git-history__author {
   color: color-mix(in srgb, var(--fg-faint) 88%, transparent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 500;
 }
 
 .app--creation .workbench-dock .workspace-git-history__date,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-git-history__date {
   color: color-mix(in srgb, var(--fg-faint) 72%, transparent);
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-git-history__hash,
@@ -30714,7 +30724,7 @@ body > .mermaid-diagram--fullscreen {
   margin-left: 4px;
   color: color-mix(in srgb, var(--fg-faint) 64%, transparent);
   opacity: 1;
-  font-size: 10.5px;
+  font-size: calc(10.5px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-git-history__detail,
@@ -30730,7 +30740,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 5px 7px;
   border-radius: 6px;
   color: color-mix(in srgb, var(--fg-dim) 84%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-git-history__file:hover,
@@ -30742,7 +30752,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .workbench-dock .workspace-empty,
 :root[data-theme-style] .app--creation .workbench-dock .workspace-empty {
   color: color-mix(in srgb, var(--fg-faint) 82%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
 }
 
 .app--creation .workbench-dock .workspace-note,
@@ -30751,7 +30761,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 8px;
   background: color-mix(in srgb, var(--bg-elev) 10%, transparent);
   color: color-mix(in srgb, var(--fg-dim) 88%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
 }
 
 .app--creation .context-panel {
@@ -30792,7 +30802,7 @@ body > .mermaid-diagram--fullscreen {
 
 .app--creation .context-panel__section-head h3,
 :root[data-theme-style] .app--creation .context-panel__section-head h3 {
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 600;
   letter-spacing: 0.01em;
 }
@@ -30800,7 +30810,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .context-panel__section-head span,
 :root[data-theme-style] .app--creation .context-panel__section-head span {
   color: color-mix(in srgb, var(--fg-faint) 86%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 420;
 }
 
@@ -30835,7 +30845,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   overflow: hidden;
   color: var(--fg);
-  font-size: 13px;
+  font-size: calc(13px * var(--font-scale));
   font-weight: 600;
   line-height: 1.2;
   text-overflow: ellipsis;
@@ -30845,7 +30855,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .context-panel__progress-head span {
   flex: 0 0 auto;
   color: var(--accent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 660;
   line-height: 1;
   font-variant-numeric: tabular-nums;
@@ -30903,7 +30913,7 @@ body > .mermaid-diagram--fullscreen {
   padding: 7px 0;
   border-top: 1px solid color-mix(in srgb, var(--creation-panel-border) 72%, transparent);
   color: color-mix(in srgb, var(--fg-dim) 84%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.2;
 }
 
@@ -30924,7 +30934,7 @@ body > .mermaid-diagram--fullscreen {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 430;
 }
 
@@ -30937,7 +30947,7 @@ body > .mermaid-diagram--fullscreen {
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--fg);
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
   font-weight: 680;
   line-height: 1.18;
   font-variant-numeric: tabular-nums;
@@ -30963,7 +30973,7 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .context-panel__mini-stat--wide strong {
   order: 2;
   flex: 0 1 auto;
-  font-size: 16px;
+  font-size: calc(16px * var(--font-scale));
 }
 
 .app--creation .context-panel__breakdown {
@@ -30976,7 +30986,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .context-panel__legend-row,
 :root[data-theme-style] .app--creation .context-panel__total {
   color: color-mix(in srgb, var(--fg-dim) 86%, transparent);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 430;
 }
 
@@ -30985,7 +30995,7 @@ body > .mermaid-diagram--fullscreen {
 :root[data-theme-style] .app--creation .context-panel__legend-row strong,
 :root[data-theme-style] .app--creation .context-panel__total strong {
   color: var(--fg);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-weight: 560;
 }
 
@@ -31009,13 +31019,13 @@ body > .mermaid-diagram--fullscreen {
 .app--creation .context-panel__metric span,
 :root[data-theme-style] .app--creation .context-panel__metric span {
   color: color-mix(in srgb, var(--fg-dim) 84%, transparent);
-  font-size: 11.5px;
+  font-size: calc(11.5px * var(--font-scale));
   font-weight: 430;
 }
 
 .app--creation .context-panel__metric strong,
 :root[data-theme-style] .app--creation .context-panel__metric strong {
-  font-size: 17px;
+  font-size: calc(17px * var(--font-scale));
   font-weight: 600;
   letter-spacing: -0.02em;
 }
@@ -31245,7 +31255,7 @@ body > .mermaid-diagram--fullscreen {
    entering rename mode visibly jumps back to the 10px Creation default. */
 .app--windows.app--creation .topicbar__title-row h1,
 .app--windows.app--creation .topicbar__title-input {
-  font-size: 13.5px !important;
+  font-size: calc(13.5px * var(--font-scale)) !important;
   font-weight: 520 !important;
 }
 
