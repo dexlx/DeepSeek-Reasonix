@@ -959,6 +959,11 @@ log.addEventListener('scroll',()=>{pinnedToBottom=atBottom();});
 function scrollDown(force) { if(force)pinnedToBottom=true; if(!pinnedToBottom)return; requestAnimationFrame(()=>{if(!pinnedToBottom)return; log.scrollTo({top:log.scrollHeight,behavior:'instant'});});}
 function hideWelcome() { if(welcome) welcome.style.display='none';}
 function showWelcome() { if(welcome) welcome.style.display='';}
+// Global single-key shortcuts must stay dead while the user is typing (the
+// composer is autofocused, so this is the default state) and when a
+// browser/OS chord is held (Cmd+A must never resolve an approval).
+function isTextEntry(t) { return !!t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA'||t.tagName==='SELECT'||t.isContentEditable); }
+function isPlainKey(e) { return !e.ctrlKey&&!e.metaKey&&!e.altKey&&!isTextEntry(e.target); }
 function fmtTok(n) { return n>=1000?(n/1000).toFixed(1).replace(/\.0$/,'')+'k':String(n);}
 function currencySymbol(c){const v=String(c||'¥').trim();if(/^(cny|rmb|yuan)$/i.test(v))return '¥';if(/^(usd|dollar)$/i.test(v))return '$';return v||'¥';}
 function fmtMoney(n,c){if(typeof n!=='number'||!isFinite(n))return '—';const s=currencySymbol(c);return s+(n<1?n.toFixed(4):n.toFixed(2));}
@@ -1170,7 +1175,7 @@ function showApproval(a) {
   log.appendChild(d);scrollDown(true);
   const resolve=payload=>{post('/approve',Object.assign({id:a.id},payload));d.remove();document.removeEventListener('keydown',onkey);};
   d.querySelectorAll('.approval__btn').forEach(btn=>{btn.onclick=()=>resolve({allow:btn.dataset.allow==='true',session:btn.dataset.session==='true',persist:btn.dataset.persist==='true',scope:btn.dataset.scope||''});});
-  const onkey=e=>{const k=e.key.toLowerCase();if(k==='y'||k==='1'){resolve({allow:true,session:false});}else if(k==='a'||k==='2'){resolve({allow:true,session:true});}else if(hasPrefix&&k==='3'){resolve({allow:true,session:true,scope:'prefix'});}else if(k==='p'||(!hasPrefix&&k==='3')||(hasPrefix&&k==='4')){resolve({allow:true,session:true,persist:true,scope:hasPrefix?'prefix':''});}else if(k==='n'||k==='escape'||(!hasPrefix&&k==='4')||(hasPrefix&&k==='5')){resolve({allow:false,session:false});}};
+  const onkey=e=>{if(!isPlainKey(e))return; const k=e.key.toLowerCase();if(k==='y'||k==='1'){resolve({allow:true,session:false});}else if(k==='a'||k==='2'){resolve({allow:true,session:true});}else if(hasPrefix&&k==='3'){resolve({allow:true,session:true,scope:'prefix'});}else if(k==='p'||(!hasPrefix&&k==='3')||(hasPrefix&&k==='4')){resolve({allow:true,session:true,persist:true,scope:hasPrefix?'prefix':''});}else if(k==='n'||k==='escape'||(!hasPrefix&&k==='4')||(hasPrefix&&k==='5')){resolve({allow:false,session:false});}};
   document.addEventListener('keydown',onkey);
 }
 
@@ -1275,6 +1280,11 @@ function applyRewind() {
 
 document.addEventListener('keydown',e=>{
   const overlay=$('#rewind-overlay'); if(!overlay)return;
+  // Modifier chords (copy/reload/devtools) must not drive the picker — a bare
+  // Cmd+C would otherwise hit a scope key and apply a rewind. Target is not
+  // checked: double-Esc opens the picker from the focused composer, so the
+  // picker intentionally owns plain keys regardless of focus.
+  if(e.ctrlKey||e.metaKey||e.altKey)return;
   if(e.key==='Escape'){e.preventDefault();if(rewindStage===0)overlay.remove();else{rewindStage=0;renderRewindPicker();}return;}
   if(rewindStage===0){
     if(e.key==='j'||e.key==='ArrowDown'){e.preventDefault();rewindSelected=Math.min(rewindSelected+1,rewindCheckpoints.length-1);renderRewindPicker();}
@@ -1617,7 +1627,7 @@ input.addEventListener('keydown',e=>{
 document.addEventListener('keydown',e=>{
   if(e.target===input&&e.key==='Tab'&&e.shiftKey){e.preventDefault();cycleMode();return;}
   if(e.target===input&&(e.key==='y'||e.key==='Y')&&(e.ctrlKey||e.metaKey)&&!e.altKey&&!e.shiftKey){e.preventDefault();toggleYolo();return;}
-  if(e.key==='/'&&e.target!==input){e.preventDefault();input.focus();return;}
+  if(e.key==='/'&&isPlainKey(e)){e.preventDefault();input.focus();return;}
 });
 
 // mode helpers — Shift+Tab toggles Plan; Ctrl+Y toggles YOLO separately.
