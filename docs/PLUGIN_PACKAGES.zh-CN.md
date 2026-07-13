@@ -252,13 +252,20 @@ Reasonix 也会读取 `.codex-plugin/plugin.json` 和 `.claude-plugin/plugin.jso
 - 插件根目录的 `CLAUDE.md` 会映射为内置的 `SessionStart` 上下文 hook。
   Reasonix 会直接读取该文件，不通过 shell 命令。
 - `.claude/settings.json` 和 `hooks/hooks.json` 里的 command hooks 会按同名事件映射。
-  `matcher`、`args`、`async`、`env` 和 timeout 均会保留。导入 Hook 的 stdin 使用
-  Claude 兼容的 snake_case 载荷（包括 `hook_event_name`），宿主会在启动进程前展开
-  `${CLAUDE_PLUGIN_ROOT}`。`PreToolUse` hook 仍可通过退出码 2 或退出码 0 时的
-  `hookSpecificOutput.permissionDecision` JSON 拒绝该次调用；导入的
-  `PermissionRequest` hook 同样会通过退出码 2 或
-  `hookSpecificOutput.decision.behavior` 直接拒绝权限，而不只是发通知，
-  与 Claude 官方语义保持一致。`updatedInput` 暂未应用到实际工具调用参数。
+  `matcher`、`args`、`async`、`env` 和 timeout 均会保留。`matcher` 以及 Hook 脚本看到的
+  `tool_name` 会在 Reasonix 与 Claude 的工具名之间互译（`bash` ↔ `Bash`、
+  `write_file` ↔ `Write` 等），因此 `"Bash"` 这类 matcher 能正确触发。导入 Hook 的
+  stdin 使用 Claude 兼容的 snake_case 载荷（包括 `hook_event_name`），宿主会在启动
+  进程前展开 `${CLAUDE_PLUGIN_ROOT}`。`PreToolUse` 和 `UserPromptSubmit` hook 仍可
+  通过退出码 2 或退出码 0 时的 JSON 拒绝形态拒绝该次调用（`PreToolUse` 用
+  `hookSpecificOutput.permissionDecision`，`UserPromptSubmit` 用顶层
+  `decision:"block"`）；导入的 `PermissionRequest` hook 还能直接代答权限弹窗
+  （拒绝或自动批准，而不只是发通知），通过退出码 2 或
+  `hookSpecificOutput.decision.behavior` 实现，与 Claude 官方语义保持一致。
+  `updatedInput` 暂未应用到实际工具调用参数；Hook 的 `if` 条件和 `asyncRewake`
+  字段也不会被求值——声明了其中之一，或声明了 `Stop`/`SubagentStop` hook（在
+  Reasonix 里无法像 Claude 那样阻止本轮结束）的插件，会报告部分兼容并附带
+  具体警告，而不是完全兼容。
 - 插件根目录 `.mcp.json` 会映射为已安装 MCP。Claude 的 `local` 会转换为 stdio；
   中文等显示名称会生成稳定内部 ID；重复声明会去重。导入服务器默认
   `auto_start=false`，由用户按需连接，避免启动时改变提供给模型的工具 schema。

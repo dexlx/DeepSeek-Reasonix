@@ -344,6 +344,65 @@ func TestParseClaudeHooksKeepsDistinctEnvTimeoutAsyncCwd(t *testing.T) {
 	}
 }
 
+func TestParseClaudeHooksWarnOnUnsupportedSemantics(t *testing.T) {
+	cases := []struct {
+		name      string
+		hooksJSON string
+		wantSub   string
+	}{
+		{
+			name:      "conditional-if-runs-unconditionally",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bin/guard","if":"Bash(git *)"}]}]}}`,
+			wantSub:   `does not evaluate`,
+		},
+		{
+			name:      "asyncRewake-not-supported",
+			hooksJSON: `{"hooks":{"PostToolUse":[{"hooks":[{"type":"command","command":"bin/watch","asyncRewake":true}]}]}}`,
+			wantSub:   `asyncRewake`,
+		},
+		{
+			name:      "stop-cannot-block",
+			hooksJSON: `{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"bin/gate"}]}]}}`,
+			wantSub:   `cannot block the turn`,
+		},
+		{
+			name:      "subagentstop-cannot-block",
+			hooksJSON: `{"hooks":{"SubagentStop":[{"hooks":[{"type":"command","command":"bin/gate"}]}]}}`,
+			wantSub:   `cannot block the turn`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "hook-pack"}`)
+			writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), c.hooksJSON)
+
+			pkg, warnings, err := ParseDir(root)
+			if err != nil {
+				t.Fatalf("ParseDir: %v", err)
+			}
+			if pkg.Compatibility.Status != "partial" {
+				t.Fatalf("compatibility status = %q, want partial (unsupported semantics must not claim full compatibility)", pkg.Compatibility.Status)
+			}
+			found := false
+			for _, w := range warnings {
+				if strings.Contains(w, c.wantSub) {
+					found = true
+					break
+				}
+			}
+			if !found {
+				t.Fatalf("warnings = %v, want one containing %q", warnings, c.wantSub)
+			}
+			// The hook is still imported best-effort — dropping it entirely
+			// could remove a plugin's only safety hook.
+			if pkg.Manifest.Hooks == nil {
+				t.Fatal("hook should still be imported despite the unsupported semantics")
+			}
+		})
+	}
+}
+
 func TestParseClaudePluginMapsConventionCapabilities(t *testing.T) {
 	root := t.TempDir()
 	writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "big-pack"}`)

@@ -5114,12 +5114,12 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	// Claude's PermissionRequest contract answers the dialog on the plugin's
 	// behalf (auto-allow/auto-deny) instead of merely observing it, so a
-	// deny here must preempt the prompt rather than just notify — this runs
-	// synchronously and before the dialog is shown. Native Reasonix
+	// decision here must preempt the prompt rather than just notify — this
+	// runs synchronously and before the dialog is shown. Native Reasonix
 	// PermissionRequest hooks stay advisory-only (see claudePermissionBlocking).
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
-		if block, _ := c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs); block {
-			return approvalReply{}, nil
+		if decision, _ := c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs); decision != nil {
+			return approvalReply{allow: *decision}, nil
 		}
 	}
 

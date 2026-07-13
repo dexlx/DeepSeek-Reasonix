@@ -169,9 +169,39 @@ func TestRunnerPermissionRequestWarnOnly(t *testing.T) {
 	}
 	var notified string
 	r := NewRunner(hooks, "/tmp", spawner, func(msg string) { notified = msg })
-	r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	decision, _ := r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision != nil {
+		t.Errorf("native PermissionRequest hook must stay advisory-only, got decision=%v", *decision)
+	}
 	if notified == "" {
 		t.Error("PermissionRequest warn should notify")
+	}
+}
+
+func TestRunnerPermissionRequestClaudeDecisions(t *testing.T) {
+	claudeHooks := []ResolvedHook{{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: PermissionRequest}}
+	spawnerReturning := func(stdout string) Spawner {
+		return func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: stdout} }
+	}
+
+	denyJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}`
+	r := NewRunner(claudeHooks, "/tmp", spawnerReturning(denyJSON), nil)
+	decision, _ := r.PermissionRequest(context.Background(), "bash", "rm -rf /", nil)
+	if decision == nil || *decision != false {
+		t.Fatalf("Claude deny decision = %v, want false", decision)
+	}
+
+	allowJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	r = NewRunner(claudeHooks, "/tmp", spawnerReturning(allowJSON), nil)
+	decision, _ = r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision == nil || *decision != true {
+		t.Fatalf("Claude allow decision = %v, want true", decision)
+	}
+
+	r = NewRunner(claudeHooks, "/tmp", spawnerReturning(""), nil)
+	decision, _ = r.PermissionRequest(context.Background(), "bash", "go test", nil)
+	if decision != nil {
+		t.Fatalf("no opinion from the hook should return a nil decision, got %v", *decision)
 	}
 }
 

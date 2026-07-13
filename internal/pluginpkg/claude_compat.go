@@ -37,10 +37,20 @@ type claudeHookDocument struct {
 			Description string            `json:"description"`
 			Timeout     int               `json:"timeout"`
 			Async       bool              `json:"async"`
+			AsyncRewake bool              `json:"asyncRewake"`
+			If          string            `json:"if"`
 			Env         map[string]string `json:"env"`
 		} `json:"hooks"`
 	} `json:"hooks"`
 }
+
+// claudeStopBlockingEvents are the Claude hook events whose hook can block
+// the action (force the turn/subagent to keep going on exit 2 or a top-level
+// decision:"block") the way Claude's own contract does
+// (https://code.claude.com/docs/en/hooks). Reasonix's Stop/SubagentStop hooks
+// are observation-only and cannot force the loop to continue, so an imported
+// hook here is a partial mapping, not a full one.
+var claudeStopBlockingEvents = map[string]bool{"Stop": true, "SubagentStop": true}
 
 type claudeMCPIdentity struct {
 	Type    string            `json:"type"`
@@ -110,6 +120,25 @@ func appendClaudeHooksFile(root, rel string, manifest *Manifest) ([]string, []Co
 				command := strings.TrimSpace(item.Command)
 				if command == "" {
 					continue
+				}
+				if ifExpr := strings.TrimSpace(item.If); ifExpr != "" {
+					reason := fmt.Sprintf("%s hook %q has a conditional \"if\": %q that Reasonix does not evaluate — it runs unconditionally instead of only for the matching case", event, command, ifExpr)
+					warnings = append(warnings, rel+": "+reason)
+					issues = append(issues, CompatibilityIssue{Capability: "hooks", Path: rel, Reason: reason})
+				}
+				if item.AsyncRewake {
+					mode := "synchronously"
+					if item.Async {
+						mode = "async, but without a wake-on-exit-2 callback"
+					}
+					reason := fmt.Sprintf("%s hook %q uses \"asyncRewake\", which Reasonix does not support — it runs %s instead", event, command, mode)
+					warnings = append(warnings, rel+": "+reason)
+					issues = append(issues, CompatibilityIssue{Capability: "hooks", Path: rel, Reason: reason})
+				}
+				if claudeStopBlockingEvents[event] {
+					reason := fmt.Sprintf("%s hook %q cannot block the turn the way Claude's contract does — Reasonix's %s hook is observation-only and never forces the loop to continue", event, command, event)
+					warnings = append(warnings, rel+": "+reason)
+					issues = append(issues, CompatibilityIssue{Capability: "hooks", Path: rel, Reason: reason})
 				}
 				manifest.Hooks[event] = appendUniqueHook(manifest.Hooks[event], Hook{
 					Match:         match,

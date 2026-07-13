@@ -560,6 +560,29 @@ func TestMatchesTool(t *testing.T) {
 	}
 }
 
+func TestMatchesToolTranslatesClaudeToolNames(t *testing.T) {
+	claude := func(match string) ResolvedHook {
+		return ResolvedHook{HookConfig: HookConfig{Match: match, PayloadFormat: "claude"}, Event: PreToolUse}
+	}
+	if !MatchesTool(claude("Bash"), "bash") {
+		t.Error(`Claude matcher "Bash" should match Reasonix tool "bash"`)
+	}
+	if !MatchesTool(claude("Write|Edit"), "write_file") {
+		t.Error(`Claude matcher "Write|Edit" should match Reasonix tool "write_file"`)
+	}
+	if !MatchesTool(claude("Write|Edit"), "edit_file") {
+		t.Error(`Claude matcher "Write|Edit" should match Reasonix tool "edit_file"`)
+	}
+	if MatchesTool(claude("Bash"), "write_file") {
+		t.Error(`Claude matcher "Bash" must not match Reasonix tool "write_file"`)
+	}
+	// A native (non-Claude) hook's matcher stays in Reasonix's own vocabulary.
+	native := ResolvedHook{HookConfig: HookConfig{Match: "bash"}, Event: PreToolUse}
+	if MatchesTool(native, "Bash") {
+		t.Error("native hook matcher must not be interpreted against Claude tool names")
+	}
+}
+
 func TestDecideOutcome(t *testing.T) {
 	cases := []struct {
 		name   string
@@ -631,6 +654,19 @@ func TestClaudeJSONDeny(t *testing.T) {
 			stdout:   `{"hookSpecificOutput":{"hookEventName":"PostToolUse","permissionDecision":"deny"}}`,
 			wantDeny: false,
 		},
+		{
+			name:       "userpromptsubmit-top-level-decision-block",
+			event:      UserPromptSubmit,
+			stdout:     `{"decision":"block","reason":"prompt contains a secret"}`,
+			wantDeny:   true,
+			wantReason: "prompt contains a secret",
+		},
+		{
+			name:     "userpromptsubmit-top-level-decision-approve",
+			event:    UserPromptSubmit,
+			stdout:   `{"decision":"approve"}`,
+			wantDeny: false,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -642,6 +678,18 @@ func TestClaudeJSONDeny(t *testing.T) {
 				t.Errorf("reason = %q, want %q", reason, c.wantReason)
 			}
 		})
+	}
+}
+
+func TestClaudeJSONAllow(t *testing.T) {
+	if !claudeJSONAllow(PermissionRequest, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`) {
+		t.Error(`PermissionRequest decision.behavior "allow" should report allow`)
+	}
+	if claudeJSONAllow(PermissionRequest, `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"deny"}}}`) {
+		t.Error(`decision.behavior "deny" must not report allow`)
+	}
+	if claudeJSONAllow(PreToolUse, `{"hookSpecificOutput":{"hookEventName":"PreToolUse","permissionDecision":"allow"}}`) {
+		t.Error("only PermissionRequest carries an auto-allow decision")
 	}
 }
 
@@ -745,6 +793,33 @@ func TestRunClaudePermissionRequestExit2Blocks(t *testing.T) {
 	}
 }
 
+func TestRunClaudePermissionRequestJSONAllow(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: PermissionRequest},
+	}
+	allowJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	rep := Run(context.Background(), Payload{Event: PermissionRequest, ToolName: "bash"}, hooks,
+		func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: allowJSON} })
+	if rep.Blocked {
+		t.Fatal("an allow decision must not block")
+	}
+	if !rep.Allowed {
+		t.Fatal("exit-0 hook with a Claude JSON allow decision should set Report.Allowed")
+	}
+}
+
+func TestRunHonorsUserPromptSubmitTopLevelDeny(t *testing.T) {
+	hooks := []ResolvedHook{
+		{HookConfig: HookConfig{Command: "guard", PayloadFormat: "claude"}, Event: UserPromptSubmit},
+	}
+	denyJSON := `{"decision":"block","reason":"prompt contains a secret"}`
+	rep := Run(context.Background(), Payload{Event: UserPromptSubmit}, hooks,
+		func(_ context.Context, in SpawnInput) SpawnResult { return SpawnResult{ExitCode: 0, Stdout: denyJSON} })
+	if !rep.Blocked {
+		t.Fatal("exit-0 UserPromptSubmit hook with a top-level decision:block should block")
+	}
+}
+
 func TestRunFiltersByEventAndTool(t *testing.T) {
 	hooks := []ResolvedHook{
 		{HookConfig: HookConfig{Command: "a", Match: "bash"}, Event: PreToolUse},
@@ -782,6 +857,9 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 	}
 	if payload["hook_event_name"] != string(PostToolUseFailure) || payload["session_id"] != "session-1" || payload["error"] != "exit 1" {
 		t.Fatalf("Claude payload = %#v", payload)
+	}
+	if payload["tool_name"] != "Bash" {
+		t.Fatalf("Claude payload tool_name = %v, want the Claude vocabulary name Bash for Reasonix tool bash", payload["tool_name"])
 	}
 	response, ok := payload["tool_response"].(map[string]any)
 	if !ok || response["exit_code"] != float64(1) {

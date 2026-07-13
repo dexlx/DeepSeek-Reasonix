@@ -281,8 +281,16 @@ func TestPlanClaudeCompatibilityReportsAgentsHooksAndMCP(t *testing.T) {
 		t.Fatalf("actions = %+v", planned.Actions)
 	}
 	a := planned.Actions[0]
-	if a.AgentCount != 1 || a.HookCount != 1 || a.ToolCount != 1 || a.Compatibility != "full" {
+	// A Stop hook is imported best-effort, but Reasonix's Stop hook is
+	// observation-only and can't block the turn the way Claude's contract
+	// does, so this must report "partial" rather than silently claiming full
+	// compatibility for semantics it doesn't honor.
+	if a.AgentCount != 1 || a.HookCount != 1 || a.ToolCount != 1 || a.Compatibility != "partial" {
 		t.Fatalf("compatibility action = %+v", a)
+	}
+	if len(a.SkippedCapabilities) != 1 || a.SkippedCapabilities[0].Capability != "hooks" ||
+		!strings.Contains(a.SkippedCapabilities[0].Reason, "cannot block the turn") {
+		t.Fatalf("skipped capabilities = %+v, want a Stop-hook cannot-block warning", a.SkippedCapabilities)
 	}
 	if a.RiskLevel != RiskHigh {
 		t.Fatalf("risk = %s, want high", a.RiskLevel)

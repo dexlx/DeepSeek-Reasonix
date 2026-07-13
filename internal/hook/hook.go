@@ -368,11 +368,47 @@ func MatchesTool(h ResolvedHook, toolName string) bool {
 	if m == "" || m == "*" {
 		return true
 	}
+	if h.PayloadFormat == "claude" {
+		toolName = claudeFacingToolName(toolName)
+	}
 	re, err := regexp.Compile("^(?:" + m + ")$")
 	if err != nil {
 		return false
 	}
 	return re.MatchString(toolName)
+}
+
+// claudeToolNames maps Reasonix's own tool names to the Claude Code built-in
+// tool name a Claude plugin hook is authored against — its matcher and any
+// tool_name check inside the hook script itself both use these names (e.g.
+// "Bash", "Write"; see https://code.claude.com/docs/en/hooks). MCP tool names
+// already share the mcp__<server>__<tool> convention in both systems.
+var claudeToolNames = map[string]string{
+	"bash":          "Bash",
+	"read_file":     "Read",
+	"write_file":    "Write",
+	"edit_file":     "Edit",
+	"multi_edit":    "MultiEdit",
+	"glob":          "Glob",
+	"grep":          "Grep",
+	"web_fetch":     "WebFetch",
+	"task":          "Task",
+	"todo_write":    "TodoWrite",
+	"notebook_edit": "NotebookEdit",
+	"bash_output":   "BashOutput",
+	"kill_shell":    "KillShell",
+}
+
+// claudeFacingToolName returns the name a Claude-imported hook's matcher and
+// tool_name payload field should see for a Reasonix tool call. Reasonix-only
+// tools (wait, code_index, move_file, ...) have no Claude equivalent and pass
+// through unchanged — an imported hook can't have been authored against a
+// name Claude never had.
+func claudeFacingToolName(name string) string {
+	if mapped, ok := claudeToolNames[name]; ok {
+		return mapped
+	}
+	return name
 }
 
 // Payload is the JSON envelope written to a hook's stdin.
@@ -424,21 +460,34 @@ type Report struct {
 	Event    Event
 	Outcomes []Outcome
 	Blocked  bool // at least one outcome blocked (only meaningful on gating events)
+	// Allowed is set when a Claude-imported PermissionRequest hook returned an
+	// explicit JSON "allow" decision on exit 0 (see claudeJSONAllow) — the
+	// caller should treat this as an auto-approval instead of prompting.
+	Allowed bool
 }
 
 // HookOutput is the parsed, model-facing part of a successful hook stdout.
 type HookOutput struct {
 	AdditionalContext string
 	// Deny and DenyReason carry a Claude-style JSON deny decision returned on
-	// exit 0 (hookSpecificOutput.permissionDecision for PreToolUse,
-	// hookSpecificOutput.decision.behavior for PermissionRequest). Claude hooks
-	// commonly deny this way instead of exiting 2; see
+	// exit 0: hookSpecificOutput.permissionDecision for PreToolUse,
+	// hookSpecificOutput.decision.behavior for PermissionRequest, or a
+	// top-level decision:"block" for UserPromptSubmit. Claude hooks commonly
+	// deny this way instead of exiting 2; see
 	// https://code.claude.com/docs/en/hooks.
 	Deny       bool
 	DenyReason string
+	// Allow carries a Claude PermissionRequest "allow" decision
+	// (hookSpecificOutput.decision.behavior == "allow"): the hook answers the
+	// permission dialog on the user's behalf instead of only observing it.
+	Allow bool
 }
 
 type hookJSONOutput struct {
+	// Decision and Reason are UserPromptSubmit's (and Stop/SubagentStop's)
+	// top-level deny shape: {"decision":"block","reason":"..."}.
+	Decision           string `json:"decision"`
+	Reason             string `json:"reason"`
 	HookSpecificOutput struct {
 		HookEventName            Event  `json:"hookEventName"`
 		AdditionalContext        string `json:"additionalContext"`
@@ -468,8 +517,10 @@ func ParseOutput(event Event, stdout string) (HookOutput, []string) {
 		return HookOutput{}, []string{fmt.Sprintf("hook %s returned invalid JSON stdout: %v", event, err)}
 	}
 	spec := parsed.HookSpecificOutput
-	deny := strings.EqualFold(spec.PermissionDecision, "deny") || strings.EqualFold(spec.Decision.Behavior, "deny")
-	if spec.HookEventName == "" && strings.TrimSpace(spec.AdditionalContext) == "" && !deny {
+	topLevelDeny := event == UserPromptSubmit && strings.EqualFold(parsed.Decision, "block")
+	deny := strings.EqualFold(spec.PermissionDecision, "deny") || strings.EqualFold(spec.Decision.Behavior, "deny") || topLevelDeny
+	allow := event == PermissionRequest && strings.EqualFold(spec.Decision.Behavior, "allow")
+	if spec.HookEventName == "" && strings.TrimSpace(spec.AdditionalContext) == "" && !deny && !allow {
 		return HookOutput{}, nil
 	}
 	if spec.HookEventName != "" && spec.HookEventName != event {
@@ -478,8 +529,13 @@ func ParseOutput(event Event, stdout string) (HookOutput, []string) {
 	out := HookOutput{AdditionalContext: strings.TrimSpace(spec.AdditionalContext)}
 	if deny {
 		out.Deny = true
-		out.DenyReason = strings.TrimSpace(spec.PermissionDecisionReason)
+		reason := spec.PermissionDecisionReason
+		if topLevelDeny {
+			reason = parsed.Reason
+		}
+		out.DenyReason = strings.TrimSpace(reason)
 	}
+	out.Allow = allow
 	return out, nil
 }
 
@@ -507,13 +563,27 @@ func decideOutcome(h ResolvedHook, r SpawnResult) Decision {
 // carries a JSON deny decision (see HookOutput.Deny). Reasonix must honor it
 // for the events it claims Claude hook compatibility for, or a plugin's
 // "block this dangerous command" hook silently no-ops whenever the script
-// signals deny via JSON instead of exit code 2.
+// signals deny via JSON instead of exit code 2. UserPromptSubmit uses a
+// top-level decision:"block" instead of PreToolUse/PermissionRequest's
+// hookSpecificOutput shape; ParseOutput handles both.
 func claudeJSONDeny(event Event, stdout string) (bool, string) {
-	if event != PreToolUse && event != PermissionRequest {
+	if event != PreToolUse && event != PermissionRequest && event != UserPromptSubmit {
 		return false, ""
 	}
 	out, _ := ParseOutput(event, stdout)
 	return out.Deny, out.DenyReason
+}
+
+// claudeJSONAllow reports whether a Claude-format PermissionRequest hook's
+// exit-0 stdout carries an explicit "allow" decision
+// (hookSpecificOutput.decision.behavior == "allow"): the hook answers the
+// permission dialog on the user's behalf, same as an exit-2 deny preempts it.
+func claudeJSONAllow(event Event, stdout string) bool {
+	if event != PermissionRequest {
+		return false
+	}
+	out, _ := ParseOutput(event, stdout)
+	return out.Allow
 }
 
 // SpawnInput / SpawnResult / Spawner are the test seam around the real spawn.
@@ -576,6 +646,8 @@ func Run(ctx context.Context, payload Payload, hooks []ResolvedHook, spawner Spa
 				if reason != "" {
 					r.Stdout = reason
 				}
+			} else if claudeJSONAllow(event, r.Stdout) {
+				report.Allowed = true
 			}
 		}
 		report.Outcomes = append(report.Outcomes, Outcome{
@@ -603,7 +675,7 @@ func marshalPayload(payload Payload, format string) string {
 			"hook_event_name":        payload.Event,
 			"session_id":             payload.SessionID,
 			"cwd":                    payload.Cwd,
-			"tool_name":              payload.ToolName,
+			"tool_name":              claudeFacingToolName(payload.ToolName),
 			"tool_input":             payload.ToolArgs,
 			"tool_response":          claudeToolResponse(payload.ToolResult),
 			"prompt":                 payload.Prompt,

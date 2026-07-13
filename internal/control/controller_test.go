@@ -2524,6 +2524,64 @@ func permissionHookController(t *testing.T, match string) (*Controller, chan str
 	return c, ids, payloads
 }
 
+// claudePermissionHookController wires a Claude-imported PermissionRequest
+// hook (PayloadFormat "claude") whose mock spawner always returns stdout, so
+// tests can assert the hook's decision preempts the approval prompt instead
+// of only notifying — matching Claude's own PermissionRequest contract.
+func claudePermissionHookController(t *testing.T, exitCode int, stdout string) (*Controller, chan string) {
+	t.Helper()
+	ids := make(chan string, 8)
+	spawner := func(_ context.Context, in hook.SpawnInput) hook.SpawnResult {
+		return hook.SpawnResult{ExitCode: exitCode, Stdout: stdout}
+	}
+	c := New(Options{
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				ids <- e.Approval.ID
+			}
+		}),
+		Hooks: hook.NewRunner([]hook.ResolvedHook{{
+			HookConfig: hook.HookConfig{Command: "guard", Match: "Bash", PayloadFormat: "claude"},
+			Event:      hook.PermissionRequest,
+			Scope:      hook.ScopeGlobal,
+		}}, "/tmp", spawner, nil),
+	})
+	return c, ids
+}
+
+func TestPermissionRequestClaudeHookAutoDenies(t *testing.T) {
+	c, ids := claudePermissionHookController(t, 2, "")
+	allow, _, err := gateApprover{c}.Approve(context.Background(), "bash", "rm -rf /", json.RawMessage(`{"command":"rm -rf /"}`))
+	if err != nil {
+		t.Fatalf("Approve error = %v", err)
+	}
+	if allow {
+		t.Fatal("a Claude PermissionRequest hook exiting 2 should auto-deny")
+	}
+	select {
+	case id := <-ids:
+		t.Fatalf("auto-deny must preempt the approval prompt, but one was emitted: %s", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
+func TestPermissionRequestClaudeHookAutoAllows(t *testing.T) {
+	allowJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	c, ids := claudePermissionHookController(t, 0, allowJSON)
+	allow, _, err := gateApprover{c}.Approve(context.Background(), "bash", "go test ./...", json.RawMessage(`{"command":"go test ./..."}`))
+	if err != nil {
+		t.Fatalf("Approve error = %v", err)
+	}
+	if !allow {
+		t.Fatal("a Claude PermissionRequest hook returning decision.behavior=allow should auto-allow")
+	}
+	select {
+	case id := <-ids:
+		t.Fatalf("auto-allow must preempt the approval prompt, but one was emitted: %s", id)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func waitApprovalID(t *testing.T, ids <-chan string) string {
 	t.Helper()
 	select {

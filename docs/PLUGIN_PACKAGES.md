@@ -285,14 +285,23 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   file is read directly by Reasonix, without spawning a shell command.
 - `.claude/settings.json` and `hooks/hooks.json` command hooks to Reasonix hook
   events when the event names match. `matcher`, `args`, `async`, `env`, and
-  timeout are preserved. Imported hooks receive Claude-compatible snake_case
-  stdin payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
-  expanded by the host before process launch. A `PreToolUse` hook can still
-  deny the call via exit code 2 or a `hookSpecificOutput.permissionDecision`
-  JSON deny on exit 0; an imported `PermissionRequest` hook additionally
-  denies the permission (rather than only notifying) via exit code 2 or
+  timeout are preserved. `matcher` and the `tool_name` a hook script sees are
+  translated between Reasonix's own tool names and Claude's (`bash` ↔
+  `Bash`, `write_file` ↔ `Write`, ...), so a matcher like `"Bash"` fires
+  correctly. Imported hooks receive Claude-compatible snake_case stdin
+  payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
+  expanded by the host before process launch. A `PreToolUse` or
+  `UserPromptSubmit` hook can still deny via exit code 2 or its JSON deny
+  shape on exit 0 (`hookSpecificOutput.permissionDecision` for `PreToolUse`,
+  top-level `decision:"block"` for `UserPromptSubmit`); an imported
+  `PermissionRequest` hook additionally answers the permission dialog itself
+  (deny or auto-allow, rather than only notifying) via exit code 2 or
   `hookSpecificOutput.decision.behavior`, matching Claude's own contract.
-  `updatedInput` is not yet applied to the tool call.
+  `updatedInput` is not yet applied to the tool call, and a hook's `if`
+  condition or `asyncRewake` field is not evaluated — a package that declares
+  either, or a `Stop`/`SubagentStop` hook (which can't block the turn in
+  Reasonix the way Claude's contract does), reports partial rather than full
+  compatibility with a structured warning naming the gap.
 - A plugin-root `.mcp.json` to installed MCP entries. Claude `local` maps to
   stdio, non-ASCII display names receive stable internal IDs, and duplicate
   declarations are deduplicated. Imported servers default to
