@@ -1081,18 +1081,29 @@ func nodeSegmentIsVerification(args []string) bool {
 		return true
 	case "--test":
 		// Match the repository's treatment of other conventional test runners,
-		// but fail closed on test-runner flags that write files: snapshot
-		// regeneration rewrites checked-in fixtures (the --update/-u class),
-		// reporter destinations can write arbitrary paths, and rerun-failure
-		// state is created or updated across test runs.
+		// but fail closed on test-runner and Node runtime flags that write files.
 		for _, arg := range args[1:] {
-			lower := strings.ToLower(arg)
-			if lower == "--test-update-snapshots" ||
-				strings.HasPrefix(lower, "--test-reporter-destination") ||
-				strings.HasPrefix(lower, "--test-rerun-failures") {
+			if nodeTestFlagWritesFile(arg) {
 				return false
 			}
 		}
+		return true
+	default:
+		return false
+	}
+}
+
+func nodeTestFlagWritesFile(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	switch name {
+	case "--cpu-prof", "--heap-prof", "--heapsnapshot-near-heap-limit", "--heapsnapshot-signal",
+		"--localstorage-file", "--perf-basic-prof", "--perf-basic-prof-only-functions", "--perf-prof",
+		"--prof", "--redirect-warnings", "--report-on-fatalerror", "--report-on-signal",
+		"--report-uncaught-exception", "--test-reporter-destination", "--test-rerun-failures",
+		"--test-update-snapshots", "--tls-keylog", "--trace-events-enabled":
 		return true
 	default:
 		return false

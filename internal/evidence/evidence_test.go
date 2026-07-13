@@ -557,6 +557,7 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "node test snapshot update stays opaque", toolName: "bash", args: `{"command":"node --test --test-update-snapshots"}`, want: true},
 		{name: "node test reporter file stays opaque", toolName: "bash", args: `{"command":"node --test --test-reporter=junit --test-reporter-destination=result.txt"}`, want: true},
 		{name: "node test rerun state stays opaque", toolName: "bash", args: `{"command":"node --test --test-rerun-failures=state.json"}`, want: true},
+		{name: "node test cpu profile stays opaque", toolName: "bash", args: `{"command":"node --test --cpu-prof"}`, want: true},
 		{name: "diff review", toolName: "bash", args: `{"command":"git diff --check"}`},
 		{name: "formatter write", toolName: "bash", args: `{"command":"gofmt -w internal/a.go"}`, want: true},
 		{name: "file redirect", toolName: "bash", args: `{"command":"printf x > generated.txt"}`, want: true},
@@ -642,16 +643,30 @@ func TestNodeTestRunnerWriteFlagsCannotMasqueradeAsDeliveryVerification(t *testi
 	if !IsDeliveryVerificationCommand("node --test") {
 		t.Fatal("plain node --test should be recognized as a delivery verification")
 	}
-	// --test-update-snapshots rewrites checked-in snapshot fixtures,
-	// --test-reporter-destination can write arbitrary paths, and
-	// --test-rerun-failures creates or updates a state file. They must stay
-	// opaque mutations so new files still require review and sign-off.
+	// Test-runner state/report flags and Node runtime profiling/tracing flags
+	// create or update files. They must stay opaque mutations so those files
+	// still require review and sign-off.
 	for _, command := range []string{
 		"node --test --test-update-snapshots",
 		"node --test --test-reporter=junit --test-reporter-destination=result.txt",
 		"node --test --test-reporter junit --test-reporter-destination result.txt",
 		"node --test --test-rerun-failures=state.json",
 		"node --test --test-rerun-failures state.json",
+		"node --test --cpu-prof",
+		"node --test --heap-prof",
+		"node --test --heapsnapshot-near-heap-limit=1",
+		"node --test --heapsnapshot-signal=SIGUSR2",
+		"node --test --localstorage-file=localstorage.json",
+		"node --test --perf-basic-prof",
+		"node --test --perf-basic-prof-only-functions",
+		"node --test --perf-prof",
+		"node --test --prof",
+		"node --test --redirect-warnings=warnings.log",
+		"node --test --report-on-fatalerror",
+		"node --test --report-on-signal",
+		"node --test --report-uncaught-exception",
+		"node --test --tls-keylog=tls.log",
+		"node --test --trace-events-enabled",
 	} {
 		if IsDeliveryVerificationCommand(command) {
 			t.Fatalf("%q writes files and must not be recognized as delivery verification", command)
