@@ -1030,18 +1030,36 @@ func bashSegmentIsVerification(fields []string) bool {
 	if hasCommandArg(args, "--fix", "--write", "-w", "--update", "-u") {
 		return false
 	}
+	if hasWriteOutputFlag(args) {
+		return false
+	}
 	switch base {
 	case "go":
 		if len(args) == 0 {
 			return false
 		}
-		if args[0] == "test" || args[0] == "vet" {
+		if args[0] == "vet" {
+			return true
+		}
+		if args[0] == "test" {
+			for _, arg := range args[1:] {
+				if goTestFlagWritesFile(arg) {
+					return false
+				}
+			}
 			return true
 		}
 		return args[0] == "build" && !hasCommandArg(args, "-o")
 	case "git":
 		return len(args) > 1 && args[0] == "diff" && hasCommandArg(args[1:], "--check")
-	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "mypy", "tsc":
+	case "pytest", "py.test", "gotestsum", "staticcheck", "golangci-lint", "tsc":
+		return true
+	case "mypy":
+		for _, arg := range args {
+			if mypyFlagWritesReport(arg) {
+				return false
+			}
+		}
 		return true
 	case "npm", "pnpm", "yarn", "bun", "cargo":
 		if len(args) > 0 && hasCommandArg(args[:1], "test", "check", "lint", "clippy") {
@@ -1147,6 +1165,92 @@ func hasCommandArg(args []string, candidates ...string) bool {
 		}
 	}
 	return false
+}
+
+// writeOutputFlags are test-runner and linter flags that write snapshot,
+// report, or profile files. Snapshot flags rewrite checked-in fixtures (the
+// --update/-u class rejected above); the others write explicit output paths.
+// A runner invoked with one of them changes workspace state, so the segment
+// must not count as read-only verification.
+var writeOutputFlags = map[string]bool{
+	"snapshot-update": true, // pytest-snapshot / syrupy
+	"updatesnapshot":  true, // jest --updateSnapshot via npm/yarn wrappers
+	"junitxml":        true, // pytest
+	"junit-xml":       true, // pytest / mypy
+	"junitfile":       true, // gotestsum
+	"jsonfile":        true, // gotestsum
+	"coverprofile":    true, // go test
+	"cpuprofile":      true, // go test
+	"memprofile":      true, // go test
+	"blockprofile":    true, // go test
+	"mutexprofile":    true, // go test
+	"testlogfile":     true, // go test binary
+	"gocoverdir":      true, // go test binary
+	"outputfile":      true, // jest/vitest --outputFile (with --json)
+	"report-log":      true, // pytest-reportlog
+}
+
+func hasWriteOutputFlag(args []string) bool {
+	for _, arg := range args {
+		name := strings.TrimLeft(arg, "-")
+		if len(name) == len(arg) || name == "" {
+			continue // not a flag
+		}
+		if i := strings.IndexByte(name, '='); i >= 0 {
+			name = name[:i]
+		}
+		// go test flags accept an optional test. prefix (-test.coverprofile)
+		// that the go tool passes through to the test binary.
+		name = strings.TrimPrefix(strings.ToLower(name), "test.")
+		if writeOutputFlags[name] {
+			return true
+		}
+		// Vitest exposes dotted per-reporter forms (--outputFile.json=path).
+		if i := strings.IndexByte(name, '.'); i > 0 && writeOutputFlags[name[:i]] {
+			return true
+		}
+	}
+	return false
+}
+
+// mypyFlagWritesReport reports whether a mypy flag writes a report directory:
+// every mypy report option follows the --<type>-report DIR shape (txt, html,
+// xml, cobertura-xml, any-exprs, linecount, linecoverage, lineprecision), and
+// mypy has no read-only flag with that suffix. --junit-xml is covered by the
+// global write-output flags.
+func mypyFlagWritesReport(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	return strings.HasPrefix(name, "--") && strings.HasSuffix(name, "-report")
+}
+
+// goTestFlagWritesFile reports whether a go test flag writes a workspace
+// artifact: -c/-o emit the test binary, -trace and the profile flags write
+// profiles, and -artifacts/-testlogfile/-gocoverdir write test outputs. The
+// short and ambiguous names stay out of writeOutputFlags because the
+// dash-stripped global match would also hit node -c (a syntax-only check)
+// and pytest --trace (a read-only debugger flag). go test flags accept
+// single- and double-dash forms and an optional test. prefix that the go
+// tool passes through to the test binary.
+func goTestFlagWritesFile(arg string) bool {
+	name := strings.ToLower(arg)
+	if i := strings.IndexByte(name, '='); i >= 0 {
+		name = name[:i]
+	}
+	trimmed := strings.TrimLeft(name, "-")
+	if len(trimmed) == len(name) || trimmed == "" {
+		return false // not a flag
+	}
+	trimmed = strings.TrimPrefix(trimmed, "test.")
+	switch trimmed {
+	case "c", "o", "trace", "artifacts", "testlogfile", "gocoverdir",
+		"coverprofile", "cpuprofile", "memprofile", "blockprofile", "mutexprofile":
+		return true
+	default:
+		return false
+	}
 }
 
 func completeStepVerificationCommands(args json.RawMessage) []string {

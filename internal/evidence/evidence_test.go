@@ -562,6 +562,18 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "formatter write", toolName: "bash", args: `{"command":"gofmt -w internal/a.go"}`, want: true},
 		{name: "file redirect", toolName: "bash", args: `{"command":"printf x > generated.txt"}`, want: true},
 		{name: "compound verification", toolName: "bash", args: `{"command":"go test ./... 2>&1 | tail -20"}`},
+		{name: "pytest snapshot update stays opaque", toolName: "bash", args: `{"command":"pytest --snapshot-update"}`, want: true},
+		{name: "pytest junitxml report stays opaque", toolName: "bash", args: `{"command":"pytest --junitxml=report.xml"}`, want: true},
+		{name: "gotestsum junitfile stays opaque", toolName: "bash", args: `{"command":"gotestsum --junitfile out.xml ./..."}`, want: true},
+		{name: "go test coverprofile stays opaque", toolName: "bash", args: `{"command":"go test -coverprofile=cover.out ./..."}`, want: true},
+		{name: "go test blockprofile stays opaque", toolName: "bash", args: `{"command":"go test -blockprofile=block.out ./..."}`, want: true},
+		{name: "go test trace stays opaque", toolName: "bash", args: `{"command":"go test -trace trace.out ./..."}`, want: true},
+		{name: "go test compile binary stays opaque", toolName: "bash", args: `{"command":"go test -c ./internal/evidence"}`, want: true},
+		{name: "go test dotted cpuprofile stays opaque", toolName: "bash", args: `{"command":"go test ./internal/evidence -test.cpuprofile=cpu.out -count=1"}`, want: true},
+		{name: "go test artifacts stays opaque", toolName: "bash", args: `{"command":"go test -artifacts ./..."}`, want: true},
+		{name: "jest output file stays opaque", toolName: "bash", args: `{"command":"npm test -- --json --outputFile=result.json"}`, want: true},
+		{name: "mypy report stays opaque", toolName: "bash", args: `{"command":"mypy --txt-report reports src/"}`, want: true},
+		{name: "plain pytest", toolName: "bash", args: `{"command":"pytest"}`},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -569,6 +581,61 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 				t.Fatalf("ToolCallMutates(%q, %s) = %v, want %v", tt.toolName, tt.args, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestRunnerWriteOutputFlagsCannotMasqueradeAsVerification(t *testing.T) {
+	// Snapshot flags rewrite checked-in fixtures and report/profile flags
+	// write explicit output paths; both must stay opaque mutations so the
+	// files they produce still require review and sign-off.
+	for _, command := range []string{
+		"pytest --snapshot-update",
+		"pytest --junitxml=report.xml",
+		"mypy --junit-xml report.xml src/",
+		"gotestsum --junitfile out.xml ./...",
+		"go test -coverprofile=cover.out ./...",
+		"go test --coverprofile cover.out ./...",
+		"go test -blockprofile=block.out ./...",
+		"go test -mutexprofile mutex.out ./...",
+		"go test -trace trace.out ./...",
+		"go test -c ./internal/evidence",
+		"go test -o evidence.test -c ./internal/evidence",
+		"go test ./internal/evidence -test.cpuprofile=cpu.out -count=1",
+		"go test -test.trace trace.out ./...",
+		"go test -artifacts ./...",
+		"go test ./... -args -test.testlogfile=log.txt",
+		"go test -test.gocoverdir=covdir ./...",
+		"gotestsum -- -test.coverprofile=cover.out ./...",
+		"npm test -- --updateSnapshot",
+		"npm test -- --json --outputFile=result.json",
+		"yarn test --outputFile.json=result.json",
+		"pytest --report-log=log.jsonl",
+		"mypy --txt-report reports src/",
+		"mypy --html-report html src/",
+		"mypy --xml-report=reports src/",
+		"mypy --cobertura-xml-report reports src/",
+	} {
+		if bashCommandIsVerification(command) {
+			t.Fatalf("%q writes files and must not be classified as verification", command)
+		}
+		if !ToolCallMutates("bash", json.RawMessage(`{"command":"`+command+`"}`), false) {
+			t.Fatalf("%q must remain an opaque mutation", command)
+		}
+	}
+	for _, command := range []string{
+		"pytest",
+		"gotestsum ./...",
+		"go test -cover ./...",
+		"go test -count=1 ./...",
+		"go test -test.v -test.run TestFoo ./...",
+		"pytest --trace",
+		"npm test -- --json",
+		"mypy src/",
+		"mypy --strict src/",
+	} {
+		if !bashCommandIsVerification(command) {
+			t.Fatalf("%q should remain a verification command", command)
+		}
 	}
 }
 
