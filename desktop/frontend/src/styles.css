@@ -28445,7 +28445,7 @@ body > .mermaid-diagram--fullscreen {
   background:
     linear-gradient(180deg, color-mix(in srgb, var(--accent) 5%, var(--bg)) 0%, var(--bg) 100%);
   box-shadow: 0 14px 34px rgba(0, 0, 0, 0.28);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   line-height: 1.5;
 }
 /* 警告/注意态 tinted border + gradient */
@@ -28480,7 +28480,7 @@ body > .mermaid-diagram--fullscreen {
   border-radius: 5px;
   background: color-mix(in srgb, var(--accent) 14%, transparent);
   color: var(--accent);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   font-weight: 650;
   line-height: 1.4;
   font-variant-numeric: tabular-nums;
@@ -28539,7 +28539,7 @@ body > .mermaid-diagram--fullscreen {
   min-width: 0;
   overflow: hidden;
   color: var(--fg);
-  font-size: 14px;
+  font-size: calc(14px * var(--font-scale));
   font-weight: 620;
   line-height: 1.15;
   text-overflow: ellipsis;
@@ -28559,12 +28559,12 @@ body > .mermaid-diagram--fullscreen {
 }
 .context-ring-popover__label {
   color: var(--fg-faint);
-  font-size: 11px;
+  font-size: calc(11px * var(--font-scale));
   white-space: nowrap;
 }
 .context-ring-popover__value {
   color: var(--fg-dim);
-  font-size: 12px;
+  font-size: calc(12px * var(--font-scale));
   font-variant-numeric: tabular-nums;
   text-align: right;
   white-space: nowrap;

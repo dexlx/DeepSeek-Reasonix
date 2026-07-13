@@ -201,6 +201,15 @@ ok(
   "creation rules do not hardcode bare px font sizes (except font-size:0)",
 );
 eq(
+  finalDeclaration(".context-ring-popover__title", "font-size"),
+  "calc(14px * var(--font-scale))",
+  "creation context-ring popover (portaled to body) follows interface text size",
+);
+ok(
+  !/\.context-ring-popover[^{]*\{[^}]*font-size:\s*[0-9.]+px\s*(?:!important\s*)?;/.test(styles),
+  "context-ring popover rules do not hardcode bare px font sizes (except font-size:0)",
+);
+eq(
   finalDeclaration(".app--creation .tool:not(.tool--open) > .tool__body", "height"),
   "0 !important",
   "collapsed creation tool bodies keep mounted content clipped",
