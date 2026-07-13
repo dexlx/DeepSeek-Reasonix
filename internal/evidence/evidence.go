@@ -1066,7 +1066,9 @@ func nodeSegmentIsVerification(args []string) bool {
 	if len(args) == 0 {
 		return false
 	}
-	switch strings.ToLower(args[0]) {
+	// Node CLI flags are case-sensitive: -c/--check is the syntax-only mode,
+	// while -C/--conditions executes the target with custom export conditions.
+	switch args[0] {
 	case "--check", "-c":
 		// Syntax-check mode does not execute the target. Fail closed on any
 		// additional option: preload/eval/import flags could execute code before

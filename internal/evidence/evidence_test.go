@@ -552,6 +552,7 @@ func TestToolCallMutatesForDeliveryProfile(t *testing.T) {
 		{name: "node syntax check", toolName: "bash", args: `{"command":"node --check app.js"}`},
 		{name: "node syntax check pipeline", toolName: "bash", args: `{"command":"tail -n +2 app.html | head -n 20 | node --check"}`},
 		{name: "node eval stays opaque", toolName: "bash", args: `{"command":"node -e 'console.log(1)'"}`, want: true},
+		{name: "node conditions flag stays opaque", toolName: "bash", args: `{"command":"node -C production server.js"}`, want: true},
 		{name: "diff review", toolName: "bash", args: `{"command":"git diff --check"}`},
 		{name: "formatter write", toolName: "bash", args: `{"command":"gofmt -w internal/a.go"}`, want: true},
 		{name: "file redirect", toolName: "bash", args: `{"command":"printf x > generated.txt"}`, want: true},
@@ -618,6 +619,18 @@ func TestNodeEvalCannotMasqueradeAsDeliveryVerification(t *testing.T) {
 	}
 	if !ToolCallMutates("bash", json.RawMessage(`{"command":"node -e 'require(\"fs\").readFileSync(\"app.js\")'"}`), false) {
 		t.Fatal("arbitrary node eval must remain an opaque mutation")
+	}
+}
+
+func TestNodeConditionsFlagCannotMasqueradeAsDeliveryVerification(t *testing.T) {
+	// Node CLI flags are case-sensitive: -C is --conditions and executes the
+	// target script, unlike the syntax-only -c/--check.
+	command := "node -C production server.js"
+	if IsDeliveryVerificationCommand(command) {
+		t.Fatal("node -C (--conditions) executes the script and must not be recognized as delivery verification")
+	}
+	if !ToolCallMutates("bash", json.RawMessage(`{"command":"node -C production server.js"}`), false) {
+		t.Fatal("node -C (--conditions) must remain an opaque mutation")
 	}
 }
 
