@@ -65,6 +65,18 @@ type BackgroundLease struct {
 	JobID   string
 }
 
+// DeliveryCheckpoint is the compact, persistence-safe state carried across
+// runs of one host-owned Goal. It intentionally stores no raw tool arguments or
+// output. PendingMutation means a previously observed change still needs fresh
+// verification, review, and sign-off before the Goal can finalize.
+type DeliveryCheckpoint struct {
+	ScopeID             string `json:"scopeID,omitempty"`
+	CriteriaEstablished bool   `json:"criteriaEstablished,omitempty"`
+	WorkObserved        bool   `json:"workObserved,omitempty"`
+	MutationObserved    bool   `json:"mutationObserved,omitempty"`
+	PendingMutation     bool   `json:"pendingMutation,omitempty"`
+}
+
 // Ledger stores the receipts available to complete_step for the current turn.
 type Ledger struct {
 	mu               sync.Mutex
@@ -83,6 +95,18 @@ func (l *Ledger) Reset() {
 	defer l.mu.Unlock()
 	l.receipts = nil
 	l.backgroundLeases = nil
+}
+
+// ResetBackgroundLeases starts a new run inside the same delivery scope. The
+// durable receipts remain available, while per-run job leases must be collected
+// and committed independently.
+func (l *Ledger) ResetBackgroundLeases() {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	l.backgroundLeases = nil
+	l.mu.Unlock()
 }
 
 // NoteBackgroundLease records that a background job's evidence was merged into

@@ -152,6 +152,31 @@ eq(
   true,
   "collaboration mode changes always reconcile the remembered plan restore intent",
 );
+eq(
+  appSource.includes("runtimeTransitionTabsRef.current.has(tabId)"),
+  true,
+  "runtime profile transitions reject rapid duplicate switches for one tab",
+);
+eq(
+  appSource.includes("delete pending.tokenMode") && appSource.includes("tokenMode: previous"),
+  true,
+  "failed runtime profile transitions roll back the optimistic token mode",
+);
+eq(
+  appSource.includes("!state.backendActivationPending && !runtimeTransitioning"),
+  true,
+  "runtime profile transitions keep submit behind the controller-ready gate",
+);
+eq(
+  /const resumed = await resumeControllerGoalForTab\(tabId\);[\s\S]{0,80}if \(!resumed\) return;[\s\S]{0,180}await commitThenSend/.test(appSource),
+  true,
+  "delivery recovery submits the continuation only after a blocked Goal resumes",
+);
+eq(
+  /await applyGoal\(trimmed\);[\s\S]{0,120}await commitThenSendRef\.current\(sourceTabId/.test(appSource),
+  true,
+  "the first Goal turn waits for the controller Goal before submitting",
+);
 
 const unsent = reducer(sent, { type: "unsend" });
 eq(unsent.pendingUser, undefined, "unsend clears the pending marker");
