@@ -415,12 +415,12 @@ func TestDeleteTopicRetryAfterPartialFailureCompletesCleanup(t *testing.T) {
 	if err := app.DeleteTopic(topicID); err == nil {
 		t.Fatalf("delete with failing title-sources load should report an error")
 	}
-	if got := loadTopicTitle(projectRoot, topicID); got != "" {
-		t.Fatalf("first attempt should have removed the title, got %q", got)
+	if got := loadTopicTitle(projectRoot, topicID); got != "Doomed" {
+		t.Fatalf("failed attempt must keep the title as the root locator, got %q", got)
 	}
 
 	// Heal the fault and retry: the retry must finish the remaining cleanup
-	// instead of treating the missing title entry as an already-finished
+	// instead of treating a partially-deleted topic as an already-finished
 	// deletion.
 	if err := os.Remove(sourcesPath); err != nil {
 		t.Fatalf("unblock title sources: %v", err)
@@ -464,6 +464,53 @@ func TestDeleteTopicWithoutTitleEntryStillRemovesIndexAndTombstones(t *testing.T
 
 	if err := NewApp().DeleteTopic(topicID); err != nil {
 		t.Fatalf("delete topic: %v", err)
+	}
+	assertTopicFullyDeleted(t, projectRoot, topicID)
+}
+
+func TestDeleteTopicTitleOnlyRetryAfterSourceFailureCompletesCleanup(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	projectRoot := t.TempDir()
+	topicID := "topic_title_only_delete"
+	if err := addProject(projectRoot, ""); err != nil {
+		t.Fatalf("add project: %v", err)
+	}
+	// No prependTopicInProjectsFile: the topic renders purely through the
+	// orderedTopicIDs title-map fallback, so the title entry is the only
+	// locator a retry can use.
+	if err := setTopicTitle(projectRoot, topicID, "Doomed"); err != nil {
+		t.Fatalf("set topic title: %v", err)
+	}
+	if err := setTopicCreatedAt(projectRoot, topicID, 4242); err != nil {
+		t.Fatalf("set created-at: %v", err)
+	}
+
+	sourcesPath := topicTitleSourcesPath(projectRoot)
+	backupPath := sourcesPath + ".bak"
+	if err := os.Rename(sourcesPath, backupPath); err != nil {
+		t.Fatalf("stash title sources: %v", err)
+	}
+	if err := os.Mkdir(sourcesPath, 0o755); err != nil {
+		t.Fatalf("block title sources: %v", err)
+	}
+
+	app := NewApp()
+	if err := app.DeleteTopic(topicID); err == nil {
+		t.Fatalf("delete with failing title-sources load should report an error")
+	}
+	if got := loadTopicTitle(projectRoot, topicID); got != "Doomed" {
+		t.Fatalf("failed attempt must keep the title as the root locator, got %q", got)
+	}
+
+	if err := os.Remove(sourcesPath); err != nil {
+		t.Fatalf("unblock title sources: %v", err)
+	}
+	if err := os.Rename(backupPath, sourcesPath); err != nil {
+		t.Fatalf("restore title sources: %v", err)
+	}
+	if err := app.DeleteTopic(topicID); err != nil {
+		t.Fatalf("retry delete: %v", err)
 	}
 	assertTopicFullyDeleted(t, projectRoot, topicID)
 }

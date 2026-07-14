@@ -6358,12 +6358,10 @@ func (a *App) deleteTopic(topicID string) error {
 		if !hasTitle && !indexed[root] {
 			continue
 		}
-		if hasTitle {
-			delete(titles, topicID)
-			if err := saveTopicTitles(root, titles); err != nil {
-				return err
-			}
-		}
+		// Fallible cleanup runs before the title entry is removed: for a
+		// title-map-only topic the title is the only locator that makes this
+		// root a candidate again, so it must survive a failed attempt and be
+		// deleted last.
 		sources, err := loadTopicTitleSourcesForUpdate(root)
 		if err != nil {
 			return err
@@ -6376,6 +6374,12 @@ func (a *App) deleteTopic(topicID string) error {
 		}
 		deleteTopicCreatedAt(root, topicID)
 		_ = deleteTopicAutoTitleMeta(root, topicID)
+		if hasTitle {
+			delete(titles, topicID)
+			if err := saveTopicTitles(root, titles); err != nil {
+				return err
+			}
+		}
 	}
 	if err := removeTopicFromProjectsFile(topicID); err != nil {
 		return err
