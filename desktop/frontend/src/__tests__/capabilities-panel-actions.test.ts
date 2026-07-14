@@ -496,7 +496,11 @@ console.log("capabilities panel plugin actions");
             ok: true,
             status: "planned",
             name: "superpowers",
-            actions: [{ kind: "plugin", action: "install_plugin_package", name: "superpowers", source, status: "planned" }],
+            actions: [{
+              kind: "plugin", action: "install_plugin_package", name: "superpowers", source, status: "planned",
+              compatibility: "partial", mappedCapabilities: ["skills", "agents"],
+              skippedCapabilities: [{ capability: "hook", path: "hooks/hooks.json", reason: "unsupported event" }],
+            }],
           });
         },
         InstallPlugin: async (source: string, _options: PluginInstallOptions) => {
@@ -512,9 +516,13 @@ console.log("capabilities panel plugin actions");
             enabled: true,
             skills: 3,
             commands: 2,
+            agents: 1,
             hooks: 1,
             mcpServers: 1,
+            compatibility: "full",
+            mappedCapabilities: ["skills", "agents", "hooks", "mcp"],
             skillDetails: [{ name: "plan", description: "Plan work before implementation.", invocation: "/superpowers:plan", runAs: "inline" }],
+            agentDetails: [{ name: "reviewer", description: "Review changes.", invocation: "/superpowers:reviewer", model: "sonnet" }],
             commandDetails: [{
               name: "plan",
               description: "Plugin planning prompt.",
@@ -526,7 +534,7 @@ console.log("capabilities panel plugin actions");
               shadowed: true,
             }],
             hookDetails: [{ event: "SessionStart", contextFile: "CLAUDE.md", description: "Load startup context." }],
-            mcpServerDetails: [{ name: "context", transport: "stdio", command: "node server.js" }],
+            mcpServerDetails: [{ name: "context", displayName: "Context Search", transport: "stdio", command: "node server.js", autoStart: false }],
           };
           plugins = plugins.filter((plugin) => plugin.name !== next.name).concat(next);
           return JSON.stringify({ ok: true, status: "done", actions: [{ action: "install_plugin_package", name: next.name, status: "done" }] });
@@ -600,6 +608,9 @@ console.log("capabilities panel plugin actions");
   await waitFor("plugin install plan", () => document.body.textContent?.includes("install_plugin_package") ?? false);
   ok(planCalls === 1, "clicking Preview invokes plugin install planning once");
   ok(plannedSources[0] === "git:github.com/obra/superpowers", "plugin preview receives the entered Git source");
+  ok(document.body.textContent?.includes("Partially compatible") ?? false, "preview renders compatibility status");
+  ok(document.body.textContent?.includes("Mapped: skills, agents") ?? false, "preview renders mapped capabilities");
+  ok(document.body.textContent?.includes("hook: unsupported event") ?? false, "preview renders skipped capability reasons");
 
   const install = findButton("Install plugin");
   if (!install) throw new Error("missing plugin install button");
@@ -622,6 +633,10 @@ console.log("capabilities panel plugin actions");
   ok(document.body.textContent?.includes("/superpowers:plan") ?? false, "plugin details show the canonical qualified invocation");
   ok(document.body.textContent?.includes("qualified name is occupied by a user or project command") ?? false, "occupied canonical command explains the winning source");
   ok(document.body.textContent?.includes("SessionStart") ?? false, "expanded plugin details list exported hooks");
+  ok(document.body.textContent?.includes("Fully compatible") ?? false, "plugin details show structured compatibility");
+  ok(document.body.textContent?.includes("/superpowers:reviewer") ?? false, "plugin details list imported agents");
+  ok(document.body.textContent?.includes("Context Search") ?? false, "plugin details retain MCP display names");
+  ok(document.body.textContent?.includes("on demand") ?? false, "imported MCP servers are labeled on demand");
   ok(document.body.textContent?.includes("context") ?? false, "expanded plugin details list exported MCP servers");
 
   const update = findButton("Update");

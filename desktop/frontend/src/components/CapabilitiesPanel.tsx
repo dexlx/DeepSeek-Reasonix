@@ -4,7 +4,7 @@ import { asArray } from "../lib/array";
 import { app, openExternal } from "../lib/bridge";
 import { useT } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
-import type { CapabilitiesView, MCPServerInput, PluginCommandView, PluginHookView, PluginInstallOptions, PluginMCPServerView, PluginSkillView, PluginView, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
+import type { CapabilitiesView, MCPServerInput, PluginAgentView, PluginCommandView, PluginCompatibilityIssue, PluginHookView, PluginInstallOptions, PluginMCPServerView, PluginSkillView, PluginView, ServerView, SkillRootSkillView, SkillRootView, SkillsSettingsView, SkillView, TabMeta } from "../lib/types";
 import { InlineConfirmButton } from "./InlineConfirmButton";
 import { ResizableDrawer } from "./ResizableDrawer";
 import { Tooltip } from "./Tooltip";
@@ -1616,6 +1616,14 @@ type PluginInstallPlanAction = {
   status?: string;
   message?: string;
   error?: string;
+  compatibility?: string;
+  mappedCapabilities?: string[];
+  skippedCapabilities?: PluginCompatibilityIssue[];
+  agentCount?: number;
+  skillCount?: number;
+  commandCount?: number;
+  hookCount?: number;
+  toolCount?: number;
 };
 
 type PluginInstallPlanView = {
@@ -1904,7 +1912,10 @@ function PluginPlanPreview({ plan }: { plan: PluginInstallPlanView }) {
 						<div className="cap-plugin-action" key={`${action.action || action.kind || "action"}-${idx}`}>
 							<span className="cap-plugin-action__name">{pluginPlanActionLabel(action, t)}</span>
 							{action.status && <span className="cap-source-badge">{action.status}</span>}
+							{action.compatibility && <span className="cap-source-badge">{pluginCompatibilityLabel(action.compatibility, t)}</span>}
 							{action.source && <span className="cap-plugin-action__source">{action.source}</span>}
+							{asArray(action.mappedCapabilities).length > 0 && <span className="cap-plugin-action__source">{t("caps.pluginMappedCapabilities", { capabilities: asArray(action.mappedCapabilities).join(", ") })}</span>}
+							{asArray(action.skippedCapabilities).map((issue, issueIndex) => <span className="cap-plugin-plan__warning" key={`${issue.capability}-${issue.path || ""}-${issueIndex}`}>{issue.capability}: {issue.reason}</span>)}
 							{action.message && <span className="cap-plugin-action__source">{action.message}</span>}
 							{action.error && <span className="cap-plugin-plan__warning">{action.error}</span>}
 						</div>
@@ -1961,6 +1972,7 @@ function PluginRow({
 						<div className="cap-row__head">
 							<span className="cap-row__name">{plugin.name}</span>
 							{plugin.manifestKind && <span className="cap-row__transport">{plugin.manifestKind}</span>}
+							{plugin.compatibility && <span className="cap-source-badge">{pluginCompatibilityLabel(plugin.compatibility, t)}</span>}
 							{plugin.version && <span className="cap-source-badge">{plugin.version}</span>}
 							{warnings.length > 0 && <span className="cap-row__update cap-row__update--error">{t("caps.pluginWarnings", { count: warnings.length })}</span>}
 						</div>
@@ -2008,7 +2020,11 @@ function PluginRow({
 						)}
 					</div>
 					{plugin.description && <div className="cap-plugin-description">{plugin.description}</div>}
+					{asArray(plugin.mappedCapabilities).length > 0 && <div className="cap-plugin-description">{t("caps.pluginMappedCapabilities", { capabilities: asArray(plugin.mappedCapabilities).join(", ") })}</div>}
 					<PluginUsageDetails plugin={plugin} />
+					{asArray(plugin.skippedCapabilities).map((issue, idx) => (
+						<div className="cap-source__warning" key={`${issue.capability}-${issue.path || ""}-${idx}`}>{t("caps.pluginSkippedCapability", { capability: issue.capability, reason: issue.reason })}</div>
+					))}
 					{diagnostic?.error && <div className="cap-source__warning">{diagnostic.error}</div>}
 					{warnings.map((warning, idx) => (
 						<div className="cap-source__warning" key={`${plugin.name}-warning-${idx}`}>{warning}</div>
@@ -2038,10 +2054,11 @@ function PluginRow({
 function PluginUsageDetails({ plugin }: { plugin: PluginView }) {
 	const t = useT();
 	const skills = asArray(plugin.skillDetails);
+	const agents = asArray(plugin.agentDetails);
 	const commands = asArray(plugin.commandDetails);
 	const hooks = asArray(plugin.hookDetails);
 	const mcps = asArray(plugin.mcpServerDetails);
-	const hasDetails = skills.length > 0 || commands.length > 0 || hooks.length > 0 || mcps.length > 0;
+	const hasDetails = skills.length > 0 || agents.length > 0 || commands.length > 0 || hooks.length > 0 || mcps.length > 0;
 	return (
 		<div className="cap-plugin-usage">
 			<div className="cap-plugin-usage__title">{t("caps.pluginUsageTitle")}</div>
@@ -2052,12 +2069,34 @@ function PluginUsageDetails({ plugin }: { plugin: PluginView }) {
 				<div className="cap-plugin-capabilities">
 					{commands.length > 0 && <PluginCommandList commands={commands} />}
 					{skills.length > 0 && <PluginSkillList skills={skills} />}
+					{agents.length > 0 && <PluginAgentList agents={agents} />}
 					{hooks.length > 0 && <PluginHookList hooks={hooks} />}
 					{mcps.length > 0 && <PluginMCPList servers={mcps} />}
 				</div>
 			) : (
 				<div className="cap-plugin-usage__empty">{t("caps.pluginNoCapabilityDetails")}</div>
 			)}
+		</div>
+	);
+}
+
+function PluginAgentList({ agents }: { agents: PluginAgentView[] }) {
+	const t = useT();
+	return (
+		<div className="cap-plugin-capability">
+			<div className="cap-plugin-capability__head">{t("caps.pluginAgentsTitle")}</div>
+			<div className="cap-plugin-capability__hint">{t("caps.pluginAgentsHint")}</div>
+			<div className="cap-plugin-capability__list">
+				{agents.map((agent) => (
+					<div className="cap-plugin-capability__item" key={`${agent.name}-${agent.path || ""}`}>
+						<div className="cap-plugin-capability__line">
+							<span className="cap-plugin-capability__name">{agent.invocation || agent.name}</span>
+							{agent.model && <span className="cap-source-badge">{agent.model}</span>}
+						</div>
+						<div className="cap-plugin-capability__desc">{agent.description || t("caps.pluginNoDescription")}</div>
+					</div>
+				))}
+			</div>
 		</div>
 	);
 }
@@ -2146,10 +2185,11 @@ function PluginMCPList({ servers }: { servers: PluginMCPServerView[] }) {
 				{servers.map((server) => (
 					<div className="cap-plugin-capability__item" key={server.name}>
 						<div className="cap-plugin-capability__line">
-							<span className="cap-plugin-capability__name">{server.name}</span>
+							<span className="cap-plugin-capability__name">{server.displayName || server.name}</span>
 							{server.transport && <span className="cap-source-badge">{server.transport}</span>}
+							<span className="cap-source-badge">{server.autoStart ? t("caps.pluginMCPAutoStart") : t("caps.pluginMCPOnDemand")}</span>
 						</div>
-						<div className="cap-plugin-capability__desc">{server.command || server.url || t("caps.pluginMCPNoTarget")}</div>
+						<div className="cap-plugin-capability__desc">{server.description || server.command || server.url || t("caps.pluginMCPNoTarget")}</div>
 					</div>
 				))}
 			</div>
@@ -2169,9 +2209,11 @@ function normalizePluginView(plugin: PluginView): PluginView {
 		enabled: Boolean(plugin.enabled),
 		skills: Number.isFinite(plugin.skills) ? plugin.skills : 0,
 		commands: Number.isFinite(plugin.commands) ? plugin.commands : 0,
+		agents: Number.isFinite(plugin.agents) ? plugin.agents : 0,
 		hooks: Number.isFinite(plugin.hooks) ? plugin.hooks : 0,
 		mcpServers: Number.isFinite(plugin.mcpServers) ? plugin.mcpServers : 0,
 		skillDetails: asArray(plugin.skillDetails),
+		agentDetails: asArray(plugin.agentDetails),
 		commandDetails: asArray(plugin.commandDetails),
 		hookDetails: asArray(plugin.hookDetails),
 		mcpServerDetails: asArray(plugin.mcpServerDetails),
@@ -2200,8 +2242,15 @@ function pluginListSummary(plugins: PluginView[], t: ReturnType<typeof useT>): s
 }
 
 function pluginCapabilitiesSummary(plugin: PluginView, t: ReturnType<typeof useT>): string {
-	if (plugin.skills === 0 && plugin.hooks === 0 && plugin.mcpServers === 0) return t("caps.pluginNoCapabilities");
-	return t("caps.pluginCounts", { skills: plugin.skills, hooks: plugin.hooks, mcps: plugin.mcpServers });
+	if (plugin.skills === 0 && (plugin.agents || 0) === 0 && (plugin.commands || 0) === 0 && plugin.hooks === 0 && plugin.mcpServers === 0) return t("caps.pluginNoCapabilities");
+	return t("caps.pluginCounts", { skills: plugin.skills, agents: plugin.agents || 0, commands: plugin.commands || 0, hooks: plugin.hooks, mcps: plugin.mcpServers });
+}
+
+function pluginCompatibilityLabel(status: string, t: ReturnType<typeof useT>): string {
+	if (status === "full") return t("caps.pluginCompatibilityFull");
+	if (status === "partial") return t("caps.pluginCompatibilityPartial");
+	if (status === "none") return t("caps.pluginCompatibilityNone");
+	return status;
 }
 
 function pluginWarnings(plugin: PluginView, diagnostic?: PluginView): string[] {
@@ -2223,6 +2272,10 @@ function parsePluginInstallPlan(raw: string): PluginInstallPlanView {
 				status: stringValue(item.status),
 				message: stringValue(item.message),
 				error: stringValue(item.error),
+				compatibility: stringValue(item.compatibility),
+				mappedCapabilities: (Array.isArray(item.mappedCapabilities) ? item.mappedCapabilities : []).filter((value): value is string => typeof value === "string"),
+				skippedCapabilities: (Array.isArray(item.skippedCapabilities) ? item.skippedCapabilities : []) as PluginCompatibilityIssue[],
+				agentCount: numericValue(item.agentCount), skillCount: numericValue(item.skillCount), commandCount: numericValue(item.commandCount), hookCount: numericValue(item.hookCount), toolCount: numericValue(item.toolCount),
 			}];
 		});
 		return {
@@ -2237,6 +2290,10 @@ function parsePluginInstallPlan(raw: string): PluginInstallPlanView {
 	} catch {
 		return { raw, actions: [], warnings: [] };
 	}
+}
+
+function numericValue(value: unknown): number | undefined {
+	return typeof value === "number" && Number.isFinite(value) ? value : undefined;
 }
 
 function stringValue(value: unknown): string | undefined {
