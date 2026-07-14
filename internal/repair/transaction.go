@@ -179,7 +179,9 @@ func UndoLastRepair() (*RepairTransaction, error) {
 		if change.RemoveOnUndo || change.Undone {
 			continue
 		}
-		if _, err := os.Stat(change.PreviousPath); err != nil {
+		// Lstat: a quarantined symlink counts as present even when its link
+		// target is gone — undo restores the link itself, not the target.
+		if _, err := os.Lstat(change.PreviousPath); err != nil {
 			return nil, fmt.Errorf("undo repair: previous file %s: %w", change.PreviousPath, err)
 		}
 	}
@@ -200,7 +202,9 @@ func UndoLastRepair() (*RepairTransaction, error) {
 			continue
 		}
 		redo := ""
-		if _, err := os.Stat(change.TargetPath); err == nil {
+		// Lstat so a dangling symlink at the target is still moved aside
+		// instead of being clobbered by the restore below.
+		if _, err := os.Lstat(change.TargetPath); err == nil {
 			// Index suffix keeps redo names unique when one undo touches the
 			// same target twice (e.g. quarantine + snapshot restore): a shared
 			// name would silently overwrite the earlier redo copy.
@@ -219,19 +223,34 @@ func UndoLastRepair() (*RepairTransaction, error) {
 		// disk: consuming the backup first (rename or delete) would leave an
 		// unresumable transaction if the process died before markUndone, since
 		// the retry's preflight requires the backup of every un-undone change.
-		b, err := os.ReadFile(change.PreviousPath)
-		mode := os.FileMode(0o600)
-		if st, statErr := os.Stat(change.PreviousPath); statErr == nil {
-			mode = st.Mode().Perm()
-		}
-		if err == nil {
-			err = fileutil.AtomicWriteFile(change.TargetPath, b, mode)
-		}
-		if err != nil {
+		restoreErr := func() error {
+			info, err := os.Lstat(change.PreviousPath)
+			if err != nil {
+				return err
+			}
+			if info.Mode()&os.ModeSymlink != 0 {
+				// A quarantined symlink (e.g. a dotfiles-managed config.toml)
+				// must come back as a symlink: ReadFile would follow it and
+				// materialize a regular file, permanently severing the link.
+				// Recreating a symlink is a single atomic syscall, so the
+				// crash-safety of the copy path is preserved.
+				linkTarget, err := os.Readlink(change.PreviousPath)
+				if err != nil {
+					return err
+				}
+				return os.Symlink(linkTarget, change.TargetPath)
+			}
+			b, err := os.ReadFile(change.PreviousPath)
+			if err != nil {
+				return err
+			}
+			return fileutil.AtomicWriteFile(change.TargetPath, b, info.Mode().Perm())
+		}()
+		if restoreErr != nil {
 			if redo != "" {
 				_ = os.Rename(redo, change.TargetPath)
 			}
-			return nil, fmt.Errorf("undo repair: restore %s: %w", change.TargetPath, err)
+			return nil, fmt.Errorf("undo repair: restore %s: %w", change.TargetPath, restoreErr)
 		}
 		if err := markUndone(i); err != nil {
 			return nil, err

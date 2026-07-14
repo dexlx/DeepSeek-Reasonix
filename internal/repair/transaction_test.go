@@ -50,6 +50,77 @@ func TestUndoLastRepairKeepsBackupUntilProgressPersisted(t *testing.T) {
 	}
 }
 
+// TestUndoLastRepairRestoresSymlink pins that undoing a repair of a
+// symlink-managed config (dotfiles setups) restores the symlink itself: the
+// quarantine rename moved the link, so undo must recreate a link, not
+// materialize the followed content as a regular file.
+func TestUndoLastRepairRestoresSymlink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	configPath := config.UserConfigPath()
+	linkTarget := filepath.Join(t.TempDir(), "dotfiles-config.toml")
+	if err := os.WriteFile(linkTarget, []byte("linked"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	quarantine := configPath + ".reasonix-quarantine-20260714T000000Z"
+	// The repair's os.Rename moves the link itself into quarantine.
+	if err := os.Symlink(linkTarget, quarantine); err != nil {
+		t.Fatal(err)
+	}
+	// The repair then materialized a regular replacement config.
+	if err := os.WriteFile(configPath, []byte("repaired"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	tx := newRepairTransaction(time.Now())
+	tx.Changes = []RepairChange{{Scope: "global", TargetPath: configPath, PreviousPath: quarantine}}
+	if err := persistRepairTransaction(tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoLastRepair(); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(configPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("undo materialized a regular file, want symlink (mode %v)", info.Mode())
+	}
+	if got, err := os.Readlink(configPath); err != nil || got != linkTarget {
+		t.Fatalf("restored link target = %q (%v), want %q", got, err, linkTarget)
+	}
+	if got, _ := os.ReadFile(configPath); string(got) != "linked" {
+		t.Fatalf("config content through link = %q", got)
+	}
+	if _, err := os.Lstat(quarantine); !os.IsNotExist(err) {
+		t.Fatalf("quarantined link not cleaned up: %v", err)
+	}
+}
+
+// A dangling quarantined symlink must still be restorable: preflight and
+// restore must not follow the link when judging its presence.
+func TestUndoLastRepairRestoresDanglingSymlink(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	configPath := config.UserConfigPath()
+	linkTarget := filepath.Join(t.TempDir(), "missing-config.toml")
+	quarantine := configPath + ".reasonix-quarantine-20260714T000000Z"
+	if err := os.Symlink(linkTarget, quarantine); err != nil {
+		t.Fatal(err)
+	}
+	tx := newRepairTransaction(time.Now())
+	tx.Changes = []RepairChange{{Scope: "global", TargetPath: configPath, PreviousPath: quarantine}}
+	if err := persistRepairTransaction(tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoLastRepair(); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := os.Readlink(configPath); err != nil || got != linkTarget {
+		t.Fatalf("restored dangling link target = %q (%v), want %q", got, err, linkTarget)
+	}
+}
+
 // TestUndoLastRepairKeepsDistinctRedoCopiesForSharedTarget pins that one undo
 // touching the same target twice (quarantine + snapshot restore) retains a
 // separate redo copy per change instead of silently overwriting the first.
