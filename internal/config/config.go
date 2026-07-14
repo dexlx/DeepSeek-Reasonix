@@ -68,6 +68,13 @@ type Config struct {
 	expansionEnv               map[string]string
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
+	safeMode                   bool
+}
+
+// SafeMode reports whether this configuration was built for recovery startup.
+// It is process-local runtime state and is never persisted to TOML.
+func (c *Config) SafeMode() bool {
+	return c != nil && c.safeMode
 }
 
 // IgnoredProjectDefaultModel returns the project reasonix.toml default_model

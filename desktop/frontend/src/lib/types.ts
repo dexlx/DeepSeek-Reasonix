@@ -1383,6 +1383,7 @@ export interface DesktopStartupSettingsView {
   statusBarStyle: string; // "icon" | "text"
   statusBarItems: string[]; // ordered visible status bar item ids
   checkUpdates: boolean; // check for new versions on startup
+  safeMode?: boolean; // recovery startup with external integrations disabled
 }
 
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;

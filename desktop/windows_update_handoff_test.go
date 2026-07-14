@@ -43,8 +43,10 @@ func TestWindowsInstallerScriptWaitsBeforeCopyingExecutable(t *testing.T) {
 	script := string(data)
 	for _, want := range []string{
 		`!define REASONIX_UPDATE_HELPER "reasonix-update-helper.exe"`,
+		`!define REASONIX_LAUNCHER "reasonix-launcher.exe"`,
 		"Function reasonix.waitForExecutableUnlock",
 		`FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a`,
+		`FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a`,
 		"SetErrorLevel 1618",
 		"Call reasonix.waitForExecutableUnlock",
 		`File "/oname=${REASONIX_UPDATE_HELPER}" "${REASONIX_UPDATE_HELPER}"`,

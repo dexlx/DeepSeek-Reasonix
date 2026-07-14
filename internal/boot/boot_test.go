@@ -1313,6 +1313,36 @@ api_key_env = "REASONIX_TEST_KEY_UNSET"
 	}
 }
 
+func TestBuildSafeModeSkipsSkillDiscovery(t *testing.T) {
+	dir := robustTempDir(t)
+	home := robustTempDir(t)
+	t.Setenv("HOME", home)
+	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, ".config"))
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	t.Chdir(dir)
+	writeFile(t, dir, ".reasonix/skills/project-skill.md", "---\ndescription: project skill\n---\nplaybook")
+	writeFile(t, home, ".reasonix/skills/global-skill.md", "---\ndescription: global skill\n---\nplaybook")
+
+	ctrl, err := Build(context.Background(), Options{SessionDir: filepath.Join(t.TempDir(), "sessions")})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+
+	if skills := ctrl.Skills(); len(skills) != 0 {
+		t.Fatalf("safe mode skills = %+v, want none", skills)
+	}
+	if skills := ctrl.AllSkills(); len(skills) != 0 {
+		t.Fatalf("safe mode all skills = %+v, want none", skills)
+	}
+	if skills := ctrl.SlashSkills(); len(skills) != 0 {
+		t.Fatalf("safe mode slash skills = %+v, want none", skills)
+	}
+	if sys := systemMessage(ctrl.History()); strings.Contains(sys, "# Skills") || strings.Contains(sys, "project-skill") || strings.Contains(sys, "global-skill") {
+		t.Fatalf("safe mode system prompt contains skills:\n%s", sys)
+	}
+}
+
 func TestBuildKeepsPluginSkillModelNameBareAndSlashNameQualified(t *testing.T) {
 	dir := robustTempDir(t)
 	home := robustTempDir(t)

@@ -78,6 +78,8 @@ Name "${INFO_PRODUCTNAME}"
 OutFile "..\..\bin\${INFO_PROJECTNAME}-${ARCH}-installer.exe" # Name of the installer's file.
 !define REASONIX_DEFAULT_INSTALLDIR "$LOCALAPPDATA\Programs\${INFO_PRODUCTNAME}"
 !define REASONIX_UPDATE_HELPER "reasonix-update-helper.exe"
+!define REASONIX_GUARD "reasonix-guard.exe"
+!define REASONIX_LAUNCHER "reasonix-launcher.exe"
 !define REASONIX_UNLOCK_RETRIES 60
 InstallDirRegKey HKCU "${UNINST_KEY}" "InstallLocation" # Reuse the previous install path on update; .onInit falls back to the default on first install.
 InstallDir "${REASONIX_DEFAULT_INSTALLDIR}" # Per-user install location (no admin rights required).
@@ -142,6 +144,11 @@ retry:
    FileOpen $1 "$INSTDIR\${PRODUCT_EXECUTABLE}" a
    IfErrors locked
    FileClose $1
+   IfFileExists "$INSTDIR\${REASONIX_LAUNCHER}" 0 done
+   ClearErrors
+   FileOpen $1 "$INSTDIR\${REASONIX_LAUNCHER}" a
+   IfErrors locked
+   FileClose $1
    Goto done
 
 locked:
@@ -181,9 +188,17 @@ Section
     !else
     !warning "${REASONIX_UPDATE_HELPER} was not found; Windows auto-update will fall back to installer-side waiting only."
     !endif
-
+    !if /FileExists "${REASONIX_GUARD}"
+    File "/oname=${REASONIX_GUARD}" "${REASONIX_GUARD}"
+    !endif
+    !if /FileExists "${REASONIX_LAUNCHER}"
+    File "/oname=${REASONIX_LAUNCHER}" "${REASONIX_LAUNCHER}"
+    CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "launch --detach"
+    CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${REASONIX_LAUNCHER}" "launch --detach"
+    !else
     CreateShortcut "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
     CreateShortCut "$DESKTOP\${INFO_PRODUCTNAME}.lnk" "$INSTDIR\${PRODUCT_EXECUTABLE}"
+    !endif
 
     !insertmacro wails.associateFiles
     !insertmacro wails.associateCustomProtocols
@@ -199,6 +214,8 @@ Section "uninstall"
     ; Precision uninstall: delete main application files
     Delete "$INSTDIR\${PRODUCT_EXECUTABLE}"
     Delete "$INSTDIR\${REASONIX_UPDATE_HELPER}"
+    Delete "$INSTDIR\${REASONIX_GUARD}"
+    Delete "$INSTDIR\${REASONIX_LAUNCHER}"
 
     Delete "$SMPROGRAMS\${INFO_PRODUCTNAME}.lnk"
     Delete "$DESKTOP\${INFO_PRODUCTNAME}.lnk"

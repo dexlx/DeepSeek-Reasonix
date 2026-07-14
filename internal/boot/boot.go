@@ -169,7 +169,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// One-time import of v1/v0.5 legacy config — runs before Load so the freshly
 	// written config + ~/.env are picked up this same boot. CLI Run also calls this
 	// before config-only commands; this call stays as the shared frontend fallback.
-	migrated, migErr := config.MigrateLegacyIfNeededForRoot(root)
+	var migrated *config.MigrationResult
+	var migErr error
+	if !config.SafeModeRequested() {
+		migrated, migErr = config.MigrateLegacyIfNeededForRoot(root)
+	}
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
 		return nil, err
@@ -335,7 +339,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// durable, cache-stable prefix every turn reuses, so memory costs nothing per
 	// turn. Mid-session changes never touch this prefix — they ride the
 	// controller's transient turn-injection and fold in on the next session.
-	mem := memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
+	mem := &memory.Set{CWD: root}
+	if !cfg.SafeMode() {
+		mem = memory.Load(memory.Options{CWD: root, UserDir: config.MemoryUserDir()})
+	}
 	projectChecks := instruction.ExtractHostChecks(mem.Docs)
 	sysPrompt = memory.Compose(sysPrompt, mem)
 
@@ -344,22 +351,26 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// only; bodies load on demand via run_skill or "/<name>". Bodies never enter
 	// the prefix, so the index costs a fixed, small amount per turn.
 	skillStore := skill.New(skill.Options{
-		ProjectRoot:   root,
-		CustomPaths:   cfg.SkillCustomPaths(),
-		PluginPaths:   cfg.PluginPackageSkillOwners(),
-		ExcludedPaths: cfg.SkillExcludedPaths(),
-		DisabledNames: cfg.DisabledSkillNames(),
-		MaxDepth:      cfg.SkillMaxDepth(),
-		Stderr:        opts.Stderr,
+		ProjectRoot:      root,
+		CustomPaths:      cfg.SkillCustomPaths(),
+		PluginPaths:      cfg.PluginPackageSkillOwners(),
+		ExcludedPaths:    cfg.SkillExcludedPaths(),
+		DisabledNames:    cfg.DisabledSkillNames(),
+		MaxDepth:         cfg.SkillMaxDepth(),
+		DisableDiscovery: cfg.SafeMode(),
+		Stderr:           opts.Stderr,
 	})
 	// Install the static profile filter before building the prompt index and
 	// dedicated skill tools. The dependency checker is attached once the live
 	// registry/plugin host has been assembled below.
 	skillStore.ConfigureInvocationPolicy(string(runtimeProfile), nil)
 	skills := skillStore.List()
-	allSkillStore := skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
+	allSkillStore := skillStore
+	if !cfg.SafeMode() {
+		allSkillStore = skill.New(skill.Options{ProjectRoot: root, CustomPaths: cfg.SkillCustomPaths(), PluginPaths: cfg.PluginPackageSkillOwners(), ExcludedPaths: cfg.SkillExcludedPaths(), MaxDepth: cfg.SkillMaxDepth(), Stderr: io.Discard})
+	}
 	allSkills := allSkillStore.List()
-	if !tokenEconomy {
+	if !tokenEconomy && !cfg.SafeMode() {
 		sysPrompt = skill.ApplyIndex(sysPrompt, skills)
 	}
 
@@ -624,13 +635,17 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// a Notice through the shared sink. The runner fires PreToolUse/PostToolUse in
 	// the agent loop and PermissionRequest/UserPromptSubmit/Stop at the controller
 	// boundary.
-	hooksTrusted := hook.IsTrusted(root, "")
+	hooksTrusted := !cfg.SafeMode() && hook.IsTrusted(root, "")
+	var resolvedHooks []hook.ResolvedHook
+	if !cfg.SafeMode() {
+		resolvedHooks = hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted})
+	}
 	hookRunner := hook.NewRunner(
-		hook.Load(hook.LoadOptions{ProjectRoot: root, Trusted: hooksTrusted}),
+		resolvedHooks,
 		root, nil,
 		func(msg string) { sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: msg}) },
 	)
-	if hook.ProjectDefinesHooks(root) && !hooksTrusted {
+	if !cfg.SafeMode() && hook.ProjectDefinesHooks(root) && !hooksTrusted {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 			Text: "this project defines hooks but they are not trusted — run /hooks trust to enable them"})
 	}
@@ -925,7 +940,10 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	// Custom slash commands (.reasonix/commands + user dir). Best-effort: a malformed
 	// file is skipped, and a load error never blocks the session.
-	cmds, _ := command.LoadRoots(config.CommandRootsForRoot(root)...)
+	cmds := []command.Command{}
+	if !cfg.SafeMode() {
+		cmds, _ = command.LoadRoots(config.CommandRootsForRoot(root)...)
+	}
 	addSlashCommandTool := func(includeSkills bool) {
 		// Expose loaded slash commands to the model via slash_command. In economy
 		// mode skills join this list only after the skills source is enabled.
@@ -1023,7 +1041,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		addSlashCommandTool(true)
 		return "enabled skills. Use run_skill/read_skill/read_only_skill or the dedicated skill tools on the next model request.\n\n" + skill.IndexBlock(skills)
 	}
-	if tokenEconomy {
+	if cfg.SafeMode() {
+		addSlashCommandTool(false)
+	} else if tokenEconomy {
 		addSlashCommandTool(false)
 	} else {
 		addInstallSourceTool()

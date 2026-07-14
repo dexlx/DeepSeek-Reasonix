@@ -595,11 +595,22 @@ func applyLinux(targz []byte) error {
 	if err != nil {
 		return err
 	}
+	guard, err := extractBinary(targz, "reasonix-guard")
+	if err != nil {
+		return err
+	}
+	exe := currentExecutablePath()
+	if exe == "" {
+		return fmt.Errorf("update: current executable path is unavailable")
+	}
+	if err := writeAtomic(filepath.Join(filepath.Dir(exe), "reasonix-guard"), guard, 0o700); err != nil {
+		return fmt.Errorf("update Guard: %w", err)
+	}
 	return selfupdate.Apply(bytes.NewReader(bin), selfupdate.Options{})
 }
 
 func applyWindowsFile(path string) error {
-	return startWindowsUpdateHandoff(path, currentInstallDir(), currentExecutablePath())
+	return startWindowsUpdateHandoff(path, currentInstallDir(), currentLauncherPath())
 }
 
 func currentExecutablePath() string {
@@ -624,13 +635,43 @@ func currentInstallDir() string {
 	return filepath.Dir(exe)
 }
 
-// relaunch starts a fresh copy of the (just-replaced) executable.
-func relaunch() error {
+// relaunchThroughGuard starts the packaged launcher so the replacement build is
+// covered by the same crash-loop and rollback policy as a normal app launch.
+func relaunchThroughGuard() error {
 	exe, err := os.Executable()
 	if err != nil {
 		return err
 	}
-	cmd := exec.Command(exe)
+	launcher := filepath.Join(filepath.Dir(exe), "reasonix-guard")
+	if runtime.GOOS == "windows" {
+		launcher += ".exe"
+	}
+	if _, statErr := os.Stat(launcher); statErr != nil {
+		launcher = exe
+	}
+	cmd := exec.Command(launcher, "launch", "--detach")
 	cmd.Stdout, cmd.Stderr, cmd.Stdin = os.Stdout, os.Stderr, os.Stdin
 	return cmd.Start()
+}
+
+func currentLauncherPath() string {
+	exe := currentExecutablePath()
+	if exe == "" {
+		return ""
+	}
+	name := "reasonix-guard"
+	if runtime.GOOS == "windows" {
+		name = "reasonix-launcher.exe"
+	}
+	launcher := filepath.Join(filepath.Dir(exe), name)
+	if _, err := os.Stat(launcher); err == nil {
+		return launcher
+	}
+	if runtime.GOOS == "windows" {
+		guard := filepath.Join(filepath.Dir(exe), "reasonix-guard.exe")
+		if _, err := os.Stat(guard); err == nil {
+			return guard
+		}
+	}
+	return exe
 }
