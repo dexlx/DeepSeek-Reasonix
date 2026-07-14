@@ -192,11 +192,19 @@ func UndoLastRepair() (*RepairTransaction, error) {
 	for i := len(tx.Changes) - 1; i >= 0; i-- {
 		change := tx.Changes[i]
 		if change.Undone {
+			// Progress was persisted but the backup removal may have been cut
+			// short by a crash; finish the cleanup the completed step owed.
+			if !change.RemoveOnUndo && change.PreviousPath != "" {
+				_ = os.Remove(change.PreviousPath)
+			}
 			continue
 		}
 		redo := ""
 		if _, err := os.Stat(change.TargetPath); err == nil {
-			redo = change.TargetPath + ".reasonix-redo-" + now.Format("20060102T150405Z")
+			// Index suffix keeps redo names unique when one undo touches the
+			// same target twice (e.g. quarantine + snapshot restore): a shared
+			// name would silently overwrite the earlier redo copy.
+			redo = fmt.Sprintf("%s.reasonix-redo-%s-%d", change.TargetPath, now.Format("20060102T150405.000000000Z"), i)
 			if err := os.Rename(change.TargetPath, redo); err != nil {
 				return nil, fmt.Errorf("undo repair: retain current file: %w", err)
 			}
@@ -207,24 +215,19 @@ func UndoLastRepair() (*RepairTransaction, error) {
 			}
 			continue
 		}
-		if isRestoreBackupPath(change.PreviousPath) {
-			b, err := os.ReadFile(change.PreviousPath)
-			if err == nil {
-				err = fileutil.AtomicWriteFile(change.TargetPath, b, 0o600)
-			}
-			if err != nil {
-				if redo != "" {
-					_ = os.Rename(redo, change.TargetPath)
-				}
-				return nil, fmt.Errorf("undo repair: restore %s: %w", change.TargetPath, err)
-			}
-			_ = os.Remove(change.PreviousPath)
-			if err := markUndone(i); err != nil {
-				return nil, err
-			}
-			continue
+		// Restore by copy and keep the backup until the progress record is on
+		// disk: consuming the backup first (rename or delete) would leave an
+		// unresumable transaction if the process died before markUndone, since
+		// the retry's preflight requires the backup of every un-undone change.
+		b, err := os.ReadFile(change.PreviousPath)
+		mode := os.FileMode(0o600)
+		if st, statErr := os.Stat(change.PreviousPath); statErr == nil {
+			mode = st.Mode().Perm()
 		}
-		if err := os.Rename(change.PreviousPath, change.TargetPath); err != nil {
+		if err == nil {
+			err = fileutil.AtomicWriteFile(change.TargetPath, b, mode)
+		}
+		if err != nil {
 			if redo != "" {
 				_ = os.Rename(redo, change.TargetPath)
 			}
@@ -233,6 +236,7 @@ func UndoLastRepair() (*RepairTransaction, error) {
 		if err := markUndone(i); err != nil {
 			return nil, err
 		}
+		_ = os.Remove(change.PreviousPath)
 	}
 	tx.Undone = true
 	tx.UndoneAt = now.Format(time.RFC3339Nano)
@@ -240,14 +244,4 @@ func UndoLastRepair() (*RepairTransaction, error) {
 		return nil, err
 	}
 	return tx, nil
-}
-
-func isRestoreBackupPath(path string) bool {
-	root := config.MemoryUserDir()
-	if root == "" {
-		return false
-	}
-	restoreRoot := filepath.Join(root, "repair", "restore-backups")
-	rel, err := filepath.Rel(filepath.Clean(restoreRoot), filepath.Clean(path))
-	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }

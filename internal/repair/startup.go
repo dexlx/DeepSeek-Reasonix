@@ -79,7 +79,29 @@ func (t *StartupTracker) SafeModeRecommended() bool {
 	return nextFailureCount(state, t.now(), defaultCrashWindow) >= defaultFailureLimit
 }
 
+// lock serializes the tracker's cross-process read-modify-write cycles. Lock
+// failures degrade to lock-free operation: startup must never be wedged by a
+// lock problem, and the pre-lock behavior is the acceptable fallback.
+func (t *StartupTracker) lock() func() {
+	if t.path == "" {
+		return func() {}
+	}
+	if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
+		return func() {}
+	}
+	unlock, err := lockStartupStateFile(t.path)
+	if err != nil {
+		return func() {}
+	}
+	return unlock
+}
+
 func (t *StartupTracker) Begin(version string, safeMode bool) (StartupState, error) {
+	// Two cold starts can race here before the Wails single-instance lock
+	// exists; the file lock makes read-check-write atomic so the loser cannot
+	// clobber the winner's record (the loser exits via os.Exit soon after).
+	unlock := t.lock()
+	defer unlock()
 	now := t.now().UTC()
 	previous, err := t.Read()
 	if err != nil {
@@ -146,9 +168,18 @@ func (t *StartupTracker) MarkFailed(err error) error {
 }
 
 func (t *StartupTracker) transition(phase, message string) error {
+	unlock := t.lock()
+	defer unlock()
 	state, err := t.Read()
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
 		return err
+	}
+	// Ownership: never rewrite a record owned by another live process (a
+	// duplicate REASONIX_DEV instance, or a raced cold start about to exit).
+	// Records left by dead owners may transition freely — Guard's post-rollback
+	// MarkClean legitimately clears a crashed desktop's state.
+	if state.PID > 0 && state.PID != os.Getpid() && t.processAlive(state.PID) {
+		return nil
 	}
 	state.SchemaVersion = startupStateVersion
 	state.Phase = phase

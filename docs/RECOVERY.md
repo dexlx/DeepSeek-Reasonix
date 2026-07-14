@@ -70,9 +70,12 @@ also replaces (Windows and Linux) — or the application bundle (macOS). The
 backups remain until the replacement build reaches `healthy` or exits cleanly.
 If the replacement enters the startup failure threshold, Guard verifies every
 backup hash and restores all recorded binaries together before launching, so a
-rollback never produces a mixed-version install. Update metadata and hashes are
-stored under the Reasonix repair state; arbitrary backup or target paths are
-rejected.
+rollback never produces a mixed-version install. When the Windows installer
+itself fails after the desktop has exited, the update helper records the
+failure and relaunches Guard, which performs the same full rollback immediately
+instead of waiting for a crash loop. Update metadata and hashes are stored
+under the Reasonix repair state; arbitrary backup or target paths are rejected,
+and unhashed backups are refused.
 
 ## Optional AI assistance
 

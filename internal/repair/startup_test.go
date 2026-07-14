@@ -2,7 +2,9 @@ package repair
 
 import (
 	"errors"
+	"os"
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -130,6 +132,71 @@ func TestStartupTrackerIgnoresDuplicateLaunchesWhileHealthy(t *testing.T) {
 	}
 	if tracker.SafeModeRecommended() {
 		t.Fatal("duplicate launches during a healthy run triggered safe mode")
+	}
+}
+
+// TestStartupTrackerBeginSerializesConcurrentColdStarts pins the file-lock
+// contract: racing cold starts must serialize their read-modify-write cycles,
+// so every Begin lands one increment instead of losing updates.
+func TestStartupTrackerBeginSerializesConcurrentColdStarts(t *testing.T) {
+	now := time.Date(2026, 7, 14, 10, 0, 0, 0, time.UTC)
+	tracker := NewStartupTracker(filepath.Join(t.TempDir(), "startup.json"))
+	tracker.now = func() time.Time { return now }
+	tracker.processAlive = func(int) bool { return false }
+	const launches = 8
+	var wg sync.WaitGroup
+	for i := 0; i < launches; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := tracker.Begin("v1", false); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	state, err := tracker.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if state.ConsecutiveFailures != launches {
+		t.Fatalf("consecutive failures = %d, want %d (lost update under concurrency)", state.ConsecutiveFailures, launches)
+	}
+}
+
+// TestStartupTrackerTransitionRefusesLiveForeignOwner pins the ownership rule:
+// a process must not rewrite a startup record owned by another live process,
+// while records left by dead owners stay transitionable (Guard's post-rollback
+// MarkClean).
+func TestStartupTrackerTransitionRefusesLiveForeignOwner(t *testing.T) {
+	tracker := NewStartupTracker(filepath.Join(t.TempDir(), "startup.json"))
+	foreign := os.Getpid() + 1
+	tracker.processAlive = func(pid int) bool { return pid == foreign }
+	state := StartupState{SchemaVersion: 1, Phase: "starting", PID: foreign, ConsecutiveFailures: 1}
+	if err := tracker.write(state); err != nil {
+		t.Fatal(err)
+	}
+	if err := tracker.MarkClean(); err != nil {
+		t.Fatal(err)
+	}
+	got, err := tracker.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != "starting" || got.PID != foreign {
+		t.Fatalf("live foreign owner's record was rewritten: %+v", got)
+	}
+	// Once the owner is dead the same transition must go through.
+	tracker.processAlive = func(int) bool { return false }
+	if err := tracker.MarkClean(); err != nil {
+		t.Fatal(err)
+	}
+	got, err = tracker.Read()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Phase != "clean-exit" || got.ConsecutiveFailures != 0 {
+		t.Fatalf("dead owner's record was not transitioned: %+v", got)
 	}
 }
 

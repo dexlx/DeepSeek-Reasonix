@@ -256,10 +256,12 @@ func RollbackPendingUpdate() (UpdateRollbackResult, error) {
 		}
 		// Verify every backup before touching any binary: a partial restore
 		// would recreate exactly the mixed-version install rollback exists to
-		// prevent.
+		// prevent. A missing hash is a validation failure, not a bypass —
+		// ReadPendingUpdate already rejects hashless file transactions, so
+		// this guards hand-crafted callers.
 		for _, f := range files {
-			if f.SHA256 == "" {
-				continue
+			if strings.TrimSpace(f.SHA256) == "" {
+				return result, fmt.Errorf("rollback update: backup hash missing for %s", filepath.Base(f.TargetPath))
 			}
 			got, hashErr := hashFile(f.BackupPath)
 			if hashErr != nil || !strings.EqualFold(got, f.SHA256) {
@@ -366,11 +368,19 @@ func validateUpdateTransaction(tx *UpdateTransaction) error {
 		if !insideRepairDir(tx.BackupPath) {
 			return fmt.Errorf("pending update backup is outside the repair directory")
 		}
+		// Every restorable file must carry a hash — rollback promises to
+		// verify all backups before touching any binary, so an unhashed entry
+		// would silently weaken that gate.
+		if strings.TrimSpace(tx.BackupSHA256) == "" {
+			return fmt.Errorf("pending update backup hash is missing")
+		}
+		primaryListed := len(tx.Files) == 0
 		for i := range tx.Files {
 			f := &tx.Files[i]
 			f.TargetPath = filepath.Clean(f.TargetPath)
 			f.BackupPath = filepath.Clean(f.BackupPath)
 			primary := f.TargetPath == tx.TargetPath
+			primaryListed = primaryListed || primary
 			if !allowedUpdateTargetBase(filepath.Base(f.TargetPath), primary) {
 				return fmt.Errorf("pending update lists an unexpected release file")
 			}
@@ -380,6 +390,12 @@ func validateUpdateTransaction(tx *UpdateTransaction) error {
 			if !insideRepairDir(f.BackupPath) {
 				return fmt.Errorf("pending update backup is outside the repair directory")
 			}
+			if strings.TrimSpace(f.SHA256) == "" {
+				return fmt.Errorf("pending update release file hash is missing")
+			}
+		}
+		if !primaryListed {
+			return fmt.Errorf("pending update release unit omits the primary executable")
 		}
 	case "app-bundle":
 		if !strings.HasSuffix(strings.ToLower(tx.TargetPath), ".app") || tx.BackupPath != tx.TargetPath+".reasonix-update-backup" {

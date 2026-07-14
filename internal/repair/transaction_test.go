@@ -9,6 +9,91 @@ import (
 	"reasonix/internal/config"
 )
 
+// TestUndoLastRepairKeepsBackupUntilProgressPersisted pins the crash-window
+// contract: a change that was fully restored but whose progress record never
+// reached disk (simulated by an unmarked change whose target already matches
+// the backup) must remain retryable, and backups are only removed after the
+// per-change progress is persisted.
+func TestUndoLastRepairKeepsBackupUntilProgressPersisted(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	windowPath := filepath.Join(home, "desktop-window.json")
+	quarantine := windowPath + ".reasonix-rebuild-20260714T000000Z"
+	// Simulate a crash after the restore copy but before markUndone: the
+	// target already holds the restored bytes, the backup still exists, and
+	// the change is not marked undone.
+	for path, body := range map[string]string{
+		windowPath: "old-window",
+		quarantine: "old-window",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx := newRepairTransaction(time.Now())
+	tx.Changes = []RepairChange{{Scope: "derived:window", TargetPath: windowPath, PreviousPath: quarantine}}
+	if err := persistRepairTransaction(tx); err != nil {
+		t.Fatal(err)
+	}
+	undone, err := UndoLastRepair()
+	if err != nil {
+		t.Fatalf("retry after simulated crash failed: %v", err)
+	}
+	if !undone.Undone {
+		t.Fatalf("transaction not marked undone: %+v", undone)
+	}
+	if got, _ := os.ReadFile(windowPath); string(got) != "old-window" {
+		t.Fatalf("window state = %q", got)
+	}
+	if _, err := os.Stat(quarantine); !os.IsNotExist(err) {
+		t.Fatalf("backup not cleaned up after completed undo: %v", err)
+	}
+}
+
+// TestUndoLastRepairKeepsDistinctRedoCopiesForSharedTarget pins that one undo
+// touching the same target twice (quarantine + snapshot restore) retains a
+// separate redo copy per change instead of silently overwriting the first.
+func TestUndoLastRepairKeepsDistinctRedoCopiesForSharedTarget(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	configPath := config.UserConfigPath()
+	quarantine := configPath + ".reasonix-quarantine-20260714T000000Z"
+	restoreBackup := filepath.Join(home, "repair", "restore-backups", "repair-2.toml")
+	if err := os.MkdirAll(filepath.Dir(restoreBackup), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for path, body := range map[string]string{
+		configPath:    "current",
+		quarantine:    "original",
+		restoreBackup: "pre-restore",
+	} {
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tx := newRepairTransaction(time.Now())
+	tx.Changes = []RepairChange{
+		{Scope: "global", TargetPath: configPath, PreviousPath: quarantine},
+		{Scope: "global", TargetPath: configPath, PreviousPath: restoreBackup},
+	}
+	if err := persistRepairTransaction(tx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := UndoLastRepair(); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(configPath); string(got) != "original" {
+		t.Fatalf("config after undo = %q", got)
+	}
+	redos, err := filepath.Glob(configPath + ".reasonix-redo-*")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(redos) != 2 {
+		t.Fatalf("redo copies = %v, want one per change", redos)
+	}
+}
+
 // TestUndoLastRepairResumesAfterPartialFailure pins the recoverable-undo
 // contract: a multi-change undo that fails partway persists per-change
 // progress, and a retry finishes the remaining changes instead of failing the

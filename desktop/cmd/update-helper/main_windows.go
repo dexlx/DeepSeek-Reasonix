@@ -13,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/windows"
+
+	"reasonix/internal/repair"
 )
 
 const parentExitTimeout = 2 * time.Minute
@@ -46,6 +48,19 @@ func run(args []string) int {
 	}
 	if err := runInstaller(installer, installDir); err != nil {
 		logger.Printf("run installer: %v", err)
+		// The desktop already exited cleanly, so nothing would notice this
+		// failure: record it and relaunch through Guard, which rolls the
+		// release unit back on startup (the helper itself runs from the cache
+		// directory, outside the validated install, and must not restore
+		// binaries directly).
+		if markErr := repair.MarkUpdateApplyFailed("", err.Error()); markErr != nil {
+			logger.Printf("record install failure: %v", markErr)
+		}
+		if relaunch != "" {
+			if relaunchErr := startRelaunch(relaunch, installDir); relaunchErr != nil {
+				logger.Printf("relaunch after failed install: %v", relaunchErr)
+			}
+		}
 		return 1
 	}
 	if relaunch != "" {

@@ -237,6 +237,14 @@ func runLaunch(args []string) int {
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
+	// An update helper that watched the installer fail records a marker (it
+	// cannot roll back itself from outside the install directory). Restore the
+	// previous release unit immediately instead of waiting for a crash loop.
+	if result, failure, err := repair.RecoverFailedInstall(); err != nil {
+		fmt.Fprintln(os.Stderr, "update rollback after failed install failed:", err)
+	} else if failure != nil && result.RolledBack {
+		fmt.Fprintf(os.Stderr, "Reasonix Guard restored %s after the %s installer failed.\n", result.ToVersion, result.FromVersion)
+	}
 	tracker := repair.NewStartupTracker("")
 	useSafeMode := *safeMode
 	if !*safeMode && tracker.SafeModeRecommended() {
