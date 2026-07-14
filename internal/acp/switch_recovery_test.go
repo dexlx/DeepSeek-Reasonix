@@ -125,7 +125,7 @@ func TestACPRebuildSessionContinuesRecoveryPathAfterSnapshotConflict(t *testing.
 	})
 	sess.ctrl = oldCtrl
 
-	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}); err != nil {
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{Model: "pro"}, sessionConfigDelta{axis: "model", model: "pro"}); err != nil {
 		t.Fatalf("rebuildSession: %v", err)
 	}
 	if sess.ctrl == oldCtrl {
@@ -345,5 +345,84 @@ func TestACPSessionListAfterRecoveryShowsSingleActiveEntry(t *testing.T) {
 	}
 	if sessions[0].Title != "recovered title" {
 		t.Fatalf("session list entry title = %q, want the active transcript's title %q", sessions[0].Title, "recovered title")
+	}
+}
+
+// profileSystemPromptFactory builds controllers whose leading system message
+// encodes the requested runtime profile, mirroring how boot.Build appends a
+// profile-specific contract to the system prompt (see boot/token_profile.go).
+// It lets a test check that a controller rebuild refreshes that contract
+// instead of carrying the outgoing profile's prompt forward.
+type profileSystemPromptFactory struct {
+	dir string
+}
+
+func (f *profileSystemPromptFactory) NewSession(_ context.Context, p SessionParams) (*control.Controller, error) {
+	prompt := "system prompt for profile " + p.RuntimeProfile
+	exec := agent.New(nil, nil, agent.NewSession(prompt), agent.Options{}, event.Discard)
+	return control.New(control.Options{Executor: exec, SessionDir: f.dir, Label: p.RuntimeProfile}), nil
+}
+
+func (f *profileSystemPromptFactory) SessionDir() string { return f.dir }
+
+// TestACPRebuildSessionRefreshesLeadingSystemPromptForNewProfile pins the fix
+// for the bug where a work-mode (runtime profile) switch rebuilt the
+// controller with the target profile's own system prompt, only for
+// AdoptHistory to immediately overwrite it with the carried history's
+// leading message — the outgoing profile's contract. The user-visible
+// symptom was that the model kept following the previous profile's
+// instructions after every switch.
+func TestACPRebuildSessionRefreshesLeadingSystemPromptForNewProfile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "acp-profile-switch.jsonl")
+
+	oldSession := agent.NewSession("system prompt for profile balanced")
+	oldSession.Add(provider.Message{Role: provider.RoleUser, Content: "hello"})
+	oldSession.Add(provider.Message{Role: provider.RoleAssistant, Content: "hi"})
+	if err := oldSession.Save(path); err != nil {
+		t.Fatalf("save base session: %v", err)
+	}
+
+	sink := newUpdateSink(&fakeNotifier{}, "sess-profile-switch")
+	sess := &acpSession{
+		id:             "sess-profile-switch",
+		sink:           sink,
+		cwd:            dir,
+		model:          "fast",
+		runtimeProfile: "balanced",
+		transcript:     path,
+	}
+	lease, err := agent.TryAcquireSessionLease(path)
+	if err != nil {
+		t.Fatalf("acquire session lease: %v", err)
+	}
+	sess.lease = lease
+	t.Cleanup(sess.releaseSessionLease)
+
+	sess.ctrl = control.New(control.Options{
+		Executor:    agent.New(nil, nil, oldSession, agent.Options{}, event.Discard),
+		SessionDir:  dir,
+		SessionPath: path,
+		Label:       "balanced",
+	})
+	svc := &service{
+		factory:  &profileSystemPromptFactory{dir: dir},
+		sessions: map[string]*acpSession{sess.id: sess},
+	}
+
+	delta := sessionConfigDelta{axis: "work_mode", runtimeProfile: "delivery"}
+	if err := svc.rebuildSession(context.Background(), sess, SessionConfigState{RuntimeProfile: "delivery"}, delta); err != nil {
+		t.Fatalf("rebuildSession: %v", err)
+	}
+
+	history := sess.currentCtrl().History()
+	if len(history) == 0 || history[0].Role != provider.RoleSystem {
+		t.Fatalf("history = %+v, want a leading system message", history)
+	}
+	if got, want := history[0].Content, "system prompt for profile delivery"; got != want {
+		t.Fatalf("leading system message = %q, want %q (stale outgoing-profile contract carried forward)", got, want)
+	}
+	if len(history) != 3 || history[1].Content != "hello" || history[2].Content != "hi" {
+		t.Fatalf("history after profile switch = %+v, want carried user/assistant turns preserved", history)
 	}
 }
