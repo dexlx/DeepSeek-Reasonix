@@ -18566,6 +18566,27 @@ body > .mermaid-diagram--fullscreen {
 .composer-context__item--session .composer-context__label > svg {
   color: var(--accent);
 }
+.composer-context__item--selection {
+  width: min(240px, 100%);
+  border-color: color-mix(in srgb, var(--accent) 28%, var(--border));
+  background: color-mix(in srgb, var(--accent) 8%, var(--panel));
+  animation: composer-selection-in var(--dur-base) var(--ease-out) both;
+}
+.composer-context__item--selection .composer-context__fileicon {
+  color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 11%, var(--bg-elev));
+}
+@keyframes composer-selection-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .composer-context__item--selection {
+    animation: none;
+  }
+}
 .slashmenu__item--special {
   border-bottom: 1px solid var(--border);
   background: color-mix(in srgb, var(--accent) 5%, var(--panel));
@@ -21731,6 +21752,65 @@ body > .mermaid-diagram--fullscreen {
 .context-menu__item--danger:not(:disabled):hover,
 .context-menu__item--danger:not(:disabled):focus-visible {
   color: #e5534b !important;
+}
+
+.transcript-selection-action {
+  --wails-draggable: no-drag;
+  position: fixed;
+  z-index: var(--z-floating-menu);
+  max-width: calc(100vw - 16px);
+  padding: 4px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--bg-elev) 94%, transparent);
+  box-shadow: 0 12px 30px rgba(0, 0, 0, 0.28);
+  backdrop-filter: blur(12px);
+  animation: menu-pop-in var(--dur-base) var(--ease-out) both;
+}
+
+.transcript-selection-action button {
+  display: inline-flex;
+  min-width: 0;
+  height: 32px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--fg);
+  font: inherit;
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+.transcript-selection-action button:hover,
+.transcript-selection-action button:focus-visible {
+  background: var(--sidebar-hover);
+  outline: none;
+}
+
+.transcript-selection-action button:focus-visible {
+  box-shadow: var(--focus-ring);
+}
+
+.transcript-selection-action svg {
+  flex: 0 0 auto;
+  color: var(--accent);
+}
+
+.transcript-selection-action kbd {
+  flex: 0 0 auto;
+  margin-left: 5px;
+  color: var(--fg-faint);
+  font: inherit;
+  font-size: 10.5px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .transcript-selection-action {
+    animation: none;
+  }
 }
 
 .project-tree__color-option {

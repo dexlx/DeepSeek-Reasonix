@@ -1,8 +1,8 @@
 // Run: tsx src/__tests__/transcript-selection-menu.test.tsx
 //
-// Regression coverage for the transcript right-click Copy menu. The Wails
-// shell suppresses the webview's default context menu (main.tsx), so selected
-// message text needs the app-drawn menu:
+// Regression coverage for transcript selection actions. Selected message text
+// exposes Add to Chat after pointer/keyboard selection, while the Wails shell
+// also keeps its app-drawn right-click Copy menu:
 // - a non-collapsed selection inside .msg__body opens the menu and Copy
 //   writes the selection through the runtime clipboard bridge
 // - collapsed selections, non-message selections, editable targets, and
@@ -40,6 +40,11 @@ function eq(actual: unknown, expected: unknown, label: string) {
 
 function flushTimers(): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+async function drainFrame(): Promise<void> {
+  await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+  await flushTimers();
 }
 
 function installDom() {
@@ -88,6 +93,7 @@ console.log("\ntranscript selection menu");
 {
   const dom = installDom();
   const clipboard: string[] = [];
+  const additions: string[] = [];
   (window as unknown as { runtime: { ClipboardSetText: (text: string) => Promise<boolean> } }).runtime = {
     ClipboardSetText: async (text: string) => {
       clipboard.push(text);
@@ -113,7 +119,7 @@ console.log("\ntranscript selection menu");
   await act(async () => {
     root.render(
       <LocaleProvider>
-        <TranscriptSelectionMenu />
+        <TranscriptSelectionMenu onAddToChat={(text) => additions.push(text)} />
       </LocaleProvider>,
     );
     await flushTimers();
@@ -134,6 +140,37 @@ console.log("\ntranscript selection menu");
   });
   eq(clipboard[0], "assistant reply text", "Copy writes the selection through the clipboard bridge");
   eq(document.querySelector(".context-menu"), null, "transcript menu closes after Copy");
+
+  // Releasing a pointer after selecting message text exposes the compact Add
+  // to Chat action. It adds the exact selection, clears the browser highlight,
+  // and closes without sending anything itself.
+  selectNodeText(msgBody.firstChild as Node);
+  await act(async () => {
+    msgBody.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true, button: 0 }));
+    await drainFrame();
+  });
+  const addButton = document.querySelector(".transcript-selection-action button") as HTMLButtonElement | null;
+  eq(addButton?.textContent?.includes("Add to Chat"), true, "pointer selection exposes Add to Chat");
+  await act(async () => {
+    addButton?.click();
+    await flushTimers();
+  });
+  eq(additions[0], "assistant reply text", "Add to Chat forwards the exact selected text");
+  eq(document.getSelection()?.isCollapsed, true, "Add to Chat clears the browser selection");
+  eq(document.querySelector(".transcript-selection-action"), null, "Add to Chat closes the floating action");
+
+  // The shortcut is scoped to a live transcript selection, so it cannot steal
+  // Cmd/Ctrl+L during normal app navigation.
+  selectNodeText(msgBody.firstChild as Node);
+  await act(async () => {
+    msgBody.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true, button: 0 }));
+    await drainFrame();
+  });
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "l", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(additions[1], "assistant reply text", "Cmd/Ctrl+L adds the active transcript selection");
 
   // Collapsed selection: no menu, default untouched.
   document.getSelection()?.removeAllRanges();
