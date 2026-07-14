@@ -4211,3 +4211,38 @@ func TestHelperProcess(t *testing.T) {
 		os.Stdout.Write(append(b, '\n'))
 	}
 }
+
+// TestBuildSafeModeOmitsSourceConnectorAndSkillTools pins the Safe Mode
+// surface across token modes: no Economy connect_tool_source (it could
+// re-expose skills, commands, memory, and MCP), no install_source, and no
+// skill tools — while slash_command stays registered with an empty list.
+func TestBuildSafeModeOmitsSourceConnectorAndSkillTools(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+
+	for _, tokenMode := range []string{TokenModeFull, TokenModeEconomy} {
+		ctrl, err := Build(context.Background(), Options{
+			SessionDir: filepath.Join(t.TempDir(), "sessions"),
+			TokenMode:  tokenMode,
+			Sink:       event.Discard,
+		})
+		if err != nil {
+			t.Fatalf("Build(%q): %v", tokenMode, err)
+		}
+		names := map[string]bool{}
+		for _, e := range ctrl.ToolContractEntries() {
+			names[e.Name] = true
+		}
+		ctrl.Close()
+		for _, banned := range []string{"connect_tool_source", "install_source", "run_skill", "read_skill", "read_only_skill"} {
+			if names[banned] {
+				t.Fatalf("safe mode (%q) registered %s", tokenMode, banned)
+			}
+		}
+		if !names["slash_command"] {
+			t.Fatalf("safe mode (%q) should still register slash_command", tokenMode)
+		}
+	}
+}
