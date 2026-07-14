@@ -266,6 +266,7 @@ type WorkbenchTreeSections = {
 
 const GLOBAL_PROJECT_ORDER_KEY = "__global__";
 const WORKBENCH_ORGANIZE_KEY = "projectTree:workbenchOrganize";
+// Shared by classic and workbench; key string kept for existing saved choices.
 const WORKBENCH_SORT_KEY = "projectTree:workbenchSort";
 const READ_ACTIVITY_KEY = "projectTree:readActivity";
 const READ_ACTIVITY_INIT_KEY = "projectTree:readActivityInitialized";
@@ -422,6 +423,13 @@ function arrangeWorkbenchTree(nodes: ProjectNode[], organizeMode: WorkbenchOrgan
     if (Boolean(a.pinned) !== Boolean(b.pinned)) return a.pinned ? -1 : 1;
     return projectSortValue(b, mode) - projectSortValue(a, mode);
   });
+}
+
+// Classic keeps the user's manual project order but sorts topics inside each
+// folder, so row order matches the activity time shown in the meta line
+// instead of the persisted insertion order.
+export function arrangeClassicProjectTree(nodes: ProjectNode[], sortMode: WorkbenchSortMode): ProjectNode[] {
+  return arrangeWorkbenchTree(nodes, "project", sortMode);
 }
 
 function splitWorkbenchPinnedTree(nodes: ProjectNode[], sortMode: WorkbenchSortMode): WorkbenchTreeSections {
@@ -1056,7 +1064,7 @@ export function ProjectTree({
       .filter((node): node is ProjectNode => node !== null);
     if (compactTopics) return arrangeWorkbenchTree(filtered, workbenchOrganizeMode, workbenchSortMode);
     if (creationTopics) return arrangeWorkbenchTree(filtered, "project", "updated");
-    return filtered;
+    return arrangeClassicProjectTree(filtered, workbenchSortMode);
   }, [compactTopics, creationTopics, query, tree, timeFilter, workbenchOrganizeMode, workbenchSortMode]);
 
   const workbenchTreeSections = useMemo<WorkbenchTreeSections>(() => {
@@ -1823,7 +1831,10 @@ export function ProjectTree({
   const renderTimeFilterControl = (mode: "classic" | "workbench") => {
     const workbench = mode === "workbench";
     const active = timeFilter !== "all";
-    const controlLabel = workbench ? `${t("projectTree.timeFilter")}: ${timeFilterDisplayLabel}` : t("projectTree.timeFilter");
+    // The classic menu also hosts the sort-criteria section, so its label
+    // covers both; creation reuses the classic control but stays filter-only.
+    const filterOnlyLabel = variant === "classic" ? t("projectTree.filterAndSort") : t("projectTree.timeFilter");
+    const controlLabel = workbench ? `${t("projectTree.timeFilter")}: ${timeFilterDisplayLabel}` : filterOnlyLabel;
     const buttonClassName = workbench
       ? `project-tree__header-icon-btn project-tree__header-icon-btn--filter${active ? " project-tree__header-icon-btn--active" : ""}`
       : `project-tree__header-action-btn${active ? " project-tree__header-action-btn--active" : ""}`;
@@ -1854,7 +1865,7 @@ export function ProjectTree({
             )}
           </button>
           {filterMenuOpen && (
-            <div className="project-tree__time-filter-menu" role="menu" aria-label={t("projectTree.timeFilter")} onKeyDown={moveMenuFocus}>
+            <div className="project-tree__time-filter-menu" role="menu" aria-label={filterOnlyLabel} onKeyDown={moveMenuFocus}>
               <button
                 type="button"
                 className={`project-tree__time-filter-opt${timeFilter === "all" ? " project-tree__time-filter-opt--on" : ""}`}
@@ -1913,6 +1924,28 @@ export function ProjectTree({
               >
                 {t("projectTree.timeFilter1d")}
               </button>
+              {variant === "classic" && (
+                <>
+                  <div className="project-tree__time-filter-sep" role="separator" />
+                  <div className="project-tree__time-filter-title">{t("projectTree.sortCriteria")}</div>
+                  <button
+                    type="button"
+                    className={`project-tree__time-filter-opt${workbenchSortMode === "updated" ? " project-tree__time-filter-opt--on" : ""}`}
+                    onClick={() => { setWorkbenchSortMode("updated"); setFilterMenuOpen(false); }}
+                    role="menuitem"
+                  >
+                    {t("projectTree.sortByUpdatedAt")}
+                  </button>
+                  <button
+                    type="button"
+                    className={`project-tree__time-filter-opt${workbenchSortMode === "created" ? " project-tree__time-filter-opt--on" : ""}`}
+                    onClick={() => { setWorkbenchSortMode("created"); setFilterMenuOpen(false); }}
+                    role="menuitem"
+                  >
+                    {t("projectTree.sortByCreatedAt")}
+                  </button>
+                </>
+              )}
             </div>
           )}
         </div>

@@ -1014,6 +1014,7 @@ export const zh: Record<DictKey, string> = {
   "projectTree.collapseAllTooltip": "收起所有项目",
   "projectTree.restoreCollapsedTooltip": "恢复上次展开",
   "projectTree.timeFilter": "按时间筛选",
+  "projectTree.filterAndSort": "筛选与排序",
   "projectTree.timeFilterAll": "全部时间",
   "projectTree.timeFilter10": "最新 10 条",
   "projectTree.timeFilter20": "最新 20 条",

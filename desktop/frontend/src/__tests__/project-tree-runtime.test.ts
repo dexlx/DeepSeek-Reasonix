@@ -10,6 +10,7 @@ import {
   projectTreeTopicHasUnreadActivity,
   projectTreeShouldRenderTopicActions,
   projectTreeTopicMetaLine,
+  arrangeClassicProjectTree,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -254,6 +255,84 @@ eq(
     iconStackClassName: "project-tree__icon-stack project-tree__icon-stack--expandable",
   },
   "expanded project folders can show the open-folder state only when children exist",
+);
+
+console.log("\nclassic project tree sorting");
+
+const classicTopic = (id: string, extra: Partial<ProjectNode> = {}): ProjectNode => ({
+  key: `topic_${id}`,
+  kind: "topic",
+  label: id,
+  root: "/repo/a",
+  topicId: id,
+  ...extra,
+});
+
+const classicTree: ProjectNode[] = [
+  {
+    key: "project_/repo/a",
+    kind: "project",
+    label: "a",
+    root: "/repo/a",
+    children: [
+      classicTopic("old", { lastActivityAt: 100 }),
+      classicTopic("newest", { lastActivityAt: 300 }),
+      classicTopic("blank", { createdAt: 200 }),
+    ],
+  },
+  {
+    key: "project_/repo/b",
+    kind: "project",
+    label: "b",
+    root: "/repo/b",
+    children: [classicTopic("only", { root: "/repo/b", lastActivityAt: 50 })],
+  },
+];
+
+eq(
+  arrangeClassicProjectTree(classicTree, "updated").map((node) => (node.children ?? []).map((child) => child.topicId)),
+  [["newest", "blank", "old"], ["only"]],
+  "classic default sorts topics by last activity while keeping project order",
+);
+
+eq(
+  arrangeClassicProjectTree(
+    [
+      {
+        key: "project_/repo/a",
+        kind: "project",
+        label: "a",
+        root: "/repo/a",
+        children: [
+          classicTopic("created-first", { createdAt: 100, lastActivityAt: 900 }),
+          classicTopic("created-last", { createdAt: 500, lastActivityAt: 600 }),
+        ],
+      },
+    ],
+    "created",
+  ).map((node) => (node.children ?? []).map((child) => child.topicId)),
+  [["created-last", "created-first"]],
+  "classic created mode sorts topics by creation time",
+);
+
+eq(
+  arrangeClassicProjectTree(
+    [
+      {
+        key: "project_/repo/a",
+        kind: "project",
+        label: "a",
+        root: "/repo/a",
+        children: [
+          classicTopic("recent", { lastActivityAt: 900 }),
+          classicTopic("pinned-old", { lastActivityAt: 100, pinned: true }),
+        ],
+      },
+    ],
+    "updated",
+  ).map((node) => (node.children ?? []).map((child) => child.topicId)),
+  [["pinned-old", "recent"]],
+  "classic sorting keeps pinned topics above unpinned ones",
 );
 
 console.log(`\n${passed} passed, ${failed} failed`);

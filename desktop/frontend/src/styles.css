@@ -21240,6 +21240,14 @@ body > .mermaid-diagram--fullscreen {
   background: var(--border-soft);
 }
 
+.project-tree__time-filter-title {
+  padding: 4px 8px 2px;
+  color: var(--fg-faint);
+  font-size: 10px;
+  white-space: nowrap;
+  user-select: none;
+}
+
 .project-tree__header-actions .project-tree__add-project:focus-visible,
 .project-tree__header-actions .project-tree__collapse-all:focus-visible,
 .project-tree__header-actions .project-tree__header-action-btn:focus-visible {

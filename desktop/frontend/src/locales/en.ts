@@ -1013,6 +1013,7 @@ export const en = {
   "projectTree.collapseAllTooltip": "Collapse all projects",
   "projectTree.restoreCollapsedTooltip": "Restore previous view",
   "projectTree.timeFilter": "Filter by time",
+  "projectTree.filterAndSort": "Filter & sort",
   "projectTree.timeFilterAll": "All",
   "projectTree.timeFilter10": "Latest 10",
   "projectTree.timeFilter20": "Latest 20",
