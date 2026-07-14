@@ -152,8 +152,7 @@ func requestRepairPlan(ctx context.Context, root, modelRef string, report repair
 	if err != nil {
 		return repair.RepairPlan{}, err
 	}
-	safeReport := sanitizeDiagnosticReport(report)
-	payload, _ := json.Marshal(safeReport)
+	payload, _ := json.Marshal(providerSafeReportFrom(report))
 	stream, err := p.Stream(ctx, provider.Request{
 		Messages: []provider.Message{
 			{Role: provider.RoleSystem, Content: repairPlanSystemPrompt},
@@ -200,6 +199,7 @@ func loadAIProviderConfig(root string) (*config.Config, error) {
 
 const repairPlanSystemPrompt = `You are a Reasonix recovery planner. Return JSON only, matching exactly:
 {"schemaVersion":1,"summary":"...","actions":[{"type":"...","scope":"","snapshotId":"","target":"","reason":"..."}]}
+The user message is a diagnostic report whose findings carry only a severity, a machine code (e.g. config.invalid_toml, derived.invalid_json, update related codes), and a generic scope; pick actions from those codes.
 Allowed actions only (return an empty actions array when no safe action applies):
 - repair_config with scope global or project
 - restore_snapshot with snapshotId
@@ -207,19 +207,73 @@ Allowed actions only (return an empty actions array when no safe action applies)
 - rollback_update with no parameters
 Never request shell commands, credential changes, session-content edits, arbitrary paths, plugin execution, or source-code changes. Prefer the smallest reversible plan supported by the diagnostics. Do not invent snapshot IDs.`
 
-func sanitizeDiagnosticReport(report repair.DiagnosticReport) repair.DiagnosticReport {
-	root := report.Root
-	report.Root = "<project>"
-	home, _ := os.UserHomeDir()
-	for i := range report.Findings {
-		for _, secretPath := range []string{root, home, config.ReasonixHomeDir(), config.MemoryUserDir()} {
-			if strings.TrimSpace(secretPath) != "" {
-				report.Findings[i].Message = strings.ReplaceAll(report.Findings[i].Message, secretPath, "<redacted-path>")
-				report.Findings[i].Remediation = strings.ReplaceAll(report.Findings[i].Remediation, secretPath, "<redacted-path>")
-			}
-		}
+// providerSafeReport is the strict allowlist DTO sent to the AI provider.
+// It deliberately carries no free-form diagnostic strings: finding messages
+// and remediations embed user-controlled content (TOML parse errors quote
+// config lines, URL errors echo the full URL including credentials, MCP
+// findings quote the command line, permission findings quote rules), and
+// raw scopes can name providers and plugins. Only closed-vocabulary fields
+// ever leave the machine — the plan codes below are all the model needs.
+type providerSafeReport struct {
+	GeneratedAt   string                      `json:"generatedAt"`
+	Root          string                      `json:"root"`
+	Network       bool                        `json:"network"`
+	Snapshots     []repair.DiagnosticSnapshot `json:"snapshots"`
+	PendingUpdate *repair.DiagnosticUpdate    `json:"pendingUpdate,omitempty"`
+	Findings      []providerSafeFinding       `json:"findings"`
+}
+
+type providerSafeFinding struct {
+	Severity string `json:"severity"`
+	Code     string `json:"code"`
+	Scope    string `json:"scope,omitempty"`
+}
+
+func providerSafeReportFrom(report repair.DiagnosticReport) providerSafeReport {
+	safe := providerSafeReport{
+		GeneratedAt:   report.GeneratedAt,
+		Root:          "<project>",
+		Network:       report.Network,
+		Snapshots:     report.Snapshots,
+		PendingUpdate: report.PendingUpdate,
+		Findings:      make([]providerSafeFinding, 0, len(report.Findings)),
 	}
-	return report
+	for _, finding := range report.Findings {
+		safe.Findings = append(safe.Findings, providerSafeFinding{
+			Severity: finding.Severity,
+			Code:     finding.Code,
+			Scope:    providerSafeScope(finding.Scope),
+		})
+	}
+	return safe
+}
+
+// providerSafeScope generalizes a finding scope to a closed vocabulary.
+// derived:* names survive because rebuild_derived_state needs the target and
+// the suffixes are a fixed enum; provider:*/plugin:* carry user-chosen names
+// and collapse to their category; anything unrecognized becomes "other".
+func providerSafeScope(scope string) string {
+	scope = strings.TrimSpace(scope)
+	switch {
+	case scope == "":
+		return ""
+	case strings.HasPrefix(scope, "derived:"):
+		switch scope[len("derived:"):] {
+		case "tabs", "projects", "window", "zoom":
+			return scope
+		}
+		return "derived:other"
+	case strings.HasPrefix(scope, "provider:"):
+		return "provider"
+	case strings.HasPrefix(scope, "plugin:"):
+		return "plugin"
+	}
+	switch scope {
+	case "global", "project", "runtime", "network", "model", "provider", "plugin", "permissions",
+		"global config", "credential file", "Reasonix home", "Reasonix state directory", "project root":
+		return scope
+	}
+	return "other"
 }
 
 func printPlanPreview(plan repair.RepairPlan, previews []repair.RepairPlanPreview) {
