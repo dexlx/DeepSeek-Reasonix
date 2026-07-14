@@ -45,3 +45,21 @@ func TestRecoveryDefaultsDoNotReadOrRewriteMalformedConfig(t *testing.T) {
 		t.Fatalf("malformed config was rewritten: %q", got)
 	}
 }
+
+func TestSafeModeForcesReportingOff(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	optIn := "[desktop]\ntelemetry = true\nmetrics = true\n"
+	if err := os.WriteFile(filepath.Join(home, "config.toml"), []byte(optIn), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := LoadForRoot(t.TempDir())
+	if err != nil {
+		t.Fatalf("safe mode load: %v", err)
+	}
+	if cfg.DesktopTelemetry() || cfg.DesktopMetrics() {
+		t.Fatalf("safe mode reporting on: telemetry=%v metrics=%v, want both false",
+			cfg.DesktopTelemetry(), cfg.DesktopMetrics())
+	}
+}

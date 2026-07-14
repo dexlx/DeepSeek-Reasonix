@@ -443,9 +443,12 @@ func (a *App) startup(ctx context.Context) {
 	if !config.SafeModeRequested() {
 		a.goSafe("refreshBotRuntime", a.refreshBotRuntime)
 		a.goSafe("sendStartupPing", a.sendStartupPing)
+		// Pending metrics/crash payloads stay on disk in Safe Mode: whether to
+		// send or drop them depends on the user's real telemetry preference,
+		// which a Safe Mode boot cannot read. The next normal boot decides.
+		a.goSafe("flushMetrics", a.flushMetrics)
+		a.goSafe("flushPendingCrash", a.flushPendingCrash)
 	}
-	a.goSafe("flushMetrics", a.flushMetrics)
-	a.goSafe("flushPendingCrash", a.flushPendingCrash)
 	// After restoreOrBuildTabs is launched: the GC's first sweep waits on
 	// tabsRestored so it never observes the pre-restore empty tab map.
 	a.startRecoveryGC()

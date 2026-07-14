@@ -184,6 +184,11 @@ func loadSafeModeForRoot(root string) *Config {
 	cfg.Statusline.Command = ""
 	cfg.LSP.Enabled = false
 	cfg.Desktop.CheckUpdates = safeModeBoolPtr(false)
+	// A Safe Mode boot never reads the user's config, so it cannot see (and
+	// must not override) a telemetry/metrics opt-out recorded there. Force
+	// every reporting path off instead of inheriting the enabled defaults.
+	cfg.Desktop.Telemetry = safeModeBoolPtr(false)
+	cfg.Desktop.Metrics = safeModeBoolPtr(false)
 	cfg.setExpansionEnv(nil)
 	cfg.CredentialsStore = credentialsStoreMode()
 	resolveProviderCredentialsForRoot(root, cfg)

@@ -189,3 +189,18 @@ func TestFlushPendingCrashDevGuard(t *testing.T) {
 		t.Error("dev build must leave the pending file untouched")
 	}
 }
+
+func TestFlushPendingCrashRetainsInSafeMode(t *testing.T) {
+	t.Setenv("REASONIX_HOME", t.TempDir())
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	oldVersion := version
+	t.Cleanup(func() { version = oldVersion })
+	version = "v9.9.9"
+
+	writePendingCrash("safe", "boom", []byte("stack"))
+	NewApp().flushPendingCrash()
+
+	if _, ok := readPending(t); !ok {
+		t.Fatal("safe mode must leave the pending crash file for the next normal boot")
+	}
+}
