@@ -300,9 +300,21 @@ such as Superpowers and Claude-style skill packs, Reasonix maps:
   `security_review` wrappers) maps to Claude's single `Agent` tool, and a
   matcher can still use the legacy `Task` name. `tool_input` keys that
   Reasonix names differently from Claude are renamed too — `path` becomes
-  `file_path` for `Read`/`Write`/`Edit`/`MultiEdit` — so a guard reading
-  `.tool_input.file_path` sees the target instead of failing open on an
-  empty value. Imported hooks receive Claude-compatible snake_case stdin
+  `file_path` for `Read`/`Write`/`Edit`/`MultiEdit` and `notebook_path` for
+  `NotebookEdit`, `name`/`arguments` become `skill`/`args` for `Skill`,
+  `job_id` becomes `bash_id`/`shell_id` for `BashOutput`/`KillShell`, the
+  dedicated subagent wrappers' `task` becomes `Agent`'s `prompt`, and
+  `parallel_tasks` synthesizes `Agent`'s `prompt` from its sub-task prompts
+  (keeping `tasks` alongside) — so a guard reading `.tool_input.file_path`
+  or `.tool_input.prompt` sees the target instead of failing open on an
+  empty value. Relative `file_path`/`notebook_path` values are resolved
+  absolute against the payload `cwd`, matching Claude's file-tool contract,
+  so prefix-matching guards inspect the path the tool actually accesses. A
+  `Bash` `tool_response` is delivered in Claude's `{stdout, stderr,
+  interrupted}` shape (Reasonix combines both streams into `stdout`; the
+  failure error text becomes `stderr`), which the official security-guidance
+  plugin's commit/push checks read; other tools' responses pass through as
+  the raw result. Imported hooks receive Claude-compatible snake_case stdin
   payloads, including `hook_event_name`, and `${CLAUDE_PLUGIN_ROOT}` is
   expanded by the host before process launch. A `PreToolUse` or
   `UserPromptSubmit` hook can still deny via exit code 2 or its JSON deny

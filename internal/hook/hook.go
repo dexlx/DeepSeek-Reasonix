@@ -469,25 +469,53 @@ func claudeFacingToolName(name string) string {
 // name — Reasonix's file tools use "path", Claude's use "file_path" — so a
 // hook script reading e.g. ".tool_input.file_path" sees the value instead of
 // failing open on an empty field. Only tools whose Reasonix schema differs
-// from Claude's by a plain key rename are covered: Bash's "command",
-// Glob/Grep's "pattern"/"path" already match Claude's own field names.
-// NotebookEdit's cell_number (a 0-based index) vs Claude's cell_id (an
-// opaque identifier) is a deeper structural difference this can't safely
-// bridge and is left untranslated.
+// from Claude's by a plain key rename are listed: Bash's "command",
+// Glob/Grep's "pattern"/"path", web_fetch's "url", ask's "questions",
+// todo_write's "todos", and task/read_only_task's "prompt"/"description"
+// already match Claude's own field names. NotebookEdit's cell_number (a
+// 0-based index) has no Claude field — Claude targets cells only by the
+// opaque cell_id, which Reasonix also accepts — so it passes through as an
+// extra key. parallel_tasks is a structural mismatch handled separately in
+// claudeFacingToolInput.
 var claudeToolInputKeyRenames = map[string]map[string]string{
-	"read_file":  {"path": "file_path"},
-	"write_file": {"path": "file_path"},
-	"edit_file":  {"path": "file_path"},
-	"multi_edit": {"path": "file_path"},
+	"read_file":       {"path": "file_path"},
+	"write_file":      {"path": "file_path"},
+	"edit_file":       {"path": "file_path"},
+	"multi_edit":      {"path": "file_path"},
+	"notebook_edit":   {"path": "notebook_path"},
+	"run_skill":       {"name": "skill", "arguments": "args"},
+	"read_only_skill": {"name": "skill", "arguments": "args"},
+	"bash_output":     {"job_id": "bash_id"},
+	"kill_shell":      {"job_id": "shell_id"},
+	// The dedicated subagent wrappers take their task text as "task";
+	// Claude's Agent tool calls the same thing "prompt".
+	"explore":         {"task": "prompt"},
+	"research":        {"task": "prompt"},
+	"review":          {"task": "prompt"},
+	"security_review": {"task": "prompt"},
 }
 
-// claudeFacingToolInput renames tool-call argument keys per
-// claudeToolInputKeyRenames so a Claude-imported hook's tool_input uses
-// Claude's own field names. Args needing no translation, or that aren't a
-// JSON object, pass through unchanged.
-func claudeFacingToolInput(toolName string, args json.RawMessage) json.RawMessage {
-	renames, ok := claudeToolInputKeyRenames[toolName]
-	if !ok || len(args) == 0 {
+// claudeAbsolutePathInputKeys are the translated tool_input keys whose Claude
+// schema demands an absolute path ("must be absolute, not relative" on
+// Read/Write/Edit/NotebookEdit). Reasonix's file tools accept relative paths
+// and resolve them against the workspace root (resolveIn in
+// internal/tool/builtin/workspace.go); the payload resolves against
+// payload.Cwd — the same root — so a prefix-matching guard inspects the path
+// the tool actually accesses, not a relative spelling it never compares.
+var claudeAbsolutePathInputKeys = []string{"file_path", "notebook_path"}
+
+// claudeFacingToolInput adapts tool-call arguments to the tool_input a
+// Claude-authored hook script was written against: keys are renamed per
+// claudeToolInputKeyRenames, file paths are made absolute per
+// claudeAbsolutePathInputKeys, and parallel_tasks synthesizes Agent's
+// "prompt". Args needing no translation, or that aren't a JSON object, pass
+// through unchanged.
+func claudeFacingToolInput(toolName string, args json.RawMessage, cwd string) json.RawMessage {
+	renames := claudeToolInputKeyRenames[toolName]
+	if len(renames) == 0 && toolName != "parallel_tasks" {
+		return args
+	}
+	if len(args) == 0 {
 		return args
 	}
 	var obj map[string]json.RawMessage
@@ -502,6 +530,34 @@ func claudeFacingToolInput(toolName string, args json.RawMessage) json.RawMessag
 			changed = true
 		}
 	}
+	// parallel_tasks maps to Claude's Agent tool but carries an array of
+	// sub-tasks where Agent has a single prompt — a structural difference no
+	// key rename bridges. Synthesize "prompt" from every sub-task's prompt
+	// (the original "tasks" array stays alongside) so an Agent-scoped guard
+	// reading .tool_input.prompt inspects all dispatched work instead of
+	// failing open on a missing field.
+	if toolName == "parallel_tasks" {
+		if prompt := joinedParallelTaskPrompts(obj["tasks"]); prompt != "" {
+			if v, err := json.Marshal(prompt); err == nil {
+				obj["prompt"] = v
+				changed = true
+			}
+		}
+	}
+	for _, key := range claudeAbsolutePathInputKeys {
+		v, exists := obj[key]
+		if !exists || cwd == "" {
+			continue
+		}
+		var p string
+		if err := json.Unmarshal(v, &p); err != nil || p == "" || filepath.IsAbs(p) {
+			continue
+		}
+		if abs, err := json.Marshal(filepath.Join(cwd, p)); err == nil {
+			obj[key] = abs
+			changed = true
+		}
+	}
 	if !changed {
 		return args
 	}
@@ -510,6 +566,27 @@ func claudeFacingToolInput(toolName string, args json.RawMessage) json.RawMessag
 		return args
 	}
 	return out
+}
+
+// joinedParallelTaskPrompts flattens a parallel_tasks "tasks" array into one
+// prompt string, blank-line separated. Malformed or empty input yields "".
+func joinedParallelTaskPrompts(tasks json.RawMessage) string {
+	if len(tasks) == 0 {
+		return ""
+	}
+	var items []struct {
+		Prompt string `json:"prompt"`
+	}
+	if err := json.Unmarshal(tasks, &items); err != nil {
+		return ""
+	}
+	var prompts []string
+	for _, item := range items {
+		if s := strings.TrimSpace(item.Prompt); s != "" {
+			prompts = append(prompts, s)
+		}
+	}
+	return strings.Join(prompts, "\n\n")
 }
 
 // Payload is the JSON envelope written to a hook's stdin.
@@ -777,8 +854,8 @@ func marshalPayload(payload Payload, format string) string {
 			"session_id":             payload.SessionID,
 			"cwd":                    payload.Cwd,
 			"tool_name":              claudeFacingToolName(payload.ToolName),
-			"tool_input":             claudeFacingToolInput(payload.ToolName, payload.ToolArgs),
-			"tool_response":          claudeToolResponse(payload.ToolResult),
+			"tool_input":             claudeFacingToolInput(payload.ToolName, payload.ToolArgs, payload.Cwd),
+			"tool_response":          claudeToolResponse(payload),
 			"prompt":                 payload.Prompt,
 			"last_assistant_message": payload.LastAssistant,
 			"source":                 payload.Source,
@@ -796,10 +873,25 @@ func marshalPayload(payload Payload, format string) string {
 	return string(body) + "\n"
 }
 
-func claudeToolResponse(result string) any {
-	trimmed := strings.TrimSpace(result)
+// claudeToolResponse adapts a Reasonix tool result to the tool_response a
+// Claude-authored PostToolUse hook reads. Claude's Bash response is an object
+// — {stdout, stderr, interrupted}, the fields the official security-guidance
+// plugin's commit/push checks read (a non-object response is treated as empty
+// and the check silently passes) — while Reasonix's bash returns one combined
+// output string, so it is wrapped with the failure error as stderr. Other
+// tools' results pass through as before: raw JSON when the result is a JSON
+// document, else the plain string.
+func claudeToolResponse(p Payload) any {
+	if (p.Event == PostToolUse || p.Event == PostToolUseFailure) && claudeFacingToolName(p.ToolName) == "Bash" {
+		return map[string]any{
+			"stdout":      p.ToolResult,
+			"stderr":      p.Error,
+			"interrupted": p.IsInterrupt,
+		}
+	}
+	trimmed := strings.TrimSpace(p.ToolResult)
 	if trimmed == "" || !json.Valid([]byte(trimmed)) {
-		return result
+		return p.ToolResult
 	}
 	return json.RawMessage(trimmed)
 }

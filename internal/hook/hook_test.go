@@ -637,12 +637,21 @@ func TestClaudeFacingToolInputRenamesFilePathFields(t *testing.T) {
 		{"edit_file", "edit_file", `{"path":"a.txt","old_string":"x","new_string":"y"}`, `{"file_path":"a.txt","new_string":"y","old_string":"x"}`},
 		{"read_file", "read_file", `{"path":"a.txt"}`, `{"file_path":"a.txt"}`},
 		{"multi_edit", "multi_edit", `{"path":"a.txt","edits":[]}`, `{"edits":[],"file_path":"a.txt"}`},
+		{"notebook_edit", "notebook_edit", `{"path":"nb.ipynb","cell_id":"c1","new_source":"x"}`, `{"notebook_path":"nb.ipynb","cell_id":"c1","new_source":"x"}`},
+		{"run_skill", "run_skill", `{"name":"deploy","arguments":"prod"}`, `{"skill":"deploy","args":"prod"}`},
+		{"read_only_skill", "read_only_skill", `{"name":"explore","arguments":"map the auth flow"}`, `{"skill":"explore","args":"map the auth flow"}`},
+		{"bash_output", "bash_output", `{"job_id":"bash-1","filter":"err"}`, `{"bash_id":"bash-1","filter":"err"}`},
+		{"kill_shell", "kill_shell", `{"job_id":"bash-1"}`, `{"shell_id":"bash-1"}`},
+		{"explore-wrapper", "explore", `{"task":"find all callers of X"}`, `{"prompt":"find all callers of X"}`},
+		{"security_review-wrapper", "security_review", `{"task":"audit the diff"}`, `{"prompt":"audit the diff"}`},
+		{"task-already-claude-shaped", "task", `{"prompt":"do it","description":"short"}`, `{"prompt":"do it","description":"short"}`},
+		{"web_fetch-unchanged", "web_fetch", `{"url":"https://example.com"}`, `{"url":"https://example.com"}`},
 		{"bash-unchanged", "bash", `{"command":"ls"}`, `{"command":"ls"}`},
 		{"grep-unchanged", "grep", `{"pattern":"foo","path":"."}`, `{"pattern":"foo","path":"."}`},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got := claudeFacingToolInput(c.toolName, json.RawMessage(c.args))
+			got := claudeFacingToolInput(c.toolName, json.RawMessage(c.args), "")
 			var gotObj, wantObj map[string]any
 			if err := json.Unmarshal(got, &gotObj); err != nil {
 				t.Fatalf("got invalid JSON %q: %v", got, err)
@@ -657,11 +666,79 @@ func TestClaudeFacingToolInputRenamesFilePathFields(t *testing.T) {
 	}
 }
 
+// TestClaudeFacingToolInputResolvesAbsolutePaths checks the Claude file-tool
+// contract ("file_path must be absolute"): a relative Reasonix path resolves
+// against the payload cwd — the same root the tool itself resolves against —
+// so a prefix-matching guard sees the path the tool actually accesses.
+func TestClaudeFacingToolInputResolvesAbsolutePaths(t *testing.T) {
+	cwd := t.TempDir()
+	got := claudeFacingToolInput("write_file", json.RawMessage(`{"path":"secrets/.env","content":"KEY=1"}`), cwd)
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if want := filepath.Join(cwd, "secrets", ".env"); obj["file_path"] != want {
+		t.Errorf("file_path = %v, want absolute %q", obj["file_path"], want)
+	}
+
+	got = claudeFacingToolInput("notebook_edit", json.RawMessage(`{"path":"nb.ipynb","cell_id":"c1"}`), cwd)
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if want := filepath.Join(cwd, "nb.ipynb"); obj["notebook_path"] != want {
+		t.Errorf("notebook_path = %v, want absolute %q", obj["notebook_path"], want)
+	}
+
+	// An already-absolute path is honored verbatim, mirroring resolveIn.
+	abs := filepath.Join(cwd, "direct.txt")
+	body, _ := json.Marshal(map[string]string{"path": abs})
+	got = claudeFacingToolInput("read_file", body, cwd)
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if obj["file_path"] != abs {
+		t.Errorf("file_path = %v, want untouched absolute %q", obj["file_path"], abs)
+	}
+
+	// With no cwd to resolve against, the relative path passes through.
+	got = claudeFacingToolInput("read_file", json.RawMessage(`{"path":"a.txt"}`), "")
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if obj["file_path"] != "a.txt" {
+		t.Errorf("file_path = %v, want relative passthrough with empty cwd", obj["file_path"])
+	}
+}
+
+// TestClaudeFacingToolInputParallelTasksSynthesizesPrompt checks the
+// structural adapter: parallel_tasks maps to Claude's Agent tool, so an
+// Agent-scoped guard reading .tool_input.prompt must see every sub-task's
+// prompt instead of failing open on a missing field.
+func TestClaudeFacingToolInputParallelTasksSynthesizesPrompt(t *testing.T) {
+	args := json.RawMessage(`{"tasks":[{"prompt":"scan auth","description":"a"},{"prompt":"scan crypto"}]}`)
+	got := claudeFacingToolInput("parallel_tasks", args, "")
+	var obj map[string]any
+	if err := json.Unmarshal(got, &obj); err != nil {
+		t.Fatalf("got invalid JSON %q: %v", got, err)
+	}
+	if obj["prompt"] != "scan auth\n\nscan crypto" {
+		t.Errorf("prompt = %q, want the joined sub-task prompts", obj["prompt"])
+	}
+	if _, kept := obj["tasks"]; !kept {
+		t.Error("original tasks array should stay alongside the synthesized prompt")
+	}
+
+	// Malformed or empty tasks stay untouched rather than fabricating input.
+	if got := claudeFacingToolInput("parallel_tasks", json.RawMessage(`{"tasks":[]}`), ""); string(got) != `{"tasks":[]}` {
+		t.Errorf("empty tasks = %s, want passthrough", got)
+	}
+}
+
 func TestClaudeFacingToolInputPassthroughEdgeCases(t *testing.T) {
-	if got := claudeFacingToolInput("write_file", json.RawMessage("")); string(got) != "" {
+	if got := claudeFacingToolInput("write_file", json.RawMessage(""), ""); string(got) != "" {
 		t.Errorf("empty args = %q, want empty passthrough", got)
 	}
-	if got := claudeFacingToolInput("write_file", json.RawMessage("not json")); string(got) != "not json" {
+	if got := claudeFacingToolInput("write_file", json.RawMessage("not json"), ""); string(got) != "not json" {
 		t.Errorf("malformed args = %q, want unchanged passthrough", got)
 	}
 }
@@ -929,7 +1006,7 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 	Run(context.Background(), Payload{
 		Event: PostToolUseFailure, SessionID: "session-1", Cwd: "/workspace",
 		ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"false"}`),
-		ToolResult: `{"exit_code":1,"stderr":"failed"}`, Error: "exit 1",
+		ToolResult: "remote: denied", Error: "exit 1",
 	}, hooks, func(_ context.Context, in SpawnInput) SpawnResult { input = in; return SpawnResult{ExitCode: 0} })
 	if input.Command != "/tmp/agent-critter" || len(input.Args) != 1 || input.Args[0] != "--hook" {
 		t.Fatalf("direct hook input = %+v", input)
@@ -945,8 +1022,8 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 		t.Fatalf("Claude payload tool_name = %v, want the Claude vocabulary name Bash for Reasonix tool bash", payload["tool_name"])
 	}
 	response, ok := payload["tool_response"].(map[string]any)
-	if !ok || response["exit_code"] != float64(1) {
-		t.Fatalf("Claude tool_response = %#v, want a structured JSON object", payload["tool_response"])
+	if !ok || response["stdout"] != "remote: denied" || response["stderr"] != "exit 1" || response["interrupted"] != false {
+		t.Fatalf("Claude tool_response = %#v, want Claude's Bash shape {stdout, stderr, interrupted}", payload["tool_response"])
 	}
 	if _, exists := payload["event"]; exists {
 		t.Fatalf("native payload field leaked into Claude payload: %#v", payload)
@@ -956,15 +1033,17 @@ func TestRunClaudePayloadAndDirectArgs(t *testing.T) {
 // TestRunClaudeWriteFileGuardFiresAndSeesFilePath is an end-to-end check that
 // a Claude plugin's "block writes to secrets" style PreToolUse guard —
 // matcher "Write", reading .tool_input.file_path — actually fires against a
-// Reasonix write_file call and sees the target path.
+// Reasonix write_file call and sees the absolute target path Claude's
+// file-tool contract specifies.
 func TestRunClaudeWriteFileGuardFiresAndSeesFilePath(t *testing.T) {
+	cwd := t.TempDir()
 	hooks := []ResolvedHook{{
 		HookConfig: HookConfig{Command: "guard", Match: "Write", PayloadFormat: "claude"},
 		Event:      PreToolUse,
 	}}
 	var input SpawnInput
 	Run(context.Background(), Payload{
-		Event: PreToolUse, ToolName: "write_file",
+		Event: PreToolUse, Cwd: cwd, ToolName: "write_file",
 		ToolArgs: json.RawMessage(`{"path":"secrets/.env","content":"KEY=1"}`),
 	}, hooks, func(_ context.Context, in SpawnInput) SpawnResult { input = in; return SpawnResult{ExitCode: 0} })
 	if input.Command == "" {
@@ -978,8 +1057,8 @@ func TestRunClaudeWriteFileGuardFiresAndSeesFilePath(t *testing.T) {
 	if !ok {
 		t.Fatalf("tool_input = %#v, want an object", payload["tool_input"])
 	}
-	if toolInput["file_path"] != "secrets/.env" {
-		t.Fatalf(`tool_input.file_path = %v, want "secrets/.env" (guard reading this field must not see an empty value)`, toolInput["file_path"])
+	if want := filepath.Join(cwd, "secrets", ".env"); toolInput["file_path"] != want {
+		t.Fatalf(`tool_input.file_path = %v, want absolute %q (a prefix-matching guard must see the path the tool accesses)`, toolInput["file_path"], want)
 	}
 	if _, hasPath := toolInput["path"]; hasPath {
 		t.Fatalf("tool_input still has Reasonix's \"path\" key: %#v", toolInput)
@@ -987,13 +1066,55 @@ func TestRunClaudeWriteFileGuardFiresAndSeesFilePath(t *testing.T) {
 }
 
 func TestClaudeToolResponsePreservesPlainText(t *testing.T) {
-	stdin := marshalPayload(Payload{Event: PostToolUse, ToolResult: "plain output"}, "claude")
+	stdin := marshalPayload(Payload{Event: PostToolUse, ToolName: "read_file", ToolResult: "plain output"}, "claude")
 	var payload map[string]any
 	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
 		t.Fatal(err)
 	}
 	if payload["tool_response"] != "plain output" {
 		t.Fatalf("tool_response = %#v, want plain output", payload["tool_response"])
+	}
+}
+
+// TestClaudeToolResponseBashShape checks that a Bash tool_response is the
+// object Claude's contract (and the official security-guidance plugin's
+// commit/push checks) expect — {stdout, stderr, interrupted} — never a bare
+// string, and never raw JSON even when the command's output happens to be a
+// valid JSON document.
+func TestClaudeToolResponseBashShape(t *testing.T) {
+	stdin := marshalPayload(Payload{Event: PostToolUse, ToolName: "bash", ToolResult: `{"looks":"like json"}`}, "claude")
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	response, ok := payload["tool_response"].(map[string]any)
+	if !ok {
+		t.Fatalf("tool_response = %#v, want an object", payload["tool_response"])
+	}
+	if response["stdout"] != `{"looks":"like json"}` || response["stderr"] != "" || response["interrupted"] != false {
+		t.Fatalf("tool_response = %#v, want {stdout: <combined output>, stderr: \"\", interrupted: false}", response)
+	}
+
+	// An interrupted failure carries the error and the interrupt flag.
+	stdin = marshalPayload(Payload{
+		Event: PostToolUseFailure, ToolName: "bash",
+		ToolResult: "partial", Error: "context canceled", IsInterrupt: true,
+	}, "claude")
+	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	response, ok = payload["tool_response"].(map[string]any)
+	if !ok || response["stdout"] != "partial" || response["stderr"] != "context canceled" || response["interrupted"] != true {
+		t.Fatalf("failure tool_response = %#v, want {stdout, stderr, interrupted:true}", payload["tool_response"])
+	}
+
+	// PreToolUse has no result yet: no fabricated Bash response object.
+	stdin = marshalPayload(Payload{Event: PreToolUse, ToolName: "bash", ToolArgs: json.RawMessage(`{"command":"ls"}`)}, "claude")
+	if err := json.Unmarshal([]byte(stdin), &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload["tool_response"] != "" {
+		t.Fatalf("PreToolUse tool_response = %#v, want the empty passthrough", payload["tool_response"])
 	}
 }
 
