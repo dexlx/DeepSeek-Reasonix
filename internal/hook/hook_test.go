@@ -601,6 +601,9 @@ func TestClaudeFacingToolNameUsesCurrentNames(t *testing.T) {
 	if got := claudeFacingToolName("ask"); got != "AskUserQuestion" {
 		t.Errorf(`claudeFacingToolName("ask") = %q, want "AskUserQuestion"`, got)
 	}
+	if got := claudeFacingToolName("run_skill"); got != "Skill" {
+		t.Errorf(`claudeFacingToolName("run_skill") = %q, want "Skill"`, got)
+	}
 }
 
 func TestDecideOutcome(t *testing.T) {

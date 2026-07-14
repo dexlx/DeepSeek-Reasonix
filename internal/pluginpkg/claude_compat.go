@@ -7,6 +7,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -51,6 +52,53 @@ type claudeHookDocument struct {
 // are observation-only and cannot force the loop to continue, so an imported
 // hook here is a partial mapping, not a full one.
 var claudeStopBlockingEvents = map[string]bool{"Stop": true, "SubagentStop": true}
+
+// claudeToolScopedHookEvents are the events whose "matcher" field is
+// evaluated against a tool name (see internal/hook's MatchesTool); other
+// events ignore matcher entirely, so a matcher tool-name compatibility issue
+// doesn't apply to them.
+var claudeToolScopedHookEvents = map[string]bool{
+	"PreToolUse": true, "PostToolUse": true, "PostToolUseFailure": true,
+	"PermissionRequest": true,
+}
+
+// claudeUnsupportedToolMatchers are real Claude Code built-in tool names
+// (https://code.claude.com/docs/en/tools-reference) that Reasonix never
+// passes as a tool_name to a hook (see internal/hook's claudeToolNames /
+// claudeToolMatchAliases, the actual dispatch-time mapping — keep the two in
+// sync). A tool-scoped hook whose matcher names only entries from this set
+// can never fire against a real Reasonix tool call. This is a conservative,
+// individually-verified subset of Claude's full tool catalog, not an
+// exhaustive enumeration — an unrecognized matcher is left unflagged rather
+// than guessed at.
+var claudeUnsupportedToolMatchers = map[string]bool{
+	"WebSearch":     true, // Reasonix has no web-search tool
+	"ExitPlanMode":  true, // plan approval is a controller decision, never a dispatched tool call
+	"EnterPlanMode": true, // same as ExitPlanMode
+	"Artifact":      true, // Reasonix has no artifact-publishing tool
+}
+
+var bareClaudeToolNamePattern = regexp.MustCompile(`^[A-Za-z_]+$`)
+
+// claudeMatcherNeverFires reports whether matcher — a plain tool name or a
+// "|"-alternation of plain tool names, the two forms Claude's own docs use —
+// names only tools from claudeUnsupportedToolMatchers. A matcher using any
+// other regex syntax is left unevaluated: proving a general regex can never
+// match Reasonix's tool universe isn't attempted here, so this only catches
+// the common, unambiguous case.
+func claudeMatcherNeverFires(matcher string) bool {
+	matcher = strings.TrimSpace(matcher)
+	if matcher == "" || matcher == "*" {
+		return false
+	}
+	for _, part := range strings.Split(matcher, "|") {
+		part = strings.TrimSpace(part)
+		if !bareClaudeToolNamePattern.MatchString(part) || !claudeUnsupportedToolMatchers[part] {
+			return false
+		}
+	}
+	return true
+}
 
 type claudeMCPIdentity struct {
 	Type    string            `json:"type"`
@@ -137,6 +185,11 @@ func appendClaudeHooksFile(root, rel string, manifest *Manifest) ([]string, []Co
 				}
 				if claudeStopBlockingEvents[event] {
 					reason := fmt.Sprintf("%s hook %q cannot block the turn the way Claude's contract does — Reasonix's %s hook is observation-only and never forces the loop to continue", event, command, event)
+					warnings = append(warnings, rel+": "+reason)
+					issues = append(issues, CompatibilityIssue{Capability: "hooks", Path: rel, Reason: reason})
+				}
+				if claudeToolScopedHookEvents[event] && claudeMatcherNeverFires(match) {
+					reason := fmt.Sprintf("%s hook %q matcher %q names a Claude tool Reasonix has no equivalent for, so it will never fire", event, command, match)
 					warnings = append(warnings, rel+": "+reason)
 					issues = append(issues, CompatibilityIssue{Capability: "hooks", Path: rel, Reason: reason})
 				}

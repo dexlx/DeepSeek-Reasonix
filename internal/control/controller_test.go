@@ -2658,6 +2658,40 @@ func TestPermissionRequestClaudeHookAutoDeniesFreshHumanApproval(t *testing.T) {
 	}
 }
 
+// TestPermissionRequestClaudeHookCannotAutoAllowOptsFreshOnlyDecision covers
+// the fresh-human protection's other branch: a tool that requestFreshApprovalDecision
+// marks fresh (opts.fresh=true) without being one of
+// RequiresFreshHumanApprovalTool's fixed cases. PlanModeReadOnlyCommandApprovalTool
+// is exactly that — the earlier tests only exercised tools protected via
+// requiresFreshApprovalTool(tool), not the opts.fresh flag alone.
+func TestPermissionRequestClaudeHookCannotAutoAllowOptsFreshOnlyDecision(t *testing.T) {
+	if RequiresFreshHumanApprovalTool(agent.PlanModeReadOnlyCommandApprovalTool) {
+		t.Fatal("test assumes this tool is fresh-only via opts.fresh, not RequiresFreshHumanApprovalTool")
+	}
+	allowJSON := `{"hookSpecificOutput":{"hookEventName":"PermissionRequest","decision":{"behavior":"allow"}}}`
+	c, ids := wildcardClaudePermissionHookController(t, 0, allowJSON)
+	done := make(chan bool, 1)
+	go func() {
+		reply, err := c.requestFreshApprovalDecision(context.Background(), agent.PlanModeReadOnlyCommandApprovalTool, "ls", nil, "trust this read-only command prefix?")
+		if err != nil {
+			t.Errorf("requestFreshApprovalDecision error = %v", err)
+			return
+		}
+		done <- reply.allow
+	}()
+
+	id := waitApprovalID(t, ids)
+	c.Approve(id, true, false, false)
+	select {
+	case allow := <-done:
+		if !allow {
+			t.Fatal("manual approval should still allow")
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("approval stayed blocked — a Claude hook allow should not have preempted this opts.fresh decision")
+	}
+}
+
 func waitApprovalID(t *testing.T, ids <-chan string) string {
 	t.Helper()
 	select {

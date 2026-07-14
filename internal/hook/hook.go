@@ -399,6 +399,7 @@ var claudeToolNames = map[string]string{
 	"web_fetch":     "WebFetch",
 	"task":          "Agent",
 	"ask":           "AskUserQuestion",
+	"run_skill":     "Skill",
 	"todo_write":    "TodoWrite",
 	"notebook_edit": "NotebookEdit",
 	"bash_output":   "BashOutput",

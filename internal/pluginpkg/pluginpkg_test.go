@@ -370,6 +370,16 @@ func TestParseClaudeHooksWarnOnUnsupportedSemantics(t *testing.T) {
 			hooksJSON: `{"hooks":{"SubagentStop":[{"hooks":[{"type":"command","command":"bin/gate"}]}]}}`,
 			wantSub:   `cannot block the turn`,
 		},
+		{
+			name:      "matcher-names-unsupported-tool",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"WebSearch","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+			wantSub:   `will never fire`,
+		},
+		{
+			name:      "matcher-alternation-all-unsupported",
+			hooksJSON: `{"hooks":{"PermissionRequest":[{"matcher":"ExitPlanMode|EnterPlanMode","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+			wantSub:   `will never fire`,
+		},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -398,6 +408,59 @@ func TestParseClaudeHooksWarnOnUnsupportedSemantics(t *testing.T) {
 			// could remove a plugin's only safety hook.
 			if pkg.Manifest.Hooks == nil {
 				t.Fatal("hook should still be imported despite the unsupported semantics")
+			}
+		})
+	}
+}
+
+func TestParseClaudeHooksDoesNotWarnOnMatchersThatCanFire(t *testing.T) {
+	cases := []struct {
+		name      string
+		hooksJSON string
+	}{
+		{
+			name:      "supported-tool-name",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"Bash","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+		},
+		{
+			// A partly-unsupported alternation can still fire for Bash calls,
+			// so it must not be flagged as dead.
+			name:      "mixed-alternation-still-fires",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"Bash|WebSearch","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+		},
+		{
+			// A regex beyond a plain "|" alternation isn't evaluated, to
+			// avoid guessing wrong and producing a false positive.
+			name:      "complex-regex-not-evaluated",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"WebSearch.*","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+		},
+		{
+			name:      "wildcard-matcher",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"*","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+		},
+		{
+			// A previously-unmapped Reasonix tool the fix now supports.
+			name:      "run-skill-now-mapped",
+			hooksJSON: `{"hooks":{"PreToolUse":[{"matcher":"Skill","hooks":[{"type":"command","command":"bin/guard"}]}]}}`,
+		},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			root := t.TempDir()
+			writeTestFile(t, filepath.Join(root, ClaudeManifest), `{"name": "hook-pack"}`)
+			writeTestFile(t, filepath.Join(root, "hooks", "hooks.json"), c.hooksJSON)
+
+			pkg, warnings, err := ParseDir(root)
+			if err != nil {
+				t.Fatalf("ParseDir: %v", err)
+			}
+			for _, w := range warnings {
+				if strings.Contains(w, "will never fire") {
+					t.Fatalf("warnings = %v, want no dead-matcher warning", warnings)
+				}
+			}
+			if pkg.Compatibility.Status != "full" {
+				t.Fatalf("compatibility status = %q, want full", pkg.Compatibility.Status)
 			}
 		})
 	}
