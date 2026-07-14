@@ -130,8 +130,8 @@ console.log("\ndecision surface");
   const approval: WireApproval = {
     id: "mcp-danger-1",
     tool: "mcp__srv__wipe",
-    subject: "Destructive MCP tool: srv/wipe",
-    reason: "This MCP tool declares destructive behavior.",
+    subject: "MCP srv/wipe declares destructive side effects",
+    reason: "This installed MCP tool declares destructive side effects. Review the target and arguments before allowing this call. Auto/YOLO approval cannot answer this decision.",
     fresh: true,
   };
 

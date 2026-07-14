@@ -7213,6 +7213,78 @@ func TestAddMCPServerPersistsCompleteAdvancedConfiguration(t *testing.T) {
 	}
 }
 
+func TestUpdateMCPServerPreservesAbsentFieldsAndClearsExplicitOnes(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+	srv := desktopMCPHTTPServer(t)
+	defer srv.Close()
+
+	app := NewApp()
+	app.setTestCtrl(control.New(control.Options{Host: plugin.NewHost()}), "")
+	defer app.activeCtrl().Close()
+	callTimeout := 45
+	defaultMode := "writes"
+	reviewer := "auto_review"
+	if _, err := app.AddMCPServer(MCPServerInput{
+		Name:                     "admin",
+		Transport:                "http",
+		URL:                      srv.URL,
+		CallTimeoutSeconds:       &callTimeout,
+		ToolTimeoutSeconds:       map[string]int{"wipe": 120},
+		TrustedReadOnlyTools:     []string{"status"},
+		DefaultToolsApprovalMode: &defaultMode,
+		ToolPolicies:             map[string]config.MCPToolPolicy{"wipe": {ApprovalMode: "prompt"}},
+		ApprovalsReviewer:        &reviewer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// An old frontend (or a partial payload) omits the new fields entirely:
+	// every persisted advanced setting must survive the update untouched.
+	if err := app.UpdateMCPServer("admin", MCPServerInput{Name: "admin", Transport: "http", URL: srv.URL}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := findPluginEntry(cfg.Plugins, "admin")
+	if !ok || entry.CallTimeoutSeconds != 45 || entry.ToolTimeoutSeconds["wipe"] != 120 ||
+		entry.DefaultToolsApprovalMode != "writes" || entry.Tools["wipe"].ApprovalMode != "prompt" ||
+		entry.ApprovalsReviewer != "auto_review" || !reflect.DeepEqual(entry.TrustedReadOnlyTools, []string{"status"}) {
+		t.Fatalf("absent input fields must preserve persisted values, entry = %+v, found=%v", entry, ok)
+	}
+
+	// Explicit zero values are the editor's clear semantics.
+	cleared := 0
+	emptyMode := ""
+	emptyReviewer := ""
+	if err := app.UpdateMCPServer("admin", MCPServerInput{
+		Name:                     "admin",
+		Transport:                "http",
+		URL:                      srv.URL,
+		CallTimeoutSeconds:       &cleared,
+		ToolTimeoutSeconds:       map[string]int{},
+		TrustedReadOnlyTools:     []string{},
+		DefaultToolsApprovalMode: &emptyMode,
+		ToolPolicies:             map[string]config.MCPToolPolicy{},
+		ApprovalsReviewer:        &emptyReviewer,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	entry, ok = findPluginEntry(cfg.Plugins, "admin")
+	if !ok || entry.CallTimeoutSeconds != 0 || len(entry.ToolTimeoutSeconds) != 0 ||
+		entry.DefaultToolsApprovalMode != "" || len(entry.Tools) != 0 ||
+		entry.ApprovalsReviewer != "" || len(entry.TrustedReadOnlyTools) != 0 {
+		t.Fatalf("explicit empty fields must clear persisted values, entry = %+v, found=%v", entry, ok)
+	}
+}
+
 func TestCapabilitiesMarksBackgroundRemoteMCPAuthPossible(t *testing.T) {
 	isolateDesktopUserDirs(t)
 	dir := robustTempDir(t)

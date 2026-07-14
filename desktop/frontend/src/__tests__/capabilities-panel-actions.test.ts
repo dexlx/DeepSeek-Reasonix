@@ -3,7 +3,7 @@ import { readFileSync } from "node:fs";
 import React from "react";
 import { act } from "react";
 import { createRoot } from "react-dom/client";
-import { MCPServersSettingsPage, PluginsSettingsPage, mcpServerDraftJSON, parseMCPServerJSON } from "../components/CapabilitiesPanel";
+import { MCPServersSettingsPage, PluginsSettingsPage, mcpServerDraftJSON, parseMCPServerJSON, withExplicitMCPClears } from "../components/CapabilitiesPanel";
 import { slashCommandGroup, slashCommandKindTag, sortSlashCommandsForMenu } from "../components/SlashMenu";
 import { selectToolsOnFirstCustomUse } from "../components/SubagentsPanel";
 import type { AppBindings } from "../lib/bridge";
@@ -45,6 +45,17 @@ try {
 ok(unsupportedMCPFieldRejected, "unsupported advanced JSON fields should fail explicitly");
 const clearedMCPPolicy = parseMCPServerJSON(JSON.stringify({ admin: { command: "admin-mcp", default_tools_approval_mode: "", approvals_reviewer: "" } }));
 ok(clearedMCPPolicy.input.defaultToolsApprovalMode === "" && clearedMCPPolicy.input.approvalsReviewer === "", "empty advanced policy values should clear saved overrides");
+let nullToolTimeoutRejected = false;
+try {
+  parseMCPServerJSON(JSON.stringify({ admin: { command: "admin-mcp", tool_timeout_seconds: { wipe: null } } }));
+} catch (error) {
+  nullToolTimeoutRejected = error instanceof Error && error.message === "invalid";
+}
+ok(nullToolTimeoutRejected, "a null per-tool timeout must be rejected instead of silently clearing all timeouts");
+const sparseEdit = withExplicitMCPClears(parseMCPServerJSON(JSON.stringify({ admin: { command: "admin-mcp" } })).input);
+ok(sparseEdit.callTimeoutSeconds === 0 && sparseEdit.defaultToolsApprovalMode === "" && sparseEdit.approvalsReviewer === "", "editing an existing server with fields removed must clear those settings");
+ok(sparseEdit.autoStart === true && Object.keys(sparseEdit.toolTimeoutSeconds ?? { x: 1 }).length === 0 && (sparseEdit.trustedReadOnlyTools ?? ["x"]).length === 0 && Object.keys(sparseEdit.tools ?? { x: 1 }).length === 0, "removed collection fields must clear to empty values");
+ok(sparseEdit.env === null && sparseEdit.headers === null, "absent env/headers must stay preserve-on-absent because their values are never seeded into the editor");
 
 const subagentTools = [
   { name: "read_file", description: "Read files" },

@@ -295,5 +295,32 @@ func validateMCPEntry(e config.PluginEntry) error {
 	default:
 		return newErr(ErrInvalidManifest, "MCP server %q has unknown transport %q", e.Name, e.Type)
 	}
+	// Reject invalid approval policy at plan time. Persisting is validated again
+	// by config, but that happens only after the server was already connected.
+	if !validApprovalModeValue(e.DefaultToolsApprovalMode) {
+		return newErr(ErrInvalidManifest, "MCP server %q has unknown default_tools_approval_mode %q (want auto|prompt|writes|approve)", e.Name, e.DefaultToolsApprovalMode)
+	}
+	for tool, policy := range e.Tools {
+		if strings.TrimSpace(tool) == "" {
+			return newErr(ErrInvalidManifest, "MCP server %q tools contains an empty tool name", e.Name)
+		}
+		if !validApprovalModeValue(policy.ApprovalMode) {
+			return newErr(ErrInvalidManifest, "MCP server %q tools[%q].approval_mode must be auto|prompt|writes|approve", e.Name, tool)
+		}
+	}
+	switch strings.ToLower(strings.TrimSpace(e.ApprovalsReviewer)) {
+	case "", "user", "auto_review":
+	default:
+		return newErr(ErrInvalidManifest, "MCP server %q has unknown approvals_reviewer %q (want user|auto_review)", e.Name, e.ApprovalsReviewer)
+	}
 	return nil
+}
+
+func validApprovalModeValue(mode string) bool {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "auto", "prompt", "writes", "approve":
+		return true
+	default:
+		return false
+	}
 }

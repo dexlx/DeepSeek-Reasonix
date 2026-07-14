@@ -2460,9 +2460,29 @@ function nonNegativeIntegerRecord(value: unknown): Record<string, number> | unde
 	const out: Record<string, number> = {};
 	for (const [name, item] of Object.entries(value)) {
 		if (!name.trim()) throw new Error("invalid" satisfies MCPServerJSONError);
-		out[name] = nonNegativeInteger(item) as number;
+		const seconds = nonNegativeInteger(item);
+		if (seconds === undefined) throw new Error("invalid" satisfies MCPServerJSONError);
+		out[name] = seconds;
 	}
 	return out;
+}
+
+// withExplicitMCPClears finalizes an edit of an existing server. The editor
+// seeds every non-secret setting into the draft/JSON, so a field the user
+// removed must clear the persisted value instead of being preserved as
+// "absent". env/headers stay preserve-on-absent because their values are
+// deliberately never seeded into the editor.
+export function withExplicitMCPClears(input: MCPServerInput): MCPServerInput {
+	return {
+		...input,
+		autoStart: input.autoStart ?? true,
+		callTimeoutSeconds: input.callTimeoutSeconds ?? 0,
+		toolTimeoutSeconds: input.toolTimeoutSeconds ?? {},
+		trustedReadOnlyTools: input.trustedReadOnlyTools ?? [],
+		defaultToolsApprovalMode: input.defaultToolsApprovalMode ?? "",
+		tools: input.tools ?? {},
+		approvalsReviewer: input.approvalsReviewer ?? "",
+	};
 }
 
 function approvalMode(value: unknown): MCPApprovalMode | undefined {
@@ -2633,15 +2653,16 @@ function MCPServerSettingsEditor({
 			setJSONError(mcpServerJSONErrorLabel(error, t));
 		}
 	};
+	const finalize = (input: MCPServerInput) => (server ? withExplicitMCPClears(input) : input);
 	const submit = () => {
 		if (mode === "form") {
-			onSubmit(mcpServerDraftInput(draft));
+			onSubmit(finalize(mcpServerDraftInput(draft)));
 			return;
 		}
 		try {
 			const parsed = parseMCPServerJSON(json, server?.name);
 			setJSONError("");
-			onSubmit(parsed.input);
+			onSubmit(finalize(parsed.input));
 		} catch (error) {
 			setJSONError(mcpServerJSONErrorLabel(error, t));
 		}
