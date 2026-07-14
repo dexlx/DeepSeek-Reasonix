@@ -68,6 +68,7 @@ type Config struct {
 	expansionEnv               map[string]string
 	pluginPackageOwners        map[string]string
 	pluginPackageSkillOwners   map[string][]string
+	pluginPackageAgentOwners   map[string][]string
 }
 
 // IgnoredProjectDefaultModel returns the project reasonix.toml default_model

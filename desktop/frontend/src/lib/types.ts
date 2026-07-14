@@ -782,12 +782,30 @@ export interface PluginView {
   commands?: number;
   hooks: number;
   mcpServers: number;
+  agents?: number;
+  compatibility?: "full" | "partial" | "none" | string;
+  mappedCapabilities?: string[];
+  skippedCapabilities?: PluginCompatibilityIssue[];
   skillDetails?: PluginSkillView[];
+  agentDetails?: PluginAgentView[];
   commandDetails?: PluginCommandView[];
   hookDetails?: PluginHookView[];
   mcpServerDetails?: PluginMCPServerView[];
   warnings?: string[];
   error?: string;
+}
+export interface PluginCompatibilityIssue {
+  capability: string;
+  path?: string;
+  reason: string;
+}
+export interface PluginAgentView {
+  name: string;
+  description?: string;
+  path?: string;
+  invocation?: string;
+  model?: string;
+  allowedTools?: string[];
 }
 export interface PluginSkillView {
   name: string;
@@ -814,9 +832,12 @@ export interface PluginHookView {
 }
 export interface PluginMCPServerView {
   name: string;
+  displayName?: string;
+  description?: string;
   transport?: string;
   command?: string;
   url?: string;
+  autoStart?: boolean;
 }
 export interface PluginInstallOptions {
   dryRun?: boolean;
