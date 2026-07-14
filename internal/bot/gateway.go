@@ -157,6 +157,15 @@ type BotGateway struct {
 	sessions *SessionManager
 	startErr []error
 
+	lifecycleMu sync.Mutex
+	started     bool
+	stopped     bool
+	runCancel   context.CancelFunc
+	startDone   chan struct{}
+	stopDone    chan struct{}
+	gatewayWG   sync.WaitGroup
+	turnWG      sync.WaitGroup
+
 	mu                      sync.Mutex
 	controllers             map[string]*sessionState // session key -> active state
 	pendingReactionCleanups map[string][]func()
@@ -340,7 +349,34 @@ func (gw *BotGateway) buildSelfUserIDs() {
 }
 
 // Start 启动所有已启用的平台适配器并开始处理消息。
-func (gw *BotGateway) Start(ctx context.Context) error {
+func (gw *BotGateway) Start(ctx context.Context) (err error) {
+	gw.lifecycleMu.Lock()
+	if gw.stopped {
+		gw.lifecycleMu.Unlock()
+		return errors.New("bot gateway already stopped")
+	}
+	if gw.started {
+		gw.lifecycleMu.Unlock()
+		return errors.New("bot gateway already started")
+	}
+	gw.started = true
+	runCtx, cancel := context.WithCancel(ctx)
+	gw.runCancel = cancel
+	startDone := make(chan struct{})
+	gw.startDone = startDone
+	gw.lifecycleMu.Unlock()
+	defer func() {
+		if err != nil {
+			cancel()
+		}
+		gw.lifecycleMu.Lock()
+		if err != nil {
+			gw.runCancel = nil
+		}
+		close(startDone)
+		gw.lifecycleMu.Unlock()
+	}()
+
 	started := make([]AdapterBinding, 0, len(gw.adapters))
 	var startErr []error
 	for _, binding := range gw.adapters {
@@ -350,7 +386,7 @@ func (gw *BotGateway) Start(ctx context.Context) error {
 			continue
 		}
 		gw.logger.Info("starting adapter", "platform", binding.Platform, "connection", binding.ID, "domain", binding.Domain)
-		if err := binding.Adapter.Start(ctx); err != nil {
+		if err := binding.Adapter.Start(runCtx); err != nil {
 			wrapped := fmt.Errorf("start adapter %s: %w", binding.ID, err)
 			startErr = append(startErr, wrapped)
 			gw.markAdapterStartFailed(binding, err)
@@ -369,7 +405,7 @@ func (gw *BotGateway) Start(ctx context.Context) error {
 	if len(started) == 0 && len(startErr) > 0 {
 		return errors.Join(startErr...)
 	}
-	if err := gw.startControlServer(ctx); err != nil {
+	if err := gw.startControlServer(runCtx); err != nil {
 		for _, binding := range started {
 			_ = binding.Adapter.Stop()
 		}
@@ -378,17 +414,25 @@ func (gw *BotGateway) Start(ctx context.Context) error {
 
 	// 合并所有适配器的消息通道
 	for _, binding := range gw.adapters {
-		go gw.dispatchLoop(ctx, binding)
+		gw.gatewayWG.Add(1)
+		go func() {
+			defer gw.gatewayWG.Done()
+			gw.dispatchLoop(runCtx, binding)
+		}()
 	}
 
 	return nil
 }
 
 func (gw *BotGateway) AdapterCount() int {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
 	return len(gw.adapters)
 }
 
 func (gw *BotGateway) StartErrors() []error {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
 	out := make([]error, len(gw.startErr))
 	copy(out, gw.startErr)
 	return out
@@ -514,6 +558,49 @@ func (gw *BotGateway) ensureAdapterHealthLocked(binding AdapterBinding) *Adapter
 
 // Stop 停止所有适配器并关闭所有 session。
 func (gw *BotGateway) Stop() {
+	gw.lifecycleMu.Lock()
+	if gw.stopped {
+		stopDone := gw.stopDone
+		gw.lifecycleMu.Unlock()
+		if stopDone != nil {
+			<-stopDone
+		}
+		return
+	}
+	gw.stopped = true
+	stopDone := make(chan struct{})
+	gw.stopDone = stopDone
+	cancel := gw.runCancel
+	gw.runCancel = nil
+	startDone := gw.startDone
+	gw.lifecycleMu.Unlock()
+	defer close(stopDone)
+
+	if cancel != nil {
+		cancel()
+	}
+	if startDone != nil {
+		<-startDone
+	}
+
+	// Cancel sessions that already exist before waiting for dispatch to drain.
+	// A dispatch already inside handleMessage may still publish a late session,
+	// so closeSessions is repeated after gatewayWG and turnWG reach zero.
+	gw.closeSessions()
+	for _, binding := range gw.adapters {
+		if err := binding.Adapter.Stop(); err != nil {
+			gw.logger.Warn("error stopping adapter", "platform", binding.Platform, "connection", binding.ID, "err", err)
+		}
+		gw.markAdapterClosed(binding)
+	}
+	gw.stopControlServer()
+	gw.gatewayWG.Wait()
+	gw.closeSessions()
+	gw.turnWG.Wait()
+	gw.closeSessions()
+}
+
+func (gw *BotGateway) closeSessions() {
 	var states []*sessionState
 	gw.mu.Lock()
 	for key, state := range gw.controllers {
@@ -524,14 +611,6 @@ func (gw *BotGateway) Stop() {
 	for _, state := range states {
 		closeBotSessionState(state)
 	}
-
-	for _, binding := range gw.adapters {
-		if err := binding.Adapter.Stop(); err != nil {
-			gw.logger.Warn("error stopping adapter", "platform", binding.Platform, "connection", binding.ID, "err", err)
-		}
-		gw.markAdapterClosed(binding)
-	}
-	gw.stopControlServer()
 }
 
 func (gw *BotGateway) dispatchLoop(ctx context.Context, binding AdapterBinding) {
@@ -674,7 +753,11 @@ func (gw *BotGateway) handleMessage(ctx context.Context, binding AdapterBinding,
 	// would unblock it: the session wedges until restart (#4701, #4863, #4402).
 	// Per-session serialization is still held by the session lock (active[key]),
 	// which the deferred Release inside runTurn clears.
-	go gw.runTurn(ctx, binding.Adapter, key, msg, cleanup)
+	gw.turnWG.Add(1)
+	go func() {
+		defer gw.turnWG.Done()
+		gw.runTurn(ctx, binding.Adapter, key, msg, cleanup)
+	}()
 }
 
 func (gw *BotGateway) queueMode(key string, msg InboundMessage) string {
