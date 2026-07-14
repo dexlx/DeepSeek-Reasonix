@@ -168,9 +168,6 @@ stalled_warning_seconds = 900   # warn once per background job after this many q
 # # call_timeout_seconds = 600
 # # Raw MCP tool names with per-tool call timeouts.
 # # tool_timeout_seconds = { "generate_video" = 1800 }
-# # Optional pre-seeded read-only trust. Interactive sessions can also remember
-# # audited third-party readers when you choose "always allow" from the trust prompt.
-# # trusted_read_only_tools = ["search"]
 # # Enabled MCP servers connect automatically in the background after session
 # # start. Use /mcp or the desktop MCP panel to refresh, reconnect, or disable.
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { CircleAlert, ShieldCheck, ShieldOff } from "lucide-react";
+import { ArrowLeft, ChevronDown, ChevronRight, CircleAlert, Plus, RefreshCw, Search, Server as ServerIcon } from "lucide-react";
 import { asArray } from "../lib/array";
 import { app, openExternal } from "../lib/bridge";
 import { useT } from "../lib/i18n";
@@ -241,9 +241,6 @@ export function CapabilitiesPanel({
                       onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
                       onReconnect={(name) => void mutate(() => app.ReconnectMCPServer(name))}
                       onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
-                      onTrustTool={(name, toolName) => void mutate(() => app.TrustMCPServerTool(name, toolName))}
-                      onTrustTools={(name, toolNames) => void mutate(() => app.TrustMCPServerTools(name, toolNames))}
-                      onUntrustTool={(name, toolName) => void mutate(() => app.UntrustMCPServerTool(name, toolName))}
                       onToggle={(name, on) => void mutate(() => app.SetMCPServerEnabled(name, on))}
                       onUpdate={(name, input) =>
                         void mutate(() => app.UpdateMCPServer(name, input)).then((ok) => {
@@ -377,6 +374,7 @@ function mcpServerSummary(servers: ServerView[], t: ReturnType<typeof useT>): st
     connected: servers.filter((s) => s.status === "connected").length,
     failed: servers.filter((s) => s.status === "failed").length,
     tools: servers.reduce((total, server) => total + (server.tools || 0), 0),
+    unavailable: servers.reduce((total, server) => total + mcpServerSchemaIssueCount(server), 0),
   });
 }
 
@@ -660,9 +658,6 @@ function ServerGroup({
   onRetry,
   onReconnect,
   onConfirmClearAuth,
-  onTrustTool,
-  onTrustTools,
-  onUntrustTool,
   onToggle,
   onUpdate,
   onToggleDetails,
@@ -679,9 +674,6 @@ function ServerGroup({
   onRetry: (name: string) => void;
   onReconnect: (name: string) => void;
   onConfirmClearAuth: (name: string) => void;
-  onTrustTool: (name: string, toolName: string) => void;
-  onTrustTools: (name: string, toolNames: string[]) => void;
-  onUntrustTool: (name: string, toolName: string) => void;
   onToggle: (name: string, on: boolean) => void;
   onUpdate: (name: string, input: MCPServerInput) => void;
   onToggleDetails: (name: string) => void;
@@ -704,9 +696,6 @@ function ServerGroup({
           onRetry={() => onRetry(s.name)}
           onReconnect={() => onReconnect(s.name)}
           onConfirmClearAuth={() => onConfirmClearAuth(s.name)}
-          onTrustTool={(toolName) => onTrustTool(s.name, toolName)}
-          onTrustTools={(toolNames) => onTrustTools(s.name, toolNames)}
-          onUntrustTool={(toolName) => onUntrustTool(s.name, toolName)}
           onToggle={(on) => onToggle(s.name, on)}
           onUpdate={(input) => onUpdate(s.name, input)}
           onToggleDetails={() => onToggleDetails(s.name)}
@@ -863,9 +852,6 @@ function ServerRow({
   onRetry,
   onReconnect,
   onConfirmClearAuth,
-  onTrustTool,
-  onTrustTools,
-  onUntrustTool,
   onToggle,
   onUpdate,
   onToggleDetails,
@@ -882,9 +868,6 @@ function ServerRow({
   onRetry: () => void;
   onReconnect: () => void;
   onConfirmClearAuth: () => void;
-  onTrustTool: (toolName: string) => void;
-  onTrustTools: (toolNames: string[]) => void;
-  onUntrustTool: (toolName: string) => void;
   onToggle: (on: boolean) => void;
   onUpdate: (input: MCPServerInput) => void;
   onToggleDetails: () => void;
@@ -975,9 +958,6 @@ function ServerRow({
           onConnectNow={onRetry}
           onReconnect={onReconnect}
           onConfirmClearAuth={onConfirmClearAuth}
-          onTrustTool={onTrustTool}
-          onTrustTools={onTrustTools}
-          onUntrustTool={onUntrustTool}
           toolsExpanded={toolsExpanded}
           editing={editing}
           onEdit={onEdit}
@@ -998,15 +978,14 @@ function ServerDetails({
   onConnectNow,
   onReconnect,
   onConfirmClearAuth,
-  onTrustTool,
-  onTrustTools,
-  onUntrustTool,
   toolsExpanded,
   editing,
   onEdit,
   onCancelEdit,
   onUpdate,
   onToggleTools,
+  standalone = false,
+  showToolsToggle = true,
 }: {
   s: ServerView;
   tools: ServerView["toolList"];
@@ -1015,15 +994,14 @@ function ServerDetails({
   onConnectNow: () => void;
   onReconnect: () => void;
   onConfirmClearAuth: () => void;
-  onTrustTool: (toolName: string) => void;
-  onTrustTools: (toolNames: string[]) => void;
-  onUntrustTool: (toolName: string) => void;
   toolsExpanded: boolean;
   editing: boolean;
   onEdit: () => void;
   onCancelEdit: () => void;
   onUpdate: (input: MCPServerInput) => void;
   onToggleTools: () => void;
+  standalone?: boolean;
+  showToolsToggle?: boolean;
 }) {
   const t = useT();
   const command = serverCommand(s);
@@ -1035,20 +1013,15 @@ function ServerDetails({
   const canShowTools = s.status === "connected" && ((s.tools ?? 0) > 0 || (tools?.length ?? 0) > 0);
   const showClearAuth = canMutateConfig && canClearAuth(s);
   const authLabel = serverAuthLabel(s, t);
-  const trustedReadOnlyTools = s.trustedReadOnlyTools ?? [];
-  const trustedReadOnlyToolNames = new Set(trustedReadOnlyTools);
-  const canTrustTool = canMutateConfig;
-  const reportedReadOnlyToolNames = (tools ?? []).filter((tool) => tool.readOnlyHint && !tool.schemaError).map((tool) => tool.name);
-  const bulkTrustToolNames = reportedReadOnlyToolNames.filter((name) => !trustedReadOnlyToolNames.has(name));
   if (editing && canEditConfig) {
     return (
-      <div className="cap-server-details">
+      <div className={`cap-server-details${standalone ? " cap-server-details--page" : ""}`}>
         <EditServerForm s={s} busy={busy} onCancel={onCancelEdit} onSave={onUpdate} />
       </div>
     );
   }
   return (
-    <div className="cap-server-details">
+    <div className={`cap-server-details${standalone ? " cap-server-details--page" : ""}`}>
       <div className="cap-detail-grid">
         <div className="cap-detail">
           <span className="cap-detail__label">{t("caps.status")}</span>
@@ -1082,12 +1055,6 @@ function ServerDetails({
             <span className="cap-detail__value">{s.headerKeys.join(", ")}</span>
           </div>
         )}
-        {trustedReadOnlyTools.length > 0 && (
-          <div className="cap-detail cap-detail--wide">
-            <span className="cap-detail__label">{t("caps.trustedReadOnlyTools")}</span>
-            <span className="cap-detail__code">{trustedReadOnlyTools.join(", ")}</span>
-          </div>
-        )}
       </div>
       <div className="cap-detail-actions">
         {canConnectNow && (
@@ -1100,21 +1067,9 @@ function ServerDetails({
             {t("caps.reconnect")}
           </button>
         )}
-        {canShowTools && (
+        {canShowTools && showToolsToggle && (
           <button className="btn btn--small" disabled={busy} onClick={onToggleTools} aria-expanded={toolsExpanded}>
             {toolsExpanded ? t("caps.hideTools") : t("caps.showTools")}
-          </button>
-        )}
-        {canTrustTool && bulkTrustToolNames.length > 0 && (
-          <button
-            className="btn btn--small cap-trust-bulk"
-            disabled={busy}
-            onClick={() => onTrustTools(bulkTrustToolNames)}
-            title={t("caps.trustReportedReadOnlyTitle")}
-            type="button"
-          >
-            <ShieldCheck aria-hidden size={13} strokeWidth={2.2} />
-            {t("caps.trustReportedReadOnly", { count: bulkTrustToolNames.length })}
           </button>
         )}
         {showClearAuth && (
@@ -1147,7 +1102,6 @@ function ServerDetails({
           <div className="cap-tool-list">
             <div className="cap-tool-list__title">{t("caps.tools")}</div>
             {tools.map((tool) => {
-              const trusted = trustedReadOnlyToolNames.has(tool.name);
               const unavailable = Boolean(tool.schemaError);
               return (
                 <div className={`cap-tool${unavailable ? " cap-tool--unavailable" : ""}`} key={tool.name}>
@@ -1159,43 +1113,6 @@ function ServerDetails({
                         <CircleAlert aria-hidden size={11} strokeWidth={2.2} />
                         {t("caps.toolUnavailable")}
                       </span>
-                    ) : tool.readOnlyHint ? (
-                      <span className="cap-tool-hint" title={t("caps.reportedReadOnlyTitle")}>
-                        {t("caps.reportedReadOnly")}
-                      </span>
-                    ) : null}
-                  </div>
-                  <div className="cap-tool__action">
-                    {!unavailable && canTrustTool ? (
-                      trusted ? (
-                        <div className="cap-tool-trust-stack">
-                          <span className="cap-tool-trust cap-tool-trust--trusted" title={t("caps.trustedReadOnlyTitle")}>
-                            <ShieldCheck aria-hidden size={12} strokeWidth={2.2} />
-                            {t("caps.trustedReadOnly")}
-                          </span>
-                          <button
-                            className="btn btn--small cap-tool-untrust-btn"
-                            disabled={busy}
-                            onClick={() => onUntrustTool(tool.name)}
-                            title={t("caps.untrustReadOnlyTitle")}
-                            type="button"
-                          >
-                            <ShieldOff aria-hidden size={12} strokeWidth={2.2} />
-                            {t("caps.untrustReadOnly")}
-                          </button>
-                        </div>
-                      ) : (
-                        <button
-                          className="btn btn--small cap-tool-trust-btn"
-                          disabled={busy}
-                          onClick={() => onTrustTool(tool.name)}
-                          title={t("caps.trustReadOnlyTitle")}
-                          type="button"
-                        >
-                          <ShieldCheck aria-hidden size={12} strokeWidth={2.2} />
-                          {t("caps.trustReadOnly")}
-                        </button>
-                      )
                     ) : null}
                   </div>
                 </div>
@@ -2254,6 +2171,443 @@ function pluginPlanNotice(plan: PluginInstallPlanView, t: ReturnType<typeof useT
 	return plan.status ? t("caps.pluginPlanStatus", { status: plan.status }) : t("caps.pluginPlanComplete");
 }
 
+type MCPSettingsScreen =
+	| { kind: "list" }
+	| { kind: "add" }
+	| { kind: "detail"; name: string }
+	| { kind: "edit"; name: string };
+
+type MCPServerEditorDraft = {
+	name: string;
+	transport: string;
+	command: string;
+	structuredCommand?: {
+		display: string;
+		command: string;
+		args: string[];
+	};
+	url: string;
+	env: string;
+	headers: string;
+};
+
+type MCPServerJSONError = "invalid" | "single" | "name" | "required";
+
+function mcpServerSchemaIssueCount(server: ServerView): number {
+	return (server.toolList ?? []).filter((tool) => tool.schemaError).length;
+}
+
+function mcpSettingsServerSummary(server: ServerView, t: ReturnType<typeof useT>): string {
+	if (server.status === "failed") {
+		return server.authStatus === "required" ? t("caps.authRequiredSummary") : summarizeServerError(server.error || t("caps.failed"));
+	}
+	if (server.status !== "connected") return serverStatusLabel(server, t);
+	const unavailable = mcpServerSchemaIssueCount(server);
+	const parts = [serverStatusLabel(server, t), t("caps.serverToolSummary", { tools: server.tools || 0 })];
+	if (unavailable > 0) parts.push(t("caps.schemaIssues", { count: unavailable }));
+	return parts.join(" · ");
+}
+
+function mcpSettingsSearchText(server: ServerView): string {
+	return [
+		server.name,
+		server.transport,
+		serverCommand(server),
+		server.error,
+		server.managedByPlugin,
+		...(server.toolList ?? []).flatMap((tool) => [tool.name, tool.description]),
+	].filter(Boolean).join(" ").toLowerCase();
+}
+
+function MCPSettingsSubpageHeader({
+	title,
+	description,
+	onBack,
+}: {
+	title: string;
+	description: string;
+	onBack: () => void;
+}) {
+	const t = useT();
+	return (
+		<header className="cap-mcp-subpage__header">
+			<button className="cap-mcp-subpage__back" type="button" onClick={onBack}>
+				<ArrowLeft aria-hidden size={14} />
+				{t("caps.backToServers")}
+			</button>
+			<h3 className="cap-mcp-subpage__title">{title}</h3>
+			<p className="cap-mcp-subpage__desc">{description}</p>
+		</header>
+	);
+}
+
+function MCPSettingsServerRow({
+	server,
+	busy,
+	onOpen,
+	onRetry,
+	onToggle,
+}: {
+	server: ServerView;
+	busy: boolean;
+	onOpen: () => void;
+	onRetry: () => void;
+	onToggle: (enabled: boolean) => void;
+}) {
+	const t = useT();
+	const lifecycle = mcpServerLifecycleActions(server);
+	const target = serverCommand(server);
+	const actionLabel = serverActionLabel(server, t);
+	const handlePrimaryAction = () => {
+		if (shouldOpenAuth(server)) {
+			openExternal((server.authUrl || "").trim());
+			return;
+		}
+		onRetry();
+	};
+
+	return (
+		<div className={`cap-mcp-list-row${server.status === "disabled" ? " cap-mcp-list-row--disabled" : ""}`} data-status={server.status}>
+			<button className="cap-mcp-list-row__main" type="button" onClick={onOpen}>
+				<span className="cap-mcp-list-row__icon" aria-hidden>
+					<ServerIcon size={16} strokeWidth={1.8} />
+				</span>
+				<span className="cap-mcp-list-row__copy">
+					<span className="cap-mcp-list-row__head">
+						<span className={`cap-dot cap-dot--${server.status}`} aria-hidden />
+						<span className="cap-mcp-list-row__name">{server.name}</span>
+						<span className="cap-mcp-list-row__transport">{server.transport}</span>
+						{server.builtIn && <span className="cap-row__builtin">{t("caps.builtIn")}</span>}
+					</span>
+					<span className={`cap-mcp-list-row__summary${server.status === "failed" ? " cap-mcp-list-row__summary--error" : ""}`}>
+						{mcpSettingsServerSummary(server, t)}
+					</span>
+					{target && <span className="cap-mcp-list-row__target">{target}</span>}
+					{server.managedByPlugin && (
+						<span className="cap-mcp-list-row__owner">{t("caps.managedByPlugin", { plugin: server.managedByPlugin })}</span>
+					)}
+				</span>
+				<ChevronRight className="cap-mcp-list-row__chevron" aria-hidden size={16} />
+			</button>
+			<div className="cap-mcp-list-row__actions">
+				{lifecycle.showRetryInRow ? (
+					<button className="btn btn--small" disabled={busy} type="button" onClick={handlePrimaryAction}>
+						{actionLabel}
+					</button>
+				) : !server.managedByPlugin ? (
+					<Tooltip label={lifecycle.enabled ? t("caps.disable") : t("caps.enable")}>
+						<label className="cap-switch">
+							<input
+								type="checkbox"
+								checked={lifecycle.enabled}
+								disabled={busy}
+								onChange={(event) => onToggle(event.target.checked)}
+							/>
+							<span className="cap-switch__track" />
+						</label>
+					</Tooltip>
+				) : null}
+			</div>
+		</div>
+	);
+}
+
+function MCPSettingsServerGroup({
+	title,
+	hint,
+	servers,
+	busy,
+	onOpen,
+	onRetry,
+	onToggle,
+}: {
+	title: string;
+	hint?: string;
+	servers: ServerView[];
+	busy: boolean;
+	onOpen: (name: string) => void;
+	onRetry: (name: string) => void;
+	onToggle: (name: string, enabled: boolean) => void;
+}) {
+	if (servers.length === 0) return null;
+	return (
+		<section className="cap-mcp-list-section">
+			<div className="cap-mcp-list-section__head">
+				<div>
+					<div className="cap-mcp-list-section__title">{title} <span>{servers.length}</span></div>
+					{hint && <div className="cap-mcp-list-section__hint">{hint}</div>}
+				</div>
+			</div>
+			<div className="cap-mcp-list">
+				{servers.map((server) => (
+					<MCPSettingsServerRow
+						key={server.name}
+						server={server}
+						busy={busy}
+						onOpen={() => onOpen(server.name)}
+						onRetry={() => onRetry(server.name)}
+						onToggle={(enabled) => onToggle(server.name, enabled)}
+					/>
+				))}
+			</div>
+		</section>
+	);
+}
+
+function mcpServerEditorDraft(server?: ServerView): MCPServerEditorDraft {
+	const transport = normalizeTransportValue(server?.transport || "stdio");
+	const command = server && transport === "stdio" ? serverCommand(server) : "";
+	return {
+		name: server?.name || "",
+		transport,
+		command,
+		structuredCommand: server && transport === "stdio" ? {
+			display: command,
+			command: server.command || "",
+			args: [...(server.args ?? [])],
+		} : undefined,
+		url: server && transport !== "stdio" ? server.url || serverCommand(server) : "",
+		env: "",
+		headers: "",
+	};
+}
+
+function mcpServerDraftInput(draft: MCPServerEditorDraft, trustedReadOnlyTools?: string[]): MCPServerInput {
+	const isStdio = draft.transport === "stdio";
+	const structuredCommand = draft.structuredCommand?.display === draft.command ? draft.structuredCommand : undefined;
+	const envText = draft.env.trim();
+	const headerText = draft.headers.trim();
+	return {
+		name: draft.name.trim(),
+		transport: draft.transport,
+		command: isStdio ? structuredCommand?.command || draft.command.trim() : "",
+		args: isStdio ? structuredCommand?.args ?? [] : [],
+		url: isStdio ? "" : draft.url.trim(),
+		env: envText ? parseKeyValueText(envText) : null,
+		headers: !isStdio && headerText ? parseKeyValueText(headerText) : null,
+		trustedReadOnlyTools,
+	};
+}
+
+function mcpServerDraftJSON(draft: MCPServerEditorDraft): string {
+	const input = mcpServerDraftInput(draft);
+	const entry: Record<string, unknown> = { type: input.transport };
+	if (input.transport === "stdio") {
+		entry.command = input.command;
+		if (input.args.length > 0) entry.args = input.args;
+	}
+	else entry.url = input.url;
+	if (input.env && Object.keys(input.env).length > 0) entry.env = input.env;
+	if (input.headers && Object.keys(input.headers).length > 0) entry.headers = input.headers;
+	return JSON.stringify({ [input.name || "server-name"]: entry }, null, 2);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
+function stringRecord(value: unknown): Record<string, string> | null {
+	if (value == null) return null;
+	if (!isRecord(value) || Object.values(value).some((item) => typeof item !== "string")) throw new Error("invalid");
+	return Object.fromEntries(Object.entries(value).map(([key, item]) => [key, item as string]));
+}
+
+function parseMCPServerJSON(raw: string, fixedName?: string, trustedReadOnlyTools?: string[]): { input: MCPServerInput; draft: MCPServerEditorDraft } {
+	let parsed: unknown;
+	try {
+		parsed = JSON.parse(raw);
+	} catch {
+		throw new Error("invalid" satisfies MCPServerJSONError);
+	}
+	if (!isRecord(parsed)) throw new Error("single" satisfies MCPServerJSONError);
+	const container = isRecord(parsed.mcpServers) ? parsed.mcpServers : parsed;
+	const entries = Object.entries(container);
+	if (entries.length !== 1) throw new Error("single" satisfies MCPServerJSONError);
+	const [name, value] = entries[0];
+	if (!name.trim() || !isRecord(value)) throw new Error("single" satisfies MCPServerJSONError);
+	if (fixedName && name !== fixedName) throw new Error("name" satisfies MCPServerJSONError);
+	const transportValue = typeof value.type === "string" ? value.type : value.transport;
+	const transport = normalizeTransportValue(typeof transportValue === "string" ? transportValue : (typeof value.url === "string" ? "http" : "stdio"));
+	const command = typeof value.command === "string" ? value.command.trim() : "";
+	const args = Array.isArray(value.args) && value.args.every((arg) => typeof arg === "string") ? value.args as string[] : [];
+	const url = typeof value.url === "string" ? value.url.trim() : "";
+	if ((transport === "stdio" && !command) || (transport !== "stdio" && !url)) {
+		throw new Error("required" satisfies MCPServerJSONError);
+	}
+	let env: Record<string, string> | null;
+	let headers: Record<string, string> | null;
+	try {
+		env = stringRecord(value.env);
+		headers = stringRecord(value.headers);
+	} catch {
+		throw new Error("invalid" satisfies MCPServerJSONError);
+	}
+	const input: MCPServerInput = {
+		name: fixedName || name,
+		transport,
+		command: transport === "stdio" ? command : "",
+		args: transport === "stdio" ? args : [],
+		url: transport === "stdio" ? "" : url,
+		env,
+		headers: transport === "stdio" ? null : headers,
+		trustedReadOnlyTools,
+	};
+	return {
+		input,
+			draft: {
+				name: input.name,
+				transport,
+				command: [command, ...args].filter(Boolean).join(" "),
+				structuredCommand: transport === "stdio" ? {
+					display: [command, ...args].filter(Boolean).join(" "),
+					command,
+					args: [...args],
+				} : undefined,
+			url,
+			env: env ? Object.entries(env).map(([key, item]) => `${key}=${item}`).join("\n") : "",
+			headers: headers ? Object.entries(headers).map(([key, item]) => `${key}=${item}`).join("\n") : "",
+		},
+	};
+}
+
+function mcpServerJSONErrorLabel(error: unknown, t: ReturnType<typeof useT>): string {
+	const code = error instanceof Error ? error.message as MCPServerJSONError : "invalid";
+	if (code === "single") return t("caps.jsonSingleServer");
+	if (code === "name") return t("caps.jsonNameMismatch");
+	if (code === "required") return t("caps.jsonRequired");
+	return t("caps.jsonInvalid");
+}
+
+function MCPServerSettingsEditor({
+	server,
+	busy,
+	onCancel,
+	onSubmit,
+}: {
+	server?: ServerView;
+	busy: boolean;
+	onCancel: () => void;
+	onSubmit: (input: MCPServerInput) => void;
+}) {
+	const t = useT();
+	const [mode, setMode] = useState<"form" | "json">("form");
+	const [draft, setDraft] = useState<MCPServerEditorDraft>(() => mcpServerEditorDraft(server));
+	const [json, setJSON] = useState(() => mcpServerDraftJSON(mcpServerEditorDraft(server)));
+	const [jsonError, setJSONError] = useState("");
+	const [advancedOpen, setAdvancedOpen] = useState(false);
+	const isStdio = draft.transport === "stdio";
+	const ready = Boolean(draft.name.trim() && (isStdio ? draft.command.trim() : draft.url.trim()));
+
+	const updateDraft = (patch: Partial<MCPServerEditorDraft>) => setDraft((current) => ({ ...current, ...patch }));
+	const switchMode = (next: "form" | "json") => {
+		if (next === mode) return;
+		if (next === "json") {
+			setJSON(mcpServerDraftJSON(draft));
+			setJSONError("");
+			setMode("json");
+			return;
+		}
+		try {
+			const parsed = parseMCPServerJSON(json, server?.name, server?.trustedReadOnlyTools);
+			setDraft(parsed.draft);
+			setJSONError("");
+			setMode("form");
+		} catch (error) {
+			setJSONError(mcpServerJSONErrorLabel(error, t));
+		}
+	};
+	const submit = () => {
+		if (mode === "form") {
+			onSubmit(mcpServerDraftInput(draft, server?.trustedReadOnlyTools));
+			return;
+		}
+		try {
+			const parsed = parseMCPServerJSON(json, server?.name, server?.trustedReadOnlyTools);
+			setJSONError("");
+			onSubmit(parsed.input);
+		} catch (error) {
+			setJSONError(mcpServerJSONErrorLabel(error, t));
+		}
+	};
+
+	return (
+		<div className="cap-mcp-editor">
+			<div className="cap-mcp-editor__mode set-seg" role="tablist" aria-label={t("caps.editorMode")}>
+				<button className={`set-seg__btn${mode === "form" ? " set-seg__btn--on" : ""}`} type="button" role="tab" aria-selected={mode === "form"} onClick={() => switchMode("form")}>
+					{t("caps.formMode")}
+				</button>
+				<button className={`set-seg__btn${mode === "json" ? " set-seg__btn--on" : ""}`} type="button" role="tab" aria-selected={mode === "json"} onClick={() => switchMode("json")}>
+					{t("caps.jsonMode")}
+				</button>
+			</div>
+			{mode === "form" ? (
+				<div className="cap-mcp-form-grid">
+					<label className="cap-mcp-field cap-mcp-field--name">
+						<span>{t("caps.name")}</span>
+						<input className="mem-input" value={draft.name} disabled={busy || Boolean(server)} onChange={(event) => updateDraft({ name: event.target.value })} placeholder={t("caps.namePlaceholder")} />
+					</label>
+					<label className="cap-mcp-field cap-mcp-field--transport">
+						<span>{t("caps.transport")}</span>
+						<select className="mem-select" value={draft.transport} disabled={busy} onChange={(event) => updateDraft({ transport: normalizeTransportValue(event.target.value) })}>
+							<option value="stdio">stdio</option>
+							<option value="http">http</option>
+							<option value="sse">sse</option>
+						</select>
+					</label>
+					{isStdio ? (
+						<label className="cap-mcp-field cap-mcp-field--wide">
+							<span>{t("caps.command")}</span>
+							<input className="mem-input" value={draft.command} disabled={busy} onChange={(event) => updateDraft({ command: event.target.value })} placeholder={t("caps.commandPlaceholder")} />
+						</label>
+					) : (
+						<label className="cap-mcp-field cap-mcp-field--wide">
+							<span>{t("caps.url")}</span>
+							<input className="mem-input" value={draft.url} disabled={busy} onChange={(event) => updateDraft({ url: event.target.value })} placeholder={t("caps.urlPlaceholder")} />
+						</label>
+					)}
+					<div className="cap-mcp-advanced cap-mcp-field--wide">
+						<button className="cap-mcp-advanced__toggle" type="button" aria-expanded={advancedOpen} onClick={() => setAdvancedOpen((open) => !open)}>
+							{advancedOpen ? <ChevronDown aria-hidden size={14} /> : <ChevronRight aria-hidden size={14} />}
+							{advancedOpen ? t("caps.hideAdvancedOptions") : t("caps.advancedOptions")}
+						</button>
+						{advancedOpen && (
+							<div className="cap-mcp-advanced__body">
+								{!isStdio && (
+									<label className="cap-mcp-field">
+										<span>{t("caps.headersLabel")}</span>
+										<textarea className="mem-textarea" value={draft.headers} disabled={busy} onChange={(event) => updateDraft({ headers: event.target.value })} placeholder={t("caps.headersPlaceholder")} spellCheck={false} />
+										{server?.headerKeys && server.headerKeys.length > 0 && <small>{t("caps.headersPreserveHint")}</small>}
+									</label>
+								)}
+								<label className="cap-mcp-field">
+									<span>{t("caps.envLabel")}</span>
+									<textarea className="mem-textarea" value={draft.env} disabled={busy} onChange={(event) => updateDraft({ env: event.target.value })} placeholder={t("caps.envPlaceholder")} spellCheck={false} />
+									{server?.envKeys && server.envKeys.length > 0 && <small>{t("caps.envPreserveHint")}</small>}
+								</label>
+							</div>
+						)}
+					</div>
+				</div>
+			) : (
+				<div className="cap-mcp-json-editor">
+					<label className="cap-mcp-field">
+						<span>{t("caps.jsonConfig")}</span>
+						<textarea className="mem-textarea cap-mcp-json-editor__input" value={json} disabled={busy} onInput={(event) => { setJSON(event.currentTarget.value); setJSONError(""); }} spellCheck={false} />
+					</label>
+					<div className="cap-mcp-json-editor__hint">{t("caps.jsonPasteHint")}</div>
+					{jsonError && <div className="banner banner--error" role="alert">{jsonError}</div>}
+				</div>
+			)}
+			<div className="cap-mcp-editor__actions">
+				<button className="btn btn--small" disabled={busy} type="button" onClick={onCancel}>{t("common.cancel")}</button>
+				<button className="btn btn--primary btn--small" disabled={busy || (mode === "form" && !ready)} type="button" onClick={submit}>
+					{server ? t("caps.saveConfig") : t("caps.add")}
+				</button>
+			</div>
+		</div>
+	);
+}
+
 // MCPServersSettingsPage is a self-contained MCP servers management page
 // embedded inside the settings centre.
 export function MCPServersSettingsPage() {
@@ -2262,11 +2616,8 @@ export function MCPServersSettingsPage() {
 	const [servers, setServers] = useState<ServerView[] | null>(null);
 	const [busy, setBusy] = useState(false);
 	const [err, setErr] = useState<string | null>(null);
-	const [adding, setAdding] = useState(false);
-	const [editing, setEditing] = useState<string | null>(null);
-	const [expandedErrors, setExpandedErrors] = useState<Set<string>>(() => new Set());
-	const [expandedServers, setExpandedServers] = useState<Set<string>>(() => new Set());
-	const [expandedServerTools, setExpandedServerTools] = useState<Set<string>>(() => new Set());
+	const [query, setQuery] = useState("");
+	const [screen, setScreen] = useState<MCPSettingsScreen>({ kind: "list" });
 
 	const reload = useCallback(async () => {
 		const [meta, tabs] = await Promise.all([
@@ -2307,106 +2658,127 @@ export function MCPServersSettingsPage() {
 			setBusy(false);
 		}
 	};
-	const serverGroups = useMemo(() => {
+	const filteredServers = useMemo(() => {
 		const sorted = sortServersForDisplay(servers ?? []);
-		return {
-			failed: sorted.filter((s) => s.status === "failed"),
-			active: sorted.filter((s) => s.status !== "failed"),
-		};
-	}, [servers]);
-	const retryableActiveServerNames = useMemo(() => retryableAvailableServerNames(serverGroups.active), [serverGroups.active]);
-	const toggleError = useCallback((name: string) => {
-		setExpandedErrors((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
-	}, []);
-	const toggleServer = useCallback((name: string) => {
-		setExpandedServers((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
-	}, []);
-	const toggleServerTools = useCallback((name: string) => {
-		setExpandedServerTools((prev) => { const next = new Set(prev); if (next.has(name)) next.delete(name); else next.add(name); return next; });
-	}, []);
+		const normalizedQuery = query.trim().toLowerCase();
+		return normalizedQuery ? sorted.filter((server) => mcpSettingsSearchText(server).includes(normalizedQuery)) : sorted;
+	}, [query, servers]);
+	const configuredServers = useMemo(() => filteredServers.filter((server) => !server.managedByPlugin), [filteredServers]);
+	const managedServers = useMemo(() => filteredServers.filter((server) => Boolean(server.managedByPlugin)), [filteredServers]);
+	const selectedServer = screen.kind === "detail" || screen.kind === "edit"
+		? servers?.find((server) => server.name === screen.name)
+		: undefined;
+	useEffect(() => {
+		if (servers && (screen.kind === "detail" || screen.kind === "edit") && !servers.some((server) => server.name === screen.name)) {
+			setScreen({ kind: "list" });
+		}
+	}, [screen, servers]);
 
 	const summary = useMemo(() => {
 		if (!servers) return "";
 		return mcpServerSummary(servers, t);
 	}, [servers, t]);
 
-	const loading = !servers;
+	const loading = servers === null;
 	const actionBusy = busy || !snapshotKey || loading;
 
-		return (
-			<section className="mem-section">
-				{err && serverGroups.failed.length === 0 && <div className="banner banner--error">{err}</div>}
-				<div className="cap-mcp-toolbar">
-				{servers && servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
-				<div className="cap-mcp-toolbar__actions">
-					{!adding && (
-						<button className="btn btn--small" disabled={actionBusy} onClick={() => setAdding(true)}>
-							{t("caps.addServer")}
-						</button>
-					)}
-				</div>
-			</div>
-				{serverGroups.failed.length > 0 && (
-					<FailedServersNotice
-						servers={serverGroups.failed}
-						expanded={expandedErrors}
-						busy={actionBusy}
-						onToggle={toggleError}
-						onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
-						onRetryMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.ReconnectMCPServer(name))))}
-					onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
-					onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
-					onConfirmMany={(names) => void mutate(() => Promise.allSettled(names.map((name) => app.RemoveMCPServer(name))))}
-					/>
-			)}
-			{loading && !adding && (
-				<div className="mem-empty">{t("caps.loading")}</div>
-			)}
-			{!loading && servers.length === 0 && !adding && (
-				<div className="mem-empty">{t("caps.noServers")}</div>
-			)}
-			{serverGroups.active.length > 0 && (
-				<div className="cap-server-section">
-					<div className="cap-server-section__head">
-						<div className="cap-server-section__title">{t("caps.availableServers")}</div>
-						<button
-							className="btn btn--small"
-							disabled={actionBusy || retryableActiveServerNames.length === 0}
-							type="button"
-							onClick={() => void mutate(() => Promise.allSettled(retryableActiveServerNames.map((name) => app.ReconnectMCPServer(name))))}
-						>
-							{t("caps.retryAll")}
-						</button>
+	return (
+		<section className="cap-mcp-settings">
+			{err && <div className="banner banner--error" role="alert">{err}</div>}
+			{screen.kind === "list" && (
+				<>
+					<div className="cap-mcp-list-toolbar">
+						{servers && servers.length > 0 ? <div className="drawer__summary">{summary}</div> : <span />}
+						<div className="cap-mcp-list-toolbar__actions">
+							<Tooltip label={t("caps.refresh")}>
+								<button className="cap-mcp-icon-btn" type="button" aria-label={t("caps.refresh")} disabled={actionBusy} onClick={() => void reload()}>
+									<RefreshCw aria-hidden size={15} />
+								</button>
+							</Tooltip>
+							<button className="btn btn--primary btn--small cap-mcp-add-btn" disabled={actionBusy} type="button" onClick={() => setScreen({ kind: "add" })}>
+								<Plus aria-hidden size={14} />
+								{t("caps.addServer")}
+							</button>
+						</div>
 					</div>
-						<ServerGroup
-							busy={actionBusy}
-							servers={serverGroups.active}
-							expanded={expandedServers}
-						expandedTools={expandedServerTools}
-						editing={editing}
-						onConfirm={(name) => void mutate(() => app.RemoveMCPServer(name))}
-						onEdit={(name) => { setEditing(name); }}
-						onCancelEdit={() => setEditing(null)}
+					<label className="cap-mcp-search">
+						<Search aria-hidden size={15} />
+						<input type="search" value={query} onInput={(event) => setQuery(event.currentTarget.value)} placeholder={t("caps.searchServers")} />
+					</label>
+					{loading && <div className="mem-empty">{t("caps.loading")}</div>}
+					{!loading && servers.length === 0 && <div className="mem-empty">{t("caps.noServers")}</div>}
+					{!loading && servers.length > 0 && filteredServers.length === 0 && <div className="mem-empty">{t("caps.noServerMatches")}</div>}
+					<MCPSettingsServerGroup
+						title={t("caps.configuredServers")}
+						servers={configuredServers}
+						busy={actionBusy}
+						onOpen={(name) => setScreen({ kind: "detail", name })}
 						onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
-						onReconnect={(name) => void mutate(() => app.ReconnectMCPServer(name))}
-						onConfirmClearAuth={(name) => void mutate(() => app.ClearMCPServerAuthentication(name))}
-						onTrustTool={(name, toolName) => void mutate(() => app.TrustMCPServerTool(name, toolName))}
-						onTrustTools={(name, toolNames) => void mutate(() => app.TrustMCPServerTools(name, toolNames))}
-						onUntrustTool={(name, toolName) => void mutate(() => app.UntrustMCPServerTool(name, toolName))}
-						onToggle={(name, on) => void mutate(() => app.SetMCPServerEnabled(name, on))}
-						onUpdate={(name, input) =>
-							void mutate(() => app.UpdateMCPServer(name, input)).then((ok) => {
-								if (ok) setEditing(null);
-							})
-						}
-						onToggleDetails={toggleServer}
-						onToggleTools={toggleServerTools}
+						onToggle={(name, enabled) => void mutate(() => app.SetMCPServerEnabled(name, enabled))}
+					/>
+					<MCPSettingsServerGroup
+						title={t("caps.pluginServers")}
+						hint={t("caps.pluginServersHint")}
+						servers={managedServers}
+						busy={actionBusy}
+						onOpen={(name) => setScreen({ kind: "detail", name })}
+						onRetry={(name) => void mutate(() => app.ReconnectMCPServer(name))}
+						onToggle={(name, enabled) => void mutate(() => app.SetMCPServerEnabled(name, enabled))}
+					/>
+				</>
+			)}
+			{screen.kind === "add" && (
+				<div className="cap-mcp-subpage">
+					<MCPSettingsSubpageHeader title={t("caps.addServerTitle")} description={t("caps.addServerHint")} onBack={() => setScreen({ kind: "list" })} />
+					<MCPServerSettingsEditor
+						busy={busy}
+						onCancel={() => setScreen({ kind: "list" })}
+						onSubmit={(input) => void mutate(() => app.AddMCPServer(input)).then((ok) => { if (ok) setScreen({ kind: "list" }); })}
 					/>
 				</div>
 			)}
-			{adding ? (
-				<AddServerForm busy={busy} onCancel={() => setAdding(false)} onAdd={async (input) => (await mutate(() => app.AddMCPServer(input))) && setAdding(false)} />
-			) : null}
+			{screen.kind === "edit" && selectedServer && (
+				<div className="cap-mcp-subpage">
+					<MCPSettingsSubpageHeader title={t("caps.editServerTitle", { name: selectedServer.name })} description={t("caps.editServerHint")} onBack={() => setScreen({ kind: "detail", name: selectedServer.name })} />
+					<MCPServerSettingsEditor
+						server={selectedServer}
+						busy={busy}
+						onCancel={() => setScreen({ kind: "detail", name: selectedServer.name })}
+						onSubmit={(input) => void mutate(() => app.UpdateMCPServer(selectedServer.name, input)).then((ok) => { if (ok) setScreen({ kind: "detail", name: selectedServer.name }); })}
+					/>
+				</div>
+			)}
+			{screen.kind === "detail" && selectedServer && (
+				<div className="cap-mcp-subpage">
+					<MCPSettingsSubpageHeader title={selectedServer.name} description={t("caps.serverDetailsHint")} onBack={() => setScreen({ kind: "list" })} />
+					{selectedServer.error && (
+						<div className="cap-mcp-detail-error">
+							<div className="banner banner--error">{summarizeServerError(selectedServer.error)}</div>
+							<details>
+								<summary>{t("caps.rawLog")}</summary>
+								<pre>{selectedServer.error}</pre>
+							</details>
+						</div>
+					)}
+					<ServerDetails
+						s={selectedServer}
+						tools={selectedServer.toolList ?? []}
+						busy={actionBusy}
+						onConfirm={() => void mutate(() => app.RemoveMCPServer(selectedServer.name)).then((ok) => { if (ok) setScreen({ kind: "list" }); })}
+						onConnectNow={() => void mutate(() => app.ReconnectMCPServer(selectedServer.name))}
+						onReconnect={() => void mutate(() => app.ReconnectMCPServer(selectedServer.name))}
+						onConfirmClearAuth={() => void mutate(() => app.ClearMCPServerAuthentication(selectedServer.name))}
+						toolsExpanded
+						editing={false}
+						onEdit={() => setScreen({ kind: "edit", name: selectedServer.name })}
+						onCancelEdit={() => undefined}
+						onUpdate={() => undefined}
+						onToggleTools={() => undefined}
+						standalone
+						showToolsToggle={false}
+					/>
+				</div>
+			)}
 		</section>
 	);
 }

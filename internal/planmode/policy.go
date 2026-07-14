@@ -35,11 +35,6 @@ const (
 type Call struct {
 	Name     string
 	ReadOnly bool
-	// Untrusted is true when ReadOnly came from an external, untrusted source —
-	// an MCP server's readOnlyHint. Plan mode does not take such a flag at face
-	// value and gates the tool like a writer. Set by the agent from
-	// tool.PlanModeUntrustedReadOnly at the gate call site.
-	Untrusted bool
 	// Safety is the tool's self-reported plan-mode stance. It is Unknown when
 	// the tool does not implement tool.PlanModeClassifier; the agent translates
 	// the interface result into this field at the gate call site.
@@ -179,17 +174,12 @@ var goWriteOrExecArgs = map[string]bool{
 	"-vettool":  true,
 }
 
-// Decide applies the plan-mode stage gate before permission policy. The boundary
-// is fail-closed for untrusted tools: a tool whose ReadOnly() is false, or whose
-// ReadOnly() is asserted by an untrusted external source (an MCP server's
-// readOnlyHint, surfaced via Call.Untrusted), is refused unless it self-reports
-// plan-safe, is declared in plan_mode_allowed_tools, or is trusted by plugin
-// configuration before reaching this policy. A trustworthy ReadOnly()==true tool
-// — a built-in or a first-party/user MCP override — is allowed,
-// EXCEPT one that self-reports PlanSafetyUnsafe (complete_step: read-only yet
-// post-approval only), which is refused regardless. The invariant
-// PlanSafe ⇒ ReadOnly is enforced: a writer that claims plan-safe is a wiring
-// bug and is refused.
+// Decide applies the plan-mode stage gate before permission policy. A tool whose
+// ReadOnly() is false is refused unless it is declared in
+// plan_mode_allowed_tools. ReadOnly()==true tools, including installed MCP tools
+// carrying readOnlyHint, are allowed except when they explicitly self-report
+// PlanSafetyUnsafe. The invariant PlanSafe => ReadOnly is enforced: a writer
+// that claims plan-safe is a wiring bug and is refused.
 func (p Policy) Decide(call Call) Decision {
 	name := strings.TrimSpace(call.Name)
 	if name == "bash" {
@@ -210,20 +200,13 @@ func (p Policy) Decide(call Call) Decision {
 		}
 		return Decision{}
 	}
-	if call.ReadOnly && !call.Untrusted {
-		// Trusted: built-ins and first-party MCP overrides report a trustworthy
-		// ReadOnly()==true. A read-only tool that is nonetheless unsafe while
-		// planning is caught above via PlanSafetyUnsafe / knownBlockedTools.
+	if call.ReadOnly {
+		// A read-only tool that is nonetheless unsafe while planning is caught
+		// above via PlanSafetyUnsafe / knownBlockedTools.
 		return Decision{}
 	}
 	if p.allowed(name) {
 		return Decision{}
-	}
-	if call.ReadOnly && call.Untrusted {
-		return Decision{
-			Blocked: true,
-			Message: fmt.Sprintf("blocked: %q reports read-only, but that flag is self-reported by an untrusted external source (e.g. an MCP server's readOnlyHint). Interactive sessions can ask once and remember the decision; non-interactive sessions should pre-seed trusted_read_only_tools or declare the concrete tool in plan_mode_allowed_tools.", name),
-		}
 	}
 	return Decision{
 		Blocked: true,

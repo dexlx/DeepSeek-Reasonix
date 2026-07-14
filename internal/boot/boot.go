@@ -433,8 +433,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		}
 		eagerEntries, bgEntries = nil, nil
 	}
-	trustedMCPServers := planModeTrustedMCPServers(onDemandMCPSpecs)
-
 	// Auto-demote: any eager plugin that has been chronically slow (recent
 	// samples repeatedly hit the blocking startup budget) drops to background
 	// for this session. The user keeps eager intent, just doesn't pay for it
@@ -1187,9 +1185,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 				}
 				return fmt.Sprintf("enabled MCP server %q tools: %s.", spec.Name, strings.Join(names, ", ")), nil
 			},
-			mcpNames:                 onDemandMCPNames,
-			planModeAllowedTools:     cfg.Agent.PlanModeAllowedTools,
-			planModeTrustedMCPServer: trustedMCPServers,
+			mcpNames: onDemandMCPNames,
 		})
 	}
 
@@ -1400,9 +1396,6 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		OnRemember: func(rule string) control.RememberResult {
 			return rememberPermissionRule(root, rule)
 		},
-		OnRememberMCPReadOnlyTrust: func(serverName, rawToolName string) control.MCPReadOnlyTrustResult {
-			return rememberMCPReadOnlyTrust(root, serverName, rawToolName)
-		},
 		OnRememberPlanModeReadOnlyCommand: func(prefix string) control.PlanModeReadOnlyCommandTrustResult {
 			return rememberPlanModeReadOnlyCommand(root, prefix)
 		},
@@ -1486,25 +1479,6 @@ func rememberPermissionConfigPath(workspaceRoot string) string {
 		path = "reasonix.toml" // match Config.Save() fallback
 	}
 	return path
-}
-
-func rememberMCPReadOnlyTrust(workspaceRoot, serverName, rawToolName string) control.MCPReadOnlyTrustResult {
-	serverName = strings.TrimSpace(serverName)
-	rawToolName = strings.TrimSpace(rawToolName)
-	result := control.MCPReadOnlyTrustResult{Server: serverName, Tool: rawToolName}
-	_, changed, path, err := config.TrustPluginReadOnlyToolInSourceForRoot(workspaceRoot, serverName, rawToolName)
-	result.Path = path
-	if err != nil {
-		slog.Warn("persist MCP read-only trust", "server", serverName, "tool", rawToolName, "err", err)
-		result.Err = err
-		return result
-	}
-	if changed {
-		result.Saved = true
-		return result
-	}
-	result.CoveredBy = rawToolName
-	return result
 }
 
 func rememberPlanModeReadOnlyCommand(workspaceRoot, prefix string) control.PlanModeReadOnlyCommandTrustResult {
@@ -1989,7 +1963,7 @@ func pluginSpecFromEntryWithOptions(e config.PluginEntry, workspaceRoot string, 
 		DefaultCallTimeout: opts.DefaultCallTimeout,
 		CallTimeout:        secondsDuration(e.CallTimeoutSeconds),
 		ToolTimeouts:       toolTimeoutDurations(e.ToolTimeoutSeconds),
-		ReadOnlyToolNames:  trustedRawReadOnlyToolNames(e.TrustedReadOnlyTools),
+		ReadOnlyToolNames:  legacyRawReadOnlyToolNames(e.TrustedReadOnlyTools),
 	}, workspaceRoot)
 }
 
@@ -2067,7 +2041,7 @@ func applyPlanModeAllowedMCPToolTrust(specs []plugin.Spec, allowedTools []string
 	return out
 }
 
-func trustedRawReadOnlyToolNames(names []string) map[string]bool {
+func legacyRawReadOnlyToolNames(names []string) map[string]bool {
 	if len(names) == 0 {
 		return nil
 	}
@@ -2075,22 +2049,6 @@ func trustedRawReadOnlyToolNames(names []string) map[string]bool {
 	for _, name := range names {
 		name = strings.TrimSpace(name)
 		if name != "" {
-			out[name] = true
-		}
-	}
-	if len(out) == 0 {
-		return nil
-	}
-	return out
-}
-
-func planModeTrustedMCPServers(specs map[string]plugin.Spec) map[string]bool {
-	if len(specs) == 0 {
-		return nil
-	}
-	out := map[string]bool{}
-	for name, spec := range specs {
-		if len(spec.ReadOnlyToolNames) > 0 || len(spec.ReadOnlyModelToolNames) > 0 {
 			out[name] = true
 		}
 	}

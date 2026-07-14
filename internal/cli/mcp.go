@@ -409,8 +409,9 @@ Examples:
 Changes take effect on the next session; inside a running chat, use /mcp add to
 connect a server live.
 
-MCP tools that report readOnlyHint are confirmed on first plan-mode use. Choose
-"always allow" in the approval prompt to remember that read-only trust; advanced
-users may pre-seed trusted_read_only_tools in config. Auto/YOLO tool approval
-does not answer this trust prompt.`)
+Installed MCP tools that report readOnlyHint are treated as read-only by the
+permission layer and plan mode. Unhinted MCP writers follow the normal approval
+policy even while planning. Tools that report destructiveHint require a new
+interactive approval for every call; Auto/YOLO cannot bypass it and headless
+runs refuse it.`)
 }

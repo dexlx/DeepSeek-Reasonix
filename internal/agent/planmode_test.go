@@ -119,7 +119,7 @@ func TestPlanModeDeniedToolsBlocked(t *testing.T) {
 	}
 	for _, name := range denied {
 		t.Run(name, func(t *testing.T) {
-			blocked, msg := (&Agent{}).planModeBlocked(name, false, false, planmode.PlanSafetyUnknown, nil)
+			blocked, msg := (&Agent{}).planModeBlocked(name, false, planmode.PlanSafetyUnknown, nil)
 			if !blocked {
 				t.Errorf("planModeBlocked(%q) = false, want true", name)
 			}
@@ -135,18 +135,18 @@ func TestPlanModeDeniedToolsBlocked(t *testing.T) {
 
 func TestPlanModeReadOnlyToolsAllowed(t *testing.T) {
 	// read_file is on the audited read-only whitelist — Unknown safety suffices.
-	if blocked, _ := (&Agent{}).planModeBlocked("read_file", true, false, planmode.PlanSafetyUnknown, nil); blocked {
+	if blocked, _ := (&Agent{}).planModeBlocked("read_file", true, planmode.PlanSafetyUnknown, nil); blocked {
 		t.Error("audited read-only tool read_file should not be blocked in plan mode")
 	}
 	// read_only_skill is not a built-in; it runs only via its plan-safe self-report.
-	if blocked, _ := (&Agent{}).planModeBlocked("read_only_skill", true, false, planmode.PlanSafetySafe, nil); blocked {
+	if blocked, _ := (&Agent{}).planModeBlocked("read_only_skill", true, planmode.PlanSafetySafe, nil); blocked {
 		t.Error("self-reported plan-safe read_only_skill should not be blocked in plan mode")
 	}
 }
 
 func TestPlanModeAllowedToolsOverride(t *testing.T) {
 	a := &Agent{planModeAllowedTools: []string{"custom_tool"}}
-	blocked, _ := a.planModeBlocked("custom_tool", false, false, planmode.PlanSafetyUnknown, nil)
+	blocked, _ := a.planModeBlocked("custom_tool", false, planmode.PlanSafetyUnknown, nil)
 	if blocked {
 		t.Error("tool in planModeAllowedTools should not be blocked")
 	}
@@ -154,14 +154,14 @@ func TestPlanModeAllowedToolsOverride(t *testing.T) {
 
 func TestPlanModeReadOnlyCommandsOverride(t *testing.T) {
 	a := &Agent{planModeReadOnlyCommands: []string{"gh issue view"}}
-	blocked, msg := a.planModeBlocked("bash", false, false, planmode.PlanSafetyUnknown, bashCommandArgs(t, "gh issue view 4572 --json title"))
+	blocked, msg := a.planModeBlocked("bash", false, planmode.PlanSafetyUnknown, bashCommandArgs(t, "gh issue view 4572 --json title"))
 	if blocked {
 		t.Fatalf("command in planModeReadOnlyCommands should not be blocked: %s", msg)
 	}
 }
 
 func TestPlanModeGenericWriterBlocked(t *testing.T) {
-	blocked, msg := (&Agent{}).planModeBlocked("some_writer_tool", false, false, planmode.PlanSafetyUnknown, nil)
+	blocked, msg := (&Agent{}).planModeBlocked("some_writer_tool", false, planmode.PlanSafetyUnknown, nil)
 	if !blocked {
 		t.Error("generic writer tool should be blocked in plan mode")
 	}
@@ -191,23 +191,6 @@ func TestPlanModeExternalToolEscapeValve(t *testing.T) {
 	}
 }
 
-// untrustedReadOnlyTool models an MCP tool that reports ReadOnly()==true from an
-// untrusted server readOnlyHint (PlanModeUntrustedReadOnly()==true).
-type untrustedReadOnlyTool struct {
-	fakeTool
-}
-
-func (untrustedReadOnlyTool) PlanModeUntrustedReadOnly() bool { return true }
-
-type untrustedMCPReadOnlyTool struct {
-	untrustedReadOnlyTool
-	server string
-	raw    string
-}
-
-func (t untrustedMCPReadOnlyTool) MCPServerName() string  { return t.server }
-func (t untrustedMCPReadOnlyTool) MCPRawToolName() string { return t.raw }
-
 type fakePlanModeReadOnlyTrustGate struct {
 	allow  bool
 	reason string
@@ -233,91 +216,128 @@ func (g *readOnlyRecordingGate) Check(ctx context.Context, toolName string, args
 	return true, "", nil
 }
 
-// TestPlanModeUntrustedReadOnlyToolFailsClosed proves the gate does NOT trust an
-// MCP tool's self-reported readOnlyHint: a ReadOnly()==true external tool is
-// still fail-closed in plan mode, and runs only once declared in
-// plan_mode_allowed_tools.
-func TestPlanModeUntrustedReadOnlyToolFailsClosed(t *testing.T) {
-	mk := func() *tool.Registry {
-		reg := tool.NewRegistry()
-		reg.Add(untrustedReadOnlyTool{fakeTool{name: "mcp__srv__query", readOnly: true}})
-		return reg
-	}
-
-	failClosed := New(nil, mk(), NewSession(""), Options{}, event.Discard)
-	failClosed.SetPlanMode(true)
-	if out := failClosed.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__query"}); !strings.HasPrefix(out.output, "blocked:") {
-		t.Errorf("untrusted read-only MCP tool should fail closed in plan mode, got: %q", out.output)
-	}
-
-	declared := New(nil, mk(), NewSession(""), Options{PlanModeAllowedTools: []string{"mcp__srv__query"}}, event.Discard)
-	declared.SetPlanMode(true)
-	if out := declared.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__query"}); strings.HasPrefix(out.output, "blocked:") {
-		t.Errorf("declared untrusted tool should run in plan mode, got: %q", out.output)
-	}
+type annotatedMCPTool struct {
+	fakeTool
+	server      string
+	raw         string
+	destructive bool
 }
 
-func TestPlanModeUntrustedReadOnlyToolCanAskForTrust(t *testing.T) {
+func (t annotatedMCPTool) MCPServerName() string    { return t.server }
+func (t annotatedMCPTool) MCPRawToolName() string   { return t.raw }
+func (t annotatedMCPTool) MCPDestructiveHint() bool { return t.destructive }
+
+type mcpPermissionRecordingGate struct {
+	normalCalls int
+	freshCalls  int
+	readOnly    []bool
+	allowNormal bool
+	allowFresh  bool
+	reason      string
+	subject     string
+}
+
+func (g *mcpPermissionRecordingGate) Check(_ context.Context, _ string, _ json.RawMessage, readOnly bool) (bool, string, error) {
+	g.normalCalls++
+	g.readOnly = append(g.readOnly, readOnly)
+	return g.allowNormal, g.reason, nil
+}
+
+func (g *mcpPermissionRecordingGate) CheckFresh(_ context.Context, _ string, subject string, _ json.RawMessage, readOnly bool) (bool, string, error) {
+	g.freshCalls++
+	g.subject = subject
+	g.readOnly = append(g.readOnly, readOnly)
+	return g.allowFresh, g.reason, nil
+}
+
+func TestPlanModeInstalledMCPReadOnlyHintRunsWithoutTrustPrompt(t *testing.T) {
 	reg := tool.NewRegistry()
-	reg.Add(untrustedMCPReadOnlyTool{
-		untrustedReadOnlyTool: untrustedReadOnlyTool{fakeTool{name: "mcp__srv__normalized_query", readOnly: true}},
-		server:                "srv",
-		raw:                   "raw/query",
-	})
-	gate := &fakePlanModeReadOnlyTrustGate{allow: true}
-	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	reg.Add(fakeTool{name: "mcp__srv__query", readOnly: true})
+	trustGate := &fakePlanModeReadOnlyTrustGate{allow: false, reason: "must not prompt"}
+	permissionGate := &readOnlyRecordingGate{}
+	a := New(nil, reg, NewSession(""), Options{Gate: permissionGate, PlanModeReadOnlyTrustGate: trustGate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__normalized_query", Arguments: `{"q":"x"}`})
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__query", Arguments: `{"q":"x"}`})
 	if strings.HasPrefix(out.output, "blocked:") || !strings.Contains(out.output, "done") {
-		t.Fatalf("trusted untrusted-read-only MCP tool should run, got: %q", out.output)
+		t.Fatalf("installed read-only MCP tool should run in plan mode, got: %q", out.output)
 	}
-	if gate.calls != 1 {
-		t.Fatalf("trust gate calls = %d, want 1", gate.calls)
+	if trustGate.calls != 0 {
+		t.Fatalf("MCP read-only tool triggered trust prompts = %d, want 0", trustGate.calls)
 	}
-	if gate.req.ServerName != "srv" || gate.req.RawToolName != "raw/query" {
-		t.Fatalf("trust request target = %+v, want raw MCP identity", gate.req)
-	}
-	if gate.req.ToolName != "mcp__srv__normalized_query" || string(gate.req.Args) != `{"q":"x"}` {
-		t.Fatalf("trust request call metadata = %+v", gate.req)
+	if len(permissionGate.readOnly) != 1 || !permissionGate.readOnly[0] {
+		t.Fatalf("normal permission gate read-only calls = %v, want [true]", permissionGate.readOnly)
 	}
 }
 
-func TestPlanModeUntrustedReadOnlyToolTrustDeclineBlocks(t *testing.T) {
+func TestPlanModeInstalledMCPWriterUsesNormalPermissionGate(t *testing.T) {
 	reg := tool.NewRegistry()
-	reg.Add(untrustedReadOnlyTool{fakeTool{name: "mcp__srv__query", readOnly: true}})
-	gate := &fakePlanModeReadOnlyTrustGate{allow: false, reason: "not trusted"}
-	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__srv__write", readOnly: false}, server: "srv", raw: "write"})
+	gate := &mcpPermissionRecordingGate{allowNormal: true}
+	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__query"})
-	if !strings.Contains(out.output, "not trusted") {
-		t.Fatalf("declined trust should block with reason, got: %q", out.output)
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__write", Arguments: `{"value":"x"}`})
+	if strings.HasPrefix(out.output, "blocked:") || !strings.Contains(out.output, "done") {
+		t.Fatalf("approved installed MCP writer should run through normal permission, got: %q", out.output)
 	}
-	if gate.req.ServerName != "srv" || gate.req.RawToolName != "query" {
-		t.Fatalf("fallback trust request target = %+v", gate.req)
+	if gate.normalCalls != 1 || gate.freshCalls != 0 || len(gate.readOnly) != 1 || gate.readOnly[0] {
+		t.Fatalf("permission calls normal=%d fresh=%d readOnly=%v, want normal writer call", gate.normalCalls, gate.freshCalls, gate.readOnly)
 	}
 }
 
-type unsafeUntrustedReadOnlyTool struct {
-	untrustedReadOnlyTool
-}
-
-func (unsafeUntrustedReadOnlyTool) PlanModeSafe() bool { return false }
-
-func TestPlanModeUnsafeUntrustedReadOnlyToolDoesNotAskForTrust(t *testing.T) {
+func TestPlanModeInstalledMCPWriterHonorsPermissionDenial(t *testing.T) {
 	reg := tool.NewRegistry()
-	reg.Add(unsafeUntrustedReadOnlyTool{untrustedReadOnlyTool{fakeTool{name: "mcp__srv__unsafe", readOnly: true}}})
-	gate := &fakePlanModeReadOnlyTrustGate{allow: true}
-	a := New(nil, reg, NewSession(""), Options{PlanModeReadOnlyTrustGate: gate}, event.Discard)
+	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__srv__write", readOnly: false}, server: "srv", raw: "write"})
+	gate := &mcpPermissionRecordingGate{reason: "denied by policy"}
+	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
 	a.SetPlanMode(true)
 
-	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__unsafe"})
-	if !strings.HasPrefix(out.output, "blocked:") {
-		t.Fatalf("unsafe untrusted read-only MCP tool should remain blocked, got: %q", out.output)
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__write"})
+	if !strings.Contains(out.output, "denied by policy") || gate.normalCalls != 1 {
+		t.Fatalf("denied installed MCP writer result=%q calls=%d", out.output, gate.normalCalls)
 	}
-	if gate.calls != 0 {
-		t.Fatalf("trust gate calls = %d, want 0 for unsafe tool", gate.calls)
+}
+
+func TestDestructiveMCPUsesFreshApprovalEvenWhenReadOnly(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(annotatedMCPTool{
+		fakeTool:    fakeTool{name: "mcp__srv__danger", readOnly: true},
+		server:      "srv",
+		raw:         "danger/raw",
+		destructive: true,
+	})
+	gate := &mcpPermissionRecordingGate{allowNormal: true, allowFresh: true}
+	a := New(nil, reg, NewSession(""), Options{Gate: gate}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__danger"})
+	if strings.HasPrefix(out.output, "blocked:") || !strings.Contains(out.output, "done") {
+		t.Fatalf("fresh-approved destructive MCP tool should run, got: %q", out.output)
+	}
+	if gate.normalCalls != 0 || gate.freshCalls != 1 || gate.subject != "srv/danger/raw" {
+		t.Fatalf("approval calls normal=%d fresh=%d subject=%q", gate.normalCalls, gate.freshCalls, gate.subject)
+	}
+}
+
+func TestDestructiveMCPFailsClosedWithoutFreshApprovalGate(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(annotatedMCPTool{
+		fakeTool:    fakeTool{name: "mcp__srv__danger", readOnly: false},
+		server:      "srv",
+		raw:         "danger",
+		destructive: true,
+	})
+	normalGate := &readOnlyRecordingGate{}
+	a := New(nil, reg, NewSession(""), Options{Gate: normalGate}, event.Discard)
+	a.SetPlanMode(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{Name: "mcp__srv__danger"})
+	if !strings.Contains(out.output, "requires fresh human approval") {
+		t.Fatalf("destructive MCP without fresh gate should fail closed, got: %q", out.output)
+	}
+	if len(normalGate.readOnly) != 0 {
+		t.Fatalf("ordinary gate should not receive destructive call: %v", normalGate.readOnly)
 	}
 }
 

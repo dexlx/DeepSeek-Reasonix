@@ -121,14 +121,11 @@ tool_timeout_seconds = { "generate_video" = 1800 }   # optional raw MCP tool nam
 
 For the full schema and every field's contract, see [`SPEC.md` §5](./SPEC.md#5-configuration-toml).
 
-`[agent].plan_mode_allowed_tools` is an extra read-only declaration for custom or
-external tools Reasonix cannot classify itself. For MCP/plugin tools, a concrete
-model-visible name such as `mcp__github__issue_read` also promotes that tool to a
-trusted read-only reader for planner and read-only research surfaces. Prefer the
-one-time MCP read-only trust prompt, or plugin-level `trusted_read_only_tools`
-when you want to pre-seed audited tools; keep `plan_mode_allowed_tools` as the
-compatibility escape valve. It never unlocks known blocked plan-mode tools such
-as `bash`, `task`, writers, installers, or memory mutation tools, and it never
+`[agent].plan_mode_allowed_tools` is an escape valve for concrete custom or
+external tools Reasonix cannot classify itself. Installed MCP tools use their
+`readOnlyHint` directly, so annotated readers work in planner and read-only
+research surfaces without a second trust prompt. It never unlocks known blocked
+plan-mode tools such as `bash`, `task`, writers, installers, or memory mutation tools, and it never
 bypasses bash's plan-mode safety checks.
 
 Use `[agent].plan_mode_read_only_commands` when plan-mode research needs a
@@ -459,7 +456,7 @@ Mode meanings:
 | --- | --- |
 | Ask | Prompts for fallback writer approvals. |
 | Auto | Auto-allows fallback approvals; explicit `ask` / `deny` rules still apply. |
-| YOLO | Skips ordinary tool approval prompts; `deny`, user `ask` questions, plan approval prompts, and MCP read-only trust prompts still wait. |
+| YOLO | Skips ordinary tool approval prompts; `deny`, user `ask` questions, and plan approval prompts still wait. |
 | Plan | Keeps the next work read-only until a plan is approved or Plan is turned off. |
 | Goal | Pursues a saved objective until complete, blocked, or cleared. |
 
@@ -584,14 +581,22 @@ Reasonix is an MCP client. A `[[plugins]]` entry's `type` selects the transport:
 (Streamable HTTP) connects to a remote `url` with optional static `headers`
 (`${VAR}` / `${VAR:-default}` expanded from the environment, so tokens stay out
 of the file). Tools surface to the model as `mcp__<server>__<tool>`; a tool
-declaring MCP's `readOnlyHint: true` joins parallel dispatch and the permission
-reader-default, but planner / read-only research confirms third-party read-only
-hints before relying on them. In interactive sessions, approve the first trust
-prompt once, or choose the persistent option to remember the raw MCP tool name.
-This trust prompt is a user decision, so Auto/YOLO tool approval does not answer
-it; allowing for the session or persisting trust prevents repeat prompts for the
-same MCP tool.
-Advanced users can also pre-seed audited third-party readers on the plugin:
+declaring MCP's `readOnlyHint: true` joins parallel dispatch, the permission
+reader-default, plan mode, and read-only research. Reasonix treats installing an
+MCP server as the user's trust decision and does not add a separate pre-trust
+prompt. Tools without the hint remain write-capable. Installed MCP writers use
+the normal permission posture even while planning: Ask prompts, Auto/YOLO can
+continue without an ordinary prompt, and explicit `ask` / `deny` rules still
+apply. This Plan-mode exception is limited to installed MCP tools; built-in
+writers remain blocked until the plan is approved.
+
+MCP `destructiveHint: true` is stricter than both classifications. Every call
+requires a new human approval, even if the tool also reports `readOnlyHint`, the
+current posture is Auto/YOLO, or an allow rule was saved. Non-interactive runs
+fail closed because they cannot obtain that decision.
+
+Older configurations may still contain this compatibility override for servers
+that omit `readOnlyHint`:
 
 ```toml
 [[plugins]]
@@ -600,15 +605,9 @@ command = "github-mcp"
 trusted_read_only_tools = ["issue_read", "pull_request_read"]
 ```
 
-The desktop MCP panel keeps this as an advanced management surface: expand a
-configured server and open its tools list, then use **Pre-trust read-only** or a
-per-tool **Pre-trust** button only when you want to approve tools before they are
-needed. Use **Untrust** to remove a remembered reader. The desktop writes the raw
-MCP tool names to `trusted_read_only_tools` in the owning config source: project
-`.mcp.json` servers are updated under
-`mcpServers.<server>.trusted_read_only_tools`, while ordinary Reasonix plugins
-are updated in the user's Reasonix config. Trust only side-effect-free readers;
-create/update/delete tools should remain untrusted.
+Reasonix continues to parse and preserve the field, but it is no longer exposed
+in the normal desktop settings workflow. Prefer a correct server annotation for
+new configurations.
 
 A server's **prompts** surface as `/mcp__<server>__<prompt>` slash commands
 (positional args after the command); its **resources** are pulled in by writing

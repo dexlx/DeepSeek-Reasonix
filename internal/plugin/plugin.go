@@ -64,10 +64,9 @@ type Spec struct {
 	// captured in a bounded buffer for failure diagnostics; nil keeps it out of
 	// the terminal so child logs cannot corrupt interactive UIs.
 	Stderr io.Writer
-	// ReadOnlyToolNames marks trusted raw MCP tool names as read-only even when
-	// the server omits annotations.readOnlyHint. It is for known compatibility
-	// overrides or user-audited plugin config where the tool semantics are
-	// stable; other user-configured plugins should rely on MCP metadata.
+	// ReadOnlyToolNames marks raw MCP tool names as read-only when the server omits
+	// annotations.readOnlyHint. It preserves known and legacy compatibility
+	// overrides; normal MCP classification should rely on server metadata.
 	ReadOnlyToolNames map[string]bool
 	// ReadOnlyModelToolNames marks trusted model-visible MCP tool names
 	// ("mcp__<server>__<tool>") as read-only. This supports user-level
@@ -552,10 +551,11 @@ func (c *Client) auxiliaryClient(ctx context.Context) (*Client, context.Context,
 
 // ToolInfo is the human-facing metadata returned by MCP tools/list for one tool.
 type ToolInfo struct {
-	Name         string
-	Description  string
-	ReadOnlyHint bool
-	SchemaError  string
+	Name            string
+	Description     string
+	ReadOnlyHint    bool
+	DestructiveHint bool
+	SchemaError     string
 }
 
 // ServerStatus summarises one connected server for the /mcp command.
@@ -1119,20 +1119,22 @@ type mcpTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	InputSchema json.RawMessage `json:"inputSchema"`
-	// Annotations carries MCP's optional tool hints. We read readOnlyHint: a
-	// plugin that declares a tool read-only opts it into Reasonix's parallel-dispatch
-	// path and the permission layer's "readers default to allow". Absent
-	// annotations stay false — opaque by default, never trusted implicitly.
+	// Annotations carries MCP's optional tool hints. readOnlyHint controls reader
+	// classification; destructiveHint requires a fresh human approval even when
+	// another hint claims the tool is read-only.
 	Annotations *struct {
-		ReadOnlyHint bool `json:"readOnlyHint"`
+		ReadOnlyHint    bool `json:"readOnlyHint"`
+		DestructiveHint bool `json:"destructiveHint"`
 	} `json:"annotations"`
 }
 
 func (s Spec) toolReadOnly(rawName, visibleName string, hinted bool) bool {
-	return hinted || s.toolReadOnlyTrusted(rawName, visibleName)
+	return hinted || s.toolReadOnlyOverride(rawName, visibleName)
 }
 
-func (s Spec) toolReadOnlyTrusted(rawName, visibleName string) bool {
+// toolReadOnlyOverride keeps legacy trusted_read_only_tools and first-party
+// overrides useful when an older MCP server omits readOnlyHint.
+func (s Spec) toolReadOnlyOverride(rawName, visibleName string) bool {
 	return s.ReadOnlyToolNames[rawName] || s.ReadOnlyModelToolNames[toolName(s.Name, visibleName)]
 }
 
@@ -1170,8 +1172,9 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 	toolInfos := make([]ToolInfo, 0, len(out))
 	tools := make([]tool.Tool, 0, len(out))
 	for _, t := range out {
-		hinted := t.Annotations != nil && t.Annotations.ReadOnlyHint
-		info := ToolInfo{Name: t.Name, Description: t.Description, ReadOnlyHint: hinted}
+		readOnlyHint := t.Annotations != nil && t.Annotations.ReadOnlyHint
+		destructiveHint := t.Annotations != nil && t.Annotations.DestructiveHint
+		info := ToolInfo{Name: t.Name, Description: t.Description, ReadOnlyHint: readOnlyHint, DestructiveHint: destructiveHint}
 		schema, err := normalizeAndValidateToolSchema(t.InputSchema)
 		if err != nil {
 			info.SchemaError = schemaValidationError(err)
@@ -1183,15 +1186,14 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 			visibleName = strings.TrimPrefix(visibleName, c.spec.StripRawPrefix)
 		}
 		toolInfos = append(toolInfos, info)
-		trusted := c.spec.toolReadOnlyTrusted(t.Name, visibleName)
 		tools = append(tools, &remoteTool{
-			client:          c,
-			name:            toolName(c.name, visibleName),
-			rawName:         t.Name,
-			desc:            t.Description,
-			schema:          schema,
-			readOnly:        c.spec.toolReadOnly(t.Name, visibleName, hinted),
-			readOnlyTrusted: trusted,
+			client:      c,
+			name:        toolName(c.name, visibleName),
+			rawName:     t.Name,
+			desc:        t.Description,
+			schema:      schema,
+			readOnly:    c.spec.toolReadOnly(t.Name, visibleName, readOnlyHint),
+			destructive: destructiveHint,
 		})
 	}
 	sort.SliceStable(toolInfos, func(i, j int) bool { return toolInfos[i].Name < toolInfos[j].Name })
@@ -1346,11 +1348,10 @@ type remoteTool struct {
 	rawName  string // original name for tools/call
 	desc     string
 	schema   json.RawMessage
-	readOnly bool // from MCP readOnlyHint or trusted first-party Spec override
-	// readOnlyTrusted is true only when readOnly came from a first-party
-	// Spec.ReadOnlyToolNames override, not the server's readOnlyHint. Plan mode
-	// uses it to decide whether to trust ReadOnly() at face value.
-	readOnlyTrusted bool
+	readOnly bool // from MCP readOnlyHint or a backward-compatible Spec override
+	// destructive is the MCP destructiveHint. It always requires a fresh human
+	// approval and takes precedence over a conflicting readOnlyHint.
+	destructive bool
 }
 
 func (t *remoteTool) Name() string        { return t.name }
@@ -1363,18 +1364,12 @@ func (t *remoteTool) MCPServerName() string {
 }
 func (t *remoteTool) MCPRawToolName() string { return t.rawName }
 
-// ReadOnly reflects MCP readOnlyHint, plus trusted first-party Spec overrides.
-// It defaults to false: opaque third-party tools must declare readOnlyHint
-// before joining reader-default permission handling or plan-mode execution.
+// ReadOnly reflects MCP readOnlyHint plus backward-compatible Spec overrides.
+// It defaults to false, so opaque tools remain write-capable unless the server
+// or local configuration explicitly classifies them as read-only.
 func (t *remoteTool) ReadOnly() bool { return t.readOnly }
 
-// PlanModeUntrustedReadOnly reports true when ReadOnly() is true only because the
-// MCP server self-reported readOnlyHint. A first-party ReadOnlyToolNames override
-// is trusted, so it returns false. Plan mode treats an untrusted read-only tool
-// like a writer unless it is declared in plan_mode_allowed_tools.
-func (t *remoteTool) PlanModeUntrustedReadOnly() bool {
-	return t.readOnly && !t.readOnlyTrusted
-}
+func (t *remoteTool) MCPDestructiveHint() bool { return t.destructive }
 
 func (t *remoteTool) Schema() json.RawMessage {
 	if len(t.schema) == 0 {

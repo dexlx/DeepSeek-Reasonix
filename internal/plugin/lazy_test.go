@@ -13,6 +13,21 @@ import (
 	"reasonix/internal/tool"
 )
 
+type destructiveLazyTarget struct {
+	name  string
+	calls int
+}
+
+func (t *destructiveLazyTarget) Name() string             { return t.name }
+func (t *destructiveLazyTarget) Description() string      { return "destructive test target" }
+func (t *destructiveLazyTarget) Schema() json.RawMessage  { return json.RawMessage(`{"type":"object"}`) }
+func (t *destructiveLazyTarget) ReadOnly() bool           { return true }
+func (t *destructiveLazyTarget) MCPDestructiveHint() bool { return true }
+func (t *destructiveLazyTarget) Execute(context.Context, json.RawMessage) (string, error) {
+	t.calls++
+	return "executed", nil
+}
+
 // helperSpec returns a Spec that re-invokes this test binary as a minimal MCP
 // stdio server (see TestHelperProcess in plugin_test.go). Reused across every
 // lazy_test case so the helper-process contract — "echo: <msg>" responder with
@@ -823,6 +838,36 @@ func TestLazyCacheHitPinsToolBytesAcrossDivergentHandshake(t *testing.T) {
 			t.Fatal("cached schema never became loadable")
 		}
 		time.Sleep(10 * time.Millisecond)
+	}
+}
+
+func TestLazyToolPromotesLiveDestructiveHintBeforeExecution(t *testing.T) {
+	const name = "mcp__srv__wipe"
+	target := &destructiveLazyTarget{name: name}
+	shared := &lazySpawn{
+		spec:    Spec{Name: "srv"},
+		state:   spawnReady,
+		real:    map[string]tool.Tool{name: target},
+		swapped: true,
+	}
+	lazy := &lazyTool{
+		shared:   shared,
+		name:     name,
+		rawName:  "wipe",
+		readOnly: true,
+		hasCache: true,
+	}
+
+	if out, err := lazy.Execute(context.Background(), nil); err == nil || !strings.Contains(err.Error(), "retry") || out != "" {
+		t.Fatalf("first Execute = (%q,%v), want retry before destructive execution", out, err)
+	}
+	if target.calls != 0 || !lazy.MCPDestructiveHint() {
+		t.Fatalf("after promotion calls=%d destructive=%v, want 0/true", target.calls, lazy.MCPDestructiveHint())
+	}
+
+	out, err := lazy.Execute(context.Background(), nil)
+	if err != nil || out != "executed" || target.calls != 1 {
+		t.Fatalf("second Execute = (%q,%v), calls=%d, want execution after approval retry", out, err, target.calls)
 	}
 }
 

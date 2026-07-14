@@ -190,25 +190,28 @@ type Gate interface {
 	Check(ctx context.Context, toolName string, args json.RawMessage, readOnly bool) (allow bool, reason string, err error)
 }
 
-const PlanModeReadOnlyCommandApprovalTool = "plan_mode_read_only_command"
-
-// PlanModeReadOnlyTrustRequest describes a read-only claim that plan mode will
-// not trust without a user decision. For MCP, ServerName and RawToolName are the
-// identifiers persisted in config. For bash, Command is the concrete attempted
-// command and Prefix is the command prefix to trust for planning.
-type PlanModeReadOnlyTrustRequest struct {
-	ToolName    string
-	ServerName  string
-	RawToolName string
-	Command     string
-	Prefix      string
-	Args        json.RawMessage
+// FreshApprovalGate is an optional Gate extension for calls that must be
+// answered by a current human decision even when Auto/YOLO or an allow rule
+// would normally bypass approval. Installed MCP destructiveHint uses it.
+type FreshApprovalGate interface {
+	CheckFresh(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (allow bool, reason string, err error)
 }
 
-// PlanModeReadOnlyTrustGate optionally confirms MCP read-only hints and
-// user-approved bash read-only command prefixes at execution time. It is
-// separate from Gate because the plan-mode check runs before ordinary permission
-// policy.
+const PlanModeReadOnlyCommandApprovalTool = "plan_mode_read_only_command"
+
+// PlanModeReadOnlyTrustRequest describes a bash command that is safe enough to
+// ask the user to accept as read-only during planning. Command is the concrete
+// attempted command and Prefix is the reusable prefix to trust.
+type PlanModeReadOnlyTrustRequest struct {
+	ToolName string
+	Command  string
+	Prefix   string
+	Args     json.RawMessage
+}
+
+// PlanModeReadOnlyTrustGate optionally confirms user-approved bash read-only
+// command prefixes at execution time. It is separate from Gate because the
+// plan-mode check runs before ordinary permission policy.
 type PlanModeReadOnlyTrustGate interface {
 	CheckPlanModeReadOnlyTrust(ctx context.Context, req PlanModeReadOnlyTrustRequest) (allow bool, reason string, err error)
 }
@@ -312,8 +315,8 @@ type Agent struct {
 	// plan-mode check. nil disables gating entirely.
 	gate Gate
 
-	// planModeReadOnlyTrust, when non-nil, can ask the user to trust an MCP
-	// server's readOnlyHint for plan-mode execution without changing tool schemas.
+	// planModeReadOnlyTrust, when non-nil, can ask the user to trust a bash
+	// command prefix as read-only for plan-mode execution.
 	planModeReadOnlyTrust PlanModeReadOnlyTrustGate
 
 	// sandboxEscapeApprover, when non-nil, can ask the user whether one shell
@@ -717,8 +720,7 @@ func (a *Agent) SetGate(g Gate) {
 	a.gate = g
 }
 
-// SetPlanModeReadOnlyTrustGate installs the optional confirmation path for MCP
-// tools whose read-only flag comes from an external readOnlyHint and bash
+// SetPlanModeReadOnlyTrustGate installs the optional confirmation path for bash
 // commands the user may trust as plan-mode read-only.
 func (a *Agent) SetPlanModeReadOnlyTrustGate(g PlanModeReadOnlyTrustGate) {
 	if nilutil.IsNil(g) {
@@ -980,8 +982,8 @@ type Options struct {
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
 
-	// PlanModeReadOnlyTrustGate confirms untrusted external read-only hints when
-	// plan mode would otherwise block them. nil keeps fail-closed behavior.
+	// PlanModeReadOnlyTrustGate confirms bash command prefixes that plan mode's
+	// parser considers safe enough for a user read-only decision.
 	PlanModeReadOnlyTrustGate PlanModeReadOnlyTrustGate
 
 	// SandboxEscapeApprover confirms a one-shot unconfined shell rerun after an
@@ -2777,35 +2779,28 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 				safety = planmode.PlanSafetyUnsafe
 			}
 		}
-		// External tools (MCP) whose ReadOnly() is only a server-reported
-		// readOnlyHint are not trusted by plan mode's read-only fast path.
-		untrusted := false
-		if u, ok := t.(tool.PlanModeUntrustedReadOnly); ok {
-			untrusted = u.PlanModeUntrustedReadOnly()
-		}
-		if decision := a.planModeDecision(call.Name, t.ReadOnly(), untrusted, safety, json.RawMessage(call.Arguments)); decision.Blocked {
-			trustAllowed := false
-			if decision.ReadOnlyCommandTrust != nil {
-				if allow, outcome, handled := a.checkPlanModeBashReadOnlyTrust(ctx, call, decision.ReadOnlyCommandTrust); handled {
-					if !allow {
-						return outcome
+		if decision := a.planModeDecision(call.Name, t.ReadOnly(), safety, json.RawMessage(call.Arguments)); decision.Blocked {
+			// Installed MCP writers follow the normal permission posture instead of
+			// being rejected by the planning-stage gate. PlanSafetyUnsafe remains an
+			// explicit hard stop.
+			mcpPermissionPath := safety != planmode.PlanSafetyUnsafe && isInstalledMCPTool(t) && !t.ReadOnly()
+			if !mcpPermissionPath {
+				trustAllowed := false
+				if decision.ReadOnlyCommandTrust != nil {
+					if allow, outcome, handled := a.checkPlanModeBashReadOnlyTrust(ctx, call, decision.ReadOnlyCommandTrust); handled {
+						if !allow {
+							return outcome
+						}
+						trustAllowed = true
+						planModeTrustedReadOnly = true
 					}
-					trustAllowed = true
-					planModeTrustedReadOnly = true
 				}
-			} else if t.ReadOnly() && untrusted && safety != planmode.PlanSafetyUnsafe {
-				if allow, outcome, handled := a.checkPlanModeMCPReadOnlyTrust(ctx, call, t); handled {
-					if !allow {
-						return outcome
+				if !trustAllowed {
+					return toolOutcome{
+						output:  decision.Message,
+						blocked: true,
+						errMsg:  "blocked: plan mode is read-only",
 					}
-					trustAllowed = true
-				}
-			}
-			if !trustAllowed {
-				return toolOutcome{
-					output:  decision.Message,
-					blocked: true,
-					errMsg:  "blocked: plan mode is read-only",
 				}
 			}
 		}
@@ -2870,7 +2865,7 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	// A proxy resolution can point at a write-capable target even though the
 	// proxy tool itself reports read-only: the pre-resolution plan-mode check
 	// above only judged the proxy's own claim. Re-run the policy against the
-	// real target's name, read-only flag, trust, and safety before any gate
+	// real target's name, read-only flag, and safety before any gate
 	// lets the call through.
 	if resolved.TargetName != "" && a.planMode.Load() {
 		safety := planmode.PlanSafetyUnknown
@@ -2881,22 +2876,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 				safety = planmode.PlanSafetyUnsafe
 			}
 		}
-		untrusted := false
-		if u, ok := execTool.(tool.PlanModeUntrustedReadOnly); ok {
-			untrusted = u.PlanModeUntrustedReadOnly()
-		}
-		if decision := a.planModeDecision(permName, resolved.ReadOnly, untrusted, safety, permArgs); decision.Blocked {
-			trustAllowed := false
-			if resolved.ReadOnly && untrusted && safety != planmode.PlanSafetyUnsafe {
-				resolvedCall := provider.ToolCall{ID: call.ID, Name: permName, Arguments: string(permArgs)}
-				if allow, outcome, handled := a.checkPlanModeMCPReadOnlyTrust(ctx, resolvedCall, execTool); handled {
-					if !allow {
-						return outcome
-					}
-					trustAllowed = true
-				}
-			}
-			if !trustAllowed {
+		if decision := a.planModeDecision(permName, resolved.ReadOnly, safety, permArgs); decision.Blocked {
+			mcpPermissionPath := safety != planmode.PlanSafetyUnsafe && isInstalledMCPTool(execTool) && !resolved.ReadOnly
+			if !mcpPermissionPath {
 				return toolOutcome{
 					output:  decision.Message,
 					blocked: true,
@@ -2913,7 +2895,34 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg:  "blocked: delivery acceptance criteria required",
 		}
 	}
-	if a.gate != nil {
+	if mcpDestructiveHint(execTool) {
+		freshGate, ok := a.gate.(FreshApprovalGate)
+		if !ok {
+			return toolOutcome{
+				output:  "blocked: this destructive MCP tool requires fresh human approval in an interactive session.",
+				blocked: true,
+				errMsg:  "blocked: destructive MCP approval required",
+			}
+		}
+		allow, reason, err := freshGate.CheckFresh(ctx, permName, mcpApprovalSubject(execTool, permName), permArgs, readOnly)
+		if err != nil {
+			return toolOutcome{
+				output:  fmt.Sprintf("blocked: %s (%v)", reason, err),
+				blocked: true,
+				errMsg:  fmt.Sprintf("blocked: %v", err),
+			}
+		}
+		if !allow {
+			if strings.TrimSpace(reason) == "" {
+				reason = "the user declined this destructive MCP tool call"
+			}
+			return toolOutcome{
+				output:  "blocked: " + reason,
+				blocked: true,
+				errMsg:  "blocked by destructive MCP approval",
+			}
+		}
+	} else if a.gate != nil {
 		allow, reason, err := a.gate.Check(ctx, permName, permArgs, readOnly)
 		if err != nil {
 			return toolOutcome{
@@ -3071,39 +3080,25 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	return toolOutcome{output: body, images: images, truncated: truncMsg != "", truncMsg: truncMsg}
 }
 
-func (a *Agent) checkPlanModeMCPReadOnlyTrust(ctx context.Context, call provider.ToolCall, t tool.Tool) (bool, toolOutcome, bool) {
-	if a.planModeReadOnlyTrust == nil {
-		return false, toolOutcome{}, false
-	}
-	server, rawTool, ok := planModeMCPTrustTarget(call.Name, t)
-	if !ok {
-		return false, toolOutcome{}, false
-	}
-	req := PlanModeReadOnlyTrustRequest{
-		ToolName:    call.Name,
-		ServerName:  server,
-		RawToolName: rawTool,
-		Args:        json.RawMessage(call.Arguments),
-	}
-	allow, reason, err := a.planModeReadOnlyTrust.CheckPlanModeReadOnlyTrust(ctx, req)
-	if err != nil {
-		return false, toolOutcome{
-			output:  fmt.Sprintf("blocked: plan-mode read-only trust approval aborted (%v)", err),
-			blocked: true,
-			errMsg:  fmt.Sprintf("blocked: %v", err),
-		}, true
-	}
-	if !allow {
-		if strings.TrimSpace(reason) == "" {
-			reason = "the user declined to trust this MCP read-only hint — do not retry it; continue planning with other trusted read-only tools."
+func isInstalledMCPTool(t tool.Tool) bool {
+	meta, ok := t.(tool.MCPMetadata)
+	return ok && strings.TrimSpace(meta.MCPServerName()) != "" && strings.TrimSpace(meta.MCPRawToolName()) != ""
+}
+
+func mcpDestructiveHint(t tool.Tool) bool {
+	annotations, ok := t.(tool.MCPAnnotations)
+	return ok && annotations.MCPDestructiveHint()
+}
+
+func mcpApprovalSubject(t tool.Tool, fallback string) string {
+	if meta, ok := t.(tool.MCPMetadata); ok {
+		server := strings.TrimSpace(meta.MCPServerName())
+		raw := strings.TrimSpace(meta.MCPRawToolName())
+		if server != "" && raw != "" {
+			return server + "/" + raw
 		}
-		return false, toolOutcome{
-			output:  "blocked: " + reason,
-			blocked: true,
-			errMsg:  "blocked by plan-mode MCP read-only trust",
-		}, true
 	}
-	return true, toolOutcome{}, true
+	return strings.TrimSpace(fallback)
 }
 
 func (a *Agent) checkPlanModeBashReadOnlyTrust(ctx context.Context, call provider.ToolCall, trust *planmode.ReadOnlyCommandTrust) (bool, toolOutcome, bool) {
@@ -3137,33 +3132,20 @@ func (a *Agent) checkPlanModeBashReadOnlyTrust(ctx context.Context, call provide
 	return true, toolOutcome{}, true
 }
 
-func planModeMCPTrustTarget(toolName string, t tool.Tool) (server, rawTool string, ok bool) {
-	if meta, metaOK := t.(tool.MCPMetadata); metaOK {
-		server = strings.TrimSpace(meta.MCPServerName())
-		rawTool = strings.TrimSpace(meta.MCPRawToolName())
-		if server != "" && rawTool != "" {
-			return server, rawTool, true
-		}
-	}
-	server, rawTool, ok = tool.SplitMCPName(toolName)
-	return server, rawTool, ok
-}
-
-func (a *Agent) planModeBlocked(toolName string, readOnly, untrusted bool, safety planmode.PlanSafety, args json.RawMessage) (blocked bool, message string) {
-	decision := a.planModeDecision(toolName, readOnly, untrusted, safety, args)
+func (a *Agent) planModeBlocked(toolName string, readOnly bool, safety planmode.PlanSafety, args json.RawMessage) (blocked bool, message string) {
+	decision := a.planModeDecision(toolName, readOnly, safety, args)
 	return decision.Blocked, decision.Message
 }
 
-func (a *Agent) planModeDecision(toolName string, readOnly, untrusted bool, safety planmode.PlanSafety, args json.RawMessage) planmode.Decision {
+func (a *Agent) planModeDecision(toolName string, readOnly bool, safety planmode.PlanSafety, args json.RawMessage) planmode.Decision {
 	return planmode.Policy{
 		AllowedTools:     a.planModeAllowedTools,
 		ReadOnlyCommands: a.planModeReadOnlyCommands,
 	}.Decide(planmode.Call{
-		Name:      toolName,
-		ReadOnly:  readOnly,
-		Untrusted: untrusted,
-		Safety:    safety,
-		Args:      args,
+		Name:     toolName,
+		ReadOnly: readOnly,
+		Safety:   safety,
+		Args:     args,
 	})
 }
 

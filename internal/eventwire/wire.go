@@ -95,7 +95,7 @@ func ToWire(e event.Event) Event {
 			}
 		}
 	case event.ApprovalRequest:
-		w.Approval = &Approval{ID: e.Approval.ID, Tool: e.Approval.Tool, Subject: e.Approval.Subject, Reason: e.Approval.Reason}
+		w.Approval = &Approval{ID: e.Approval.ID, Tool: e.Approval.Tool, Subject: e.Approval.Subject, Reason: e.Approval.Reason, Fresh: e.Approval.Fresh}
 	case event.AskRequest:
 		w.Ask = ToWireAsk(e.Ask)
 	case event.CompactionStarted, event.CompactionDone:
@@ -256,6 +256,7 @@ type Approval struct {
 	Tool    string `json:"tool"`
 	Subject string `json:"subject"`
 	Reason  string `json:"reason,omitempty"`
+	Fresh   bool   `json:"fresh,omitempty"`
 }
 
 // Guardian is the JSON form of an event.GuardianResult.

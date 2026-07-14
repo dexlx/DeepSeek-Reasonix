@@ -560,7 +560,7 @@ func TestRenderTOMLDocumentsPlanModeAllowedTools(t *testing.T) {
 	}
 }
 
-func TestRenderTOMLDocumentsPluginTrustedReadOnlyTools(t *testing.T) {
+func TestRenderTOMLPreservesLegacyPluginReadOnlyOverrides(t *testing.T) {
 	cfg := Default()
 	cfg.Plugins = []PluginEntry{{
 		Name:                 "github",
@@ -572,8 +572,8 @@ func TestRenderTOMLDocumentsPluginTrustedReadOnlyTools(t *testing.T) {
 	if !strings.Contains(rendered, `trusted_read_only_tools = ["issue_read", "pull_request_read"]`) {
 		t.Fatalf("rendered config should preserve trusted_read_only_tools:\n%s", rendered)
 	}
-	if !strings.Contains(rendered, "optional pre-seeded MCP read-only trust") {
-		t.Fatalf("rendered config should document trusted_read_only_tools semantics:\n%s", rendered)
+	if !strings.Contains(rendered, "legacy read-only override for MCP servers that omit readOnlyHint") {
+		t.Fatalf("rendered config should document the legacy trusted_read_only_tools semantics:\n%s", rendered)
 	}
 
 	var got Config

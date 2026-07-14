@@ -89,6 +89,7 @@ export interface WireApproval {
   tool: string;
   subject: string;
   reason?: string;
+  fresh?: boolean;
 }
 
 export interface WireGuardian {
@@ -696,6 +697,7 @@ export interface MCPToolView {
   name: string;
   description: string;
   readOnlyHint?: boolean;
+  destructiveHint?: boolean;
   schemaError?: string;
 }
 export interface SkillView {

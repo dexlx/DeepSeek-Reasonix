@@ -193,10 +193,9 @@ type lazyTool struct {
 	desc     string
 	schema   json.RawMessage
 	readOnly bool
-	// readOnlyTrusted mirrors remoteTool: true only for a first-party
-	// ReadOnlyToolNames override, so plan mode can tell trusted first-party
-	// read-only from an untrusted server readOnlyHint.
-	readOnlyTrusted bool
+	// destructive is guarded by shared.mu because a live handshake may promote
+	// a stale cached false value before asking the model to retry.
+	destructive bool
 	// hasCache true → schema is trusted, so Execute runs the handshake
 	// synchronously and forwards in one turn. false → schema is empty, so we
 	// can't honour the model's call; we kick the spawn async and ask for a
@@ -215,11 +214,13 @@ func (lt *lazyTool) MCPServerName() string {
 	return lt.shared.spec.Name
 }
 func (lt *lazyTool) MCPRawToolName() string { return lt.rawName }
-
-// PlanModeUntrustedReadOnly mirrors remoteTool: true when ReadOnly() is true only
-// from an untrusted server readOnlyHint, false for a first-party override.
-func (lt *lazyTool) PlanModeUntrustedReadOnly() bool {
-	return lt.readOnly && !lt.readOnlyTrusted
+func (lt *lazyTool) MCPDestructiveHint() bool {
+	if lt.shared == nil {
+		return lt.destructive
+	}
+	lt.shared.mu.Lock()
+	defer lt.shared.mu.Unlock()
+	return lt.destructive
 }
 func (lt *lazyTool) Schema() json.RawMessage {
 	if len(lt.schema) == 0 {
@@ -240,9 +241,13 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 	switch sp.state {
 	case spawnReady:
 		real := sp.real[lt.name]
+		promoted := lt.promoteDestructiveHint(real)
 		sp.mu.Unlock()
 		if real == nil {
 			return "", fmt.Errorf("MCP server %q did not expose tool %q (the cached schema may be stale)", sp.spec.Name, lt.name)
+		}
+		if promoted {
+			return "", destructiveHintChangedError(sp.spec.Name, lt.rawName)
 		}
 		return real.Execute(ctx, args)
 
@@ -317,9 +322,13 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 					sp.trySwap()
 					r := sp.real[lt.name]
 					if r != nil {
+						promoted := lt.promoteDestructiveHint(r)
 						// Unlock before forwarding so the lock isn't held
 						// during Execute (matching the spawnReady pattern).
 						sp.mu.Unlock()
+						if promoted {
+							return "", destructiveHintChangedError(sp.spec.Name, lt.rawName)
+						}
 						return r.Execute(ctx, args)
 					}
 				}
@@ -346,12 +355,36 @@ func (lt *lazyTool) Execute(ctx context.Context, args json.RawMessage) (string, 
 			sp.mu.Unlock()
 			return "", fmt.Errorf("MCP server %q did not expose tool %q (the cached schema may be stale)", sp.spec.Name, lt.name)
 		}
+		promoted := lt.promoteDestructiveHint(r)
 		sp.mu.Unlock()
+		if promoted {
+			return "", destructiveHintChangedError(sp.spec.Name, lt.rawName)
+		}
 		return r.Execute(ctx, args)
 	}
 
 	sp.mu.Unlock()
 	return "", fmt.Errorf("deferred plugin %q in unexpected state", sp.spec.Name)
+}
+
+// promoteDestructiveHint updates a pinned cache-hit placeholder when the live
+// server becomes stricter. Caller must hold shared.mu. Returning true tells the
+// current call to stop before execution; the next call sees the promoted hint
+// and enters the fresh-approval path.
+func (lt *lazyTool) promoteDestructiveHint(real tool.Tool) bool {
+	if real == nil || lt.destructive {
+		return false
+	}
+	annotations, ok := real.(tool.MCPAnnotations)
+	if !ok || !annotations.MCPDestructiveHint() {
+		return false
+	}
+	lt.destructive = true
+	return true
+}
+
+func destructiveHintChangedError(server, rawTool string) error {
+	return fmt.Errorf("MCP server %q now marks tool %q as destructive; retry so Reasonix can request fresh approval before execution", server, rawTool)
 }
 
 // LazyToolset returns the placeholder tools to register for one background spec.
@@ -399,16 +432,15 @@ func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, se
 			if spec.StripRawPrefix != "" {
 				visibleName = strings.TrimPrefix(visibleName, spec.StripRawPrefix)
 			}
-			trusted := spec.toolReadOnlyTrusted(ct.Name, visibleName)
 			out = append(out, &lazyTool{
-				shared:          shared,
-				name:            toolName(spec.Name, visibleName),
-				rawName:         ct.Name,
-				desc:            ct.Description,
-				schema:          ct.Schema,
-				readOnly:        spec.toolReadOnly(ct.Name, visibleName, ct.ReadOnly),
-				readOnlyTrusted: trusted,
-				hasCache:        true,
+				shared:      shared,
+				name:        toolName(spec.Name, visibleName),
+				rawName:     ct.Name,
+				desc:        ct.Description,
+				schema:      ct.Schema,
+				readOnly:    spec.toolReadOnly(ct.Name, visibleName, ct.ReadOnly),
+				destructive: ct.Destructive,
+				hasCache:    true,
 			})
 		}
 	}

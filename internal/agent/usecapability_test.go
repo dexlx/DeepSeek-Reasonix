@@ -446,10 +446,36 @@ func TestUseCapabilityInspectDoesNotStartServer(t *testing.T) {
 	}
 }
 
-func TestPlanModeBlocksWriteMCPThroughUseCapability(t *testing.T) {
+func TestPlanModeRoutesInstalledWriteMCPThroughUseCapabilityPermission(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__github__create_issue", readOnly: false}, server: "github", raw: "create_issue"})
+	reg.Add(annotatedMCPTool{fakeTool: fakeTool{name: "mcp__github__search_issues", readOnly: true}, server: "github", raw: "search_issues"})
+	uc := NewUseCapabilityTool(context.Background(), nil, nil, reg, capability.NewLedger(), nil, nil)
+	reg.Add(uc)
+	gate := &mcpPermissionRecordingGate{allowNormal: true}
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{Gate: gate}, event.Discard)
+	a.planMode.Store(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:github/create_issue","arguments":{}}`,
+	})
+	if out.blocked || out.errMsg != "" || gate.normalCalls != 1 {
+		t.Fatalf("installed MCP writer should use normal permission behind proxy, outcome=%+v calls=%d", out, gate.normalCalls)
+	}
+	// A read-only target still passes through the proxy in plan mode.
+	out = a.executeOne(context.Background(), provider.ToolCall{
+		ID: "2", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:github/search_issues","arguments":{}}`,
+	})
+	if out.blocked {
+		t.Fatalf("read-only proxy call should pass in plan mode, got %+v", out)
+	}
+}
+
+func TestPlanModeDoesNotTrustMCPNameWithoutInstalledMetadata(t *testing.T) {
 	reg := tool.NewRegistry()
 	reg.Add(fakeTool{name: "mcp__github__create_issue", readOnly: false})
-	reg.Add(fakeTool{name: "mcp__github__search_issues", readOnly: true})
 	uc := NewUseCapabilityTool(context.Background(), nil, nil, reg, capability.NewLedger(), nil, nil)
 	reg.Add(uc)
 	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{}, event.Discard)
@@ -459,19 +485,31 @@ func TestPlanModeBlocksWriteMCPThroughUseCapability(t *testing.T) {
 		ID: "1", Name: "use_capability",
 		Arguments: `{"action":"call","capability_id":"mcp-tool:github/create_issue","arguments":{}}`,
 	})
-	if !out.blocked {
-		t.Fatalf("plan mode must block a write MCP tool behind the proxy, got %+v", out)
+	if !out.blocked || !strings.Contains(out.errMsg, "plan mode") {
+		t.Fatalf("tool with spoofed MCP name but no metadata must remain Plan-blocked, got %+v", out)
 	}
-	if !strings.Contains(out.errMsg, "plan mode") {
-		t.Fatalf("errMsg = %q", out.errMsg)
-	}
-	// A trusted read-only target still passes through the proxy in plan mode.
-	out = a.executeOne(context.Background(), provider.ToolCall{
-		ID: "2", Name: "use_capability",
-		Arguments: `{"action":"call","capability_id":"mcp-tool:github/search_issues","arguments":{}}`,
+}
+
+func TestDestructiveMCPThroughUseCapabilityUsesFreshApproval(t *testing.T) {
+	reg := tool.NewRegistry()
+	reg.Add(annotatedMCPTool{
+		fakeTool:    fakeTool{name: "mcp__github__delete_issue", readOnly: false},
+		server:      "github",
+		raw:         "delete_issue",
+		destructive: true,
 	})
-	if out.blocked {
-		t.Fatalf("trusted read-only proxy call should pass in plan mode, got %+v", out)
+	uc := NewUseCapabilityTool(context.Background(), nil, nil, reg, capability.NewLedger(), nil, nil)
+	reg.Add(uc)
+	gate := &mcpPermissionRecordingGate{allowNormal: true, allowFresh: true}
+	a := New(&scriptedProvider{name: "p"}, reg, NewSession("sys"), Options{Gate: gate}, event.Discard)
+	a.planMode.Store(true)
+
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:github/delete_issue","arguments":{"number":1}}`,
+	})
+	if out.blocked || out.errMsg != "" || gate.normalCalls != 0 || gate.freshCalls != 1 || gate.subject != "github/delete_issue" {
+		t.Fatalf("destructive proxy outcome=%+v normal=%d fresh=%d subject=%q", out, gate.normalCalls, gate.freshCalls, gate.subject)
 	}
 }
 

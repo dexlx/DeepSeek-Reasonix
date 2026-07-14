@@ -9,7 +9,7 @@ import { selectToolsOnFirstCustomUse } from "../components/SubagentsPanel";
 import type { AppBindings } from "../lib/bridge";
 import { LocaleProvider, t } from "../lib/i18n";
 import { mcpServerLifecycleActions, mcpServerRetryableFromAvailableList } from "../lib/mcpServerLifecycle";
-import type { Meta, PluginInstallOptions, PluginView, ServerView, TabMeta } from "../lib/types";
+import type { MCPServerInput, Meta, PluginInstallOptions, PluginView, ServerView, TabMeta } from "../lib/types";
 
 function ok(value: unknown, message: string) {
   if (!value) throw new Error(message);
@@ -135,12 +135,24 @@ function findButton(label: string): HTMLButtonElement | undefined {
 
 function setInputValue(input: HTMLInputElement, value: string) {
   const win = input.ownerDocument.defaultView;
+  const previous = input.value;
   const setter = Object.getOwnPropertyDescriptor((win?.HTMLInputElement ?? HTMLInputElement).prototype, "value")?.set;
   setter?.call(input, value);
+  (input as HTMLInputElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
   const eventCtor = win?.Event ?? Event;
-  const inputEventCtor = win?.InputEvent ?? eventCtor;
-  input.dispatchEvent(new inputEventCtor("input", { bubbles: true, data: value, inputType: "insertText" } as InputEventInit));
+  input.dispatchEvent(new eventCtor("input", { bubbles: true }));
   input.dispatchEvent(new eventCtor("change", { bubbles: true }));
+}
+
+function setTextareaValue(textarea: HTMLTextAreaElement, value: string) {
+  const win = textarea.ownerDocument.defaultView;
+  const previous = textarea.value;
+  const setter = Object.getOwnPropertyDescriptor((win?.HTMLTextAreaElement ?? HTMLTextAreaElement).prototype, "value")?.set;
+  setter?.call(textarea, value);
+  (textarea as HTMLTextAreaElement & { _valueTracker?: { setValue: (next: string) => void } })._valueTracker?.setValue(previous);
+  const eventCtor = win?.Event ?? Event;
+  textarea.dispatchEvent(new eventCtor("input", { bubbles: true }));
+  textarea.dispatchEvent(new eventCtor("change", { bubbles: true }));
 }
 
 ok(
@@ -192,9 +204,6 @@ console.log("capabilities panel MCP actions");
     active: true,
     cwd: "/tmp/reasonix-test",
   }];
-  let trustCalls = 0;
-  let bulkTrustCalls = 0;
-  let untrustCalls = 0;
   let servers: ServerView[] = [{
     name: "github",
     transport: "stdio",
@@ -216,27 +225,7 @@ console.log("capabilities panel MCP actions");
       App: {
         Meta: async () => meta,
         ListTabs: async () => tabs,
-        MCPServers: async () => servers.map((s) => ({
-          ...s,
-          toolList: s.toolList?.map((tool) => ({ ...tool })),
-          trustedReadOnlyTools: [...(s.trustedReadOnlyTools ?? [])],
-        })),
-        TrustMCPServerTool: async (name: string, toolName: string) => {
-          trustCalls += 1;
-          servers = servers.map((s) => s.name === name ? { ...s, trustedReadOnlyTools: [...(s.trustedReadOnlyTools ?? []), toolName] } : s);
-        },
-        TrustMCPServerTools: async (name: string, toolNames: string[]) => {
-          bulkTrustCalls += 1;
-          servers = servers.map((s) => {
-            if (s.name !== name) return s;
-            const trusted = Array.from(new Set([...(s.trustedReadOnlyTools ?? []), ...toolNames]));
-            return { ...s, trustedReadOnlyTools: trusted };
-          });
-        },
-        UntrustMCPServerTool: async (name: string, toolName: string) => {
-          untrustCalls += 1;
-          servers = servers.map((s) => s.name === name ? { ...s, trustedReadOnlyTools: (s.trustedReadOnlyTools ?? []).filter((tool) => tool !== toolName) } : s);
-        },
+        MCPServers: async () => servers,
       } as Partial<AppBindings> as AppBindings,
     },
   };
@@ -245,55 +234,25 @@ console.log("capabilities panel MCP actions");
     root.render(React.createElement(LocaleProvider, null, React.createElement(MCPServersSettingsPage)));
     await flush();
   });
-  await waitFor("github server row", () => Boolean(document.querySelector(".cap-row__name")?.textContent?.includes("github")));
+  await waitFor("github server row", () => Boolean(document.querySelector(".cap-mcp-list-row__name")?.textContent?.includes("github")));
+  ok(document.body.textContent?.includes("1 unavailable"), "server list summary reports one quarantined tool");
+  ok(!document.body.textContent?.includes("invalid input schema: bad nested type"), "server list keeps raw tool diagnostics out of the overview");
 
-  const disclosure = document.querySelector<HTMLButtonElement>(".cap-disclosure");
-  if (!disclosure) throw new Error("missing MCP disclosure button");
+  const openServer = document.querySelector<HTMLButtonElement>(".cap-mcp-list-row__main");
+  if (!openServer) throw new Error("missing MCP server details button");
   await act(async () => {
-    disclosure.click();
+    openServer.click();
     await flush();
   });
 
-  const trustReadOnly = findButton("Pre-trust read-only (1)");
-  if (!trustReadOnly) throw new Error("missing bulk Pre-trust read-only button");
-  await act(async () => {
-    trustReadOnly.click();
-    await flush();
-  });
-  await waitFor("bulk trusted tool", () => servers[0]?.trustedReadOnlyTools?.includes("issue_read") ?? false);
-
-  const viewTools = findButton("View tools");
-  if (!viewTools) throw new Error("missing View tools button");
-  await act(async () => {
-    viewTools.click();
-    await flush();
-  });
-
-  await waitFor("trusted badge", () => Boolean(document.querySelector(".cap-tool-trust")?.textContent?.includes("Trusted")));
   await waitFor("unavailable tool", () => Boolean(document.querySelector(".cap-tool-hint--error")?.textContent?.includes("Unavailable")));
-  ok(document.body.textContent?.includes("1 unavailable"), "server summary reports one quarantined tool");
   ok(document.body.textContent?.includes("invalid input schema: bad nested type"), "tool list shows the schema diagnostic");
-  const untrust = findButton("Untrust");
-  if (!untrust) throw new Error("missing Untrust button");
-  await act(async () => {
-    untrust.click();
-    await flush();
-  });
-  await waitFor("untrusted tool", () => !(servers[0]?.trustedReadOnlyTools?.includes("issue_read") ?? false));
-
-  await waitFor("Pre-trust button", () => Boolean(findButton("Pre-trust")));
-  const trust = findButton("Pre-trust");
-  if (!trust) throw new Error("missing Pre-trust button");
-  await act(async () => {
-    trust.click();
-    await flush();
-  });
-
-  await waitFor("trusted badge", () => Boolean(document.querySelector(".cap-tool-trust")?.textContent?.includes("Trusted")));
-  ok(bulkTrustCalls === 1, "clicking Pre-trust read-only invokes the MCP bulk trust action once");
-  ok(untrustCalls === 1, "clicking Untrust invokes the MCP untrust action once");
-  ok(trustCalls === 1, "clicking Trust invokes the MCP trust action once");
-  ok(servers[0]?.trustedReadOnlyTools?.includes("issue_read") ?? false, "trusted raw tool name is added to the server snapshot");
+  ok(document.body.textContent?.includes("issue_read") ?? false, "server details list read-only MCP tools normally");
+  ok(document.body.textContent?.includes("issue_write") ?? false, "server details list write-capable MCP tools normally");
+  ok(!findButton("Pre-trust read-only (1)"), "MCP details do not expose a bulk pre-trust action");
+  ok(!findButton("Pre-trust"), "MCP details do not expose per-tool pre-trust actions");
+  ok(!findButton("Untrust"), "MCP details do not expose an untrust action");
+  ok(!document.querySelector(".cap-tool-trust"), "MCP details do not expose a separate trust state");
 
   await act(async () => {
     root.unmount();
@@ -349,27 +308,23 @@ console.log("capabilities panel MCP actions");
     root.render(React.createElement(LocaleProvider, null, React.createElement(MCPServersSettingsPage)));
     await flush();
   });
-  await waitFor("plugin-managed MCP row", () => Boolean(document.querySelector(".cap-row__name")?.textContent?.includes("helper")));
+  await waitFor("plugin-managed MCP row", () => Boolean(document.querySelector(".cap-mcp-list-row__name")?.textContent?.includes("helper")));
   ok(document.body.textContent?.includes("Managed by plugin superpowers") ?? false, "plugin-managed MCP identifies its owner");
 
-  const disclosure = document.querySelector<HTMLButtonElement>(".cap-disclosure");
-  if (!disclosure) throw new Error("missing plugin-managed MCP disclosure");
+  const openServer = document.querySelector<HTMLButtonElement>(".cap-mcp-list-row__main");
+  if (!openServer) throw new Error("missing plugin-managed MCP details button");
   await act(async () => {
-    disclosure.click();
+    openServer.click();
     await flush();
   });
   ok(!findButton("Remove server"), "plugin-managed MCP hides the misleading remove action");
   ok(!findButton("Edit config"), "plugin-managed MCP hides direct config editing");
   ok(!findButton("Clear auth"), "plugin-managed MCP hides auth persistence actions");
-  ok(!findButton("Pre-trust read-only (1)"), "plugin-managed MCP hides bulk trust persistence actions");
+  ok(!findButton("Pre-trust read-only (1)"), "plugin-managed MCP has no bulk pre-trust action");
 
-  const viewTools = findButton("View tools");
-  if (!viewTools) throw new Error("missing managed MCP View tools button");
-  await act(async () => {
-    viewTools.click();
-    await flush();
-  });
-  ok(!findButton("Pre-trust"), "plugin-managed MCP hides per-tool trust persistence actions");
+  ok(!findButton("View tools"), "standalone server details show tools without another disclosure step");
+  ok(document.body.textContent?.includes("echo") ?? false, "plugin-managed MCP details show its tools");
+  ok(!findButton("Pre-trust"), "plugin-managed MCP has no per-tool pre-trust action");
 
   await act(async () => {
     root.unmount();
@@ -423,14 +378,177 @@ console.log("capabilities panel MCP actions");
     root.render(React.createElement(LocaleProvider, null, React.createElement(MCPServersSettingsPage)));
     await flush();
   });
-  await waitFor("runtime-only failure details", () => Boolean(findButton("View details")));
-  const showDetails = findButton("View details");
+  await waitFor("runtime-only failure row", () => Boolean(document.querySelector(".cap-mcp-list-row__name")?.textContent?.includes("runtime-only")));
+  const showDetails = document.querySelector<HTMLButtonElement>(".cap-mcp-list-row__main");
   if (!showDetails) throw new Error("missing runtime-only failure details button");
   await act(async () => {
     showDetails.click();
     await flush();
   });
+  ok(document.body.textContent?.includes("command not found") ?? false, "runtime-only MCP detail preserves its failure diagnostic");
   ok(!findButton("Remove server"), "runtime-only MCP failure hides an action the backend cannot persist");
+
+  await act(async () => {
+    root.unmount();
+  });
+  dom.window.close();
+}
+
+{
+  const dom = installDom();
+  const rootEl = document.getElementById("root");
+  if (!rootEl) throw new Error("missing root");
+  const root = createRoot(rootEl);
+  const meta: Meta = { label: "test", ready: true, eventChannel: "mcp-editor-channel", cwd: "/tmp/reasonix-test", workspaceRoot: "/tmp/reasonix-test" };
+  const tabs: TabMeta[] = [{
+    id: "tab-mcp-editor",
+    scope: "project",
+    workspaceRoot: "/tmp/reasonix-test",
+    workspaceName: "reasonix-test",
+    topicId: "topic-mcp-editor",
+    topicTitle: "MCP editor",
+    label: "MCP editor",
+    ready: true,
+    running: false,
+    mode: "normal",
+    toolApprovalMode: "auto",
+    active: true,
+    cwd: "/tmp/reasonix-test",
+  }];
+  let addedInput: MCPServerInput | undefined;
+  let servers: ServerView[] = [
+    {
+      name: "github",
+      transport: "stdio",
+      status: "connected",
+      configured: true,
+      autoStart: true,
+      command: "github-mcp-server",
+      tools: 1,
+      prompts: 0,
+      resources: 0,
+      toolList: [{ name: "issue_read", description: "Read GitHub issues" }],
+    },
+    {
+      name: "yakit",
+      transport: "stdio",
+      status: "connected",
+      configured: true,
+      autoStart: true,
+      command: "yakit-mcp",
+      tools: 1,
+      prompts: 0,
+      resources: 0,
+      toolList: [{ name: "generate_yso_bytes", description: "Generate bytes" }],
+    },
+  ];
+  window.go = {
+    main: {
+      App: {
+        Meta: async () => meta,
+        ListTabs: async () => tabs,
+        MCPServers: async () => servers,
+        AddMCPServer: async (input: MCPServerInput) => {
+          addedInput = input;
+          servers = [...servers, {
+            name: input.name,
+            transport: input.transport,
+            status: "connected",
+            configured: true,
+            autoStart: true,
+            command: input.command,
+            args: input.args,
+            url: input.url,
+            tools: 0,
+            prompts: 0,
+            resources: 0,
+          }];
+          return 0;
+        },
+      } as Partial<AppBindings> as AppBindings,
+    },
+  };
+
+  await act(async () => {
+    root.render(React.createElement(LocaleProvider, null, React.createElement(MCPServersSettingsPage)));
+    await flush();
+  });
+  await waitFor("MCP editor server rows", () => document.querySelectorAll(".cap-mcp-list-row__name").length === 2);
+  const search = document.querySelector<HTMLInputElement>('.cap-mcp-search input[type="search"]');
+  if (!search) throw new Error("missing MCP server search");
+  await act(async () => {
+    setInputValue(search, "generate_yso_bytes");
+    await flush();
+  });
+  ok(search.value === "generate_yso_bytes", "MCP search accepts the entered query");
+  await waitFor("filtered Yakit row", () => document.querySelectorAll(".cap-mcp-list-row__name").length === 1);
+  ok(document.querySelector(".cap-mcp-list-row__name")?.textContent === "yakit", "server search includes MCP tool names");
+
+  const addServer = findButton("Add server");
+  if (!addServer) throw new Error("missing Add server button");
+  await act(async () => {
+    addServer.click();
+    await flush();
+  });
+  const advanced = findButton("Advanced options");
+  if (!advanced) throw new Error("missing Advanced options button");
+  ok(advanced.getAttribute("aria-expanded") === "false", "new server advanced options are collapsed by default");
+  ok(!document.querySelector(".cap-mcp-advanced__body"), "collapsed advanced options keep environment fields out of the initial form");
+
+  const jsonMode = findButton("JSON");
+  if (!jsonMode) throw new Error("missing JSON editor mode");
+  await act(async () => {
+    jsonMode.click();
+    await flush();
+  });
+  const initialJSONEditor = document.querySelector<HTMLTextAreaElement>(".cap-mcp-json-editor__input");
+  if (!initialJSONEditor) throw new Error("missing MCP JSON editor");
+  await act(async () => {
+    setTextareaValue(initialJSONEditor, "{");
+    await flush();
+  });
+  await act(async () => {
+    findButton("Add")?.click();
+    await flush();
+  });
+  ok(document.querySelector('[role="alert"]')?.textContent?.includes("Enter valid JSON") ?? false, "invalid MCP JSON shows a focused validation error");
+  ok(!addedInput, "invalid MCP JSON does not call AddMCPServer");
+
+  const validJSON = JSON.stringify({
+    mcpServers: {
+      "yakit-next": {
+        command: "npx",
+        args: ["-y", "@yaklang/mcp", "hello world"],
+        env: { TOKEN: "test-token" },
+      },
+    },
+  }, null, 2);
+  await act(async () => {
+    setTextareaValue(initialJSONEditor, validJSON);
+    await flush();
+  });
+  await act(async () => {
+    findButton("Form")?.click();
+    await flush();
+  });
+  ok(Boolean(document.querySelector(".cap-mcp-form-grid")), "valid MCP JSON can switch back to the form editor");
+  await act(async () => {
+    findButton("JSON")?.click();
+    await flush();
+  });
+  const roundTripJSONEditor = document.querySelector<HTMLTextAreaElement>(".cap-mcp-json-editor__input");
+  if (!roundTripJSONEditor) throw new Error("missing MCP JSON editor after round trip");
+  const roundTripped = JSON.parse(roundTripJSONEditor.value) as Record<string, { args?: string[] }>;
+  ok(roundTripped["yakit-next"]?.args?.[2] === "hello world", "form and JSON mode round trip preserves structured MCP arguments");
+  await act(async () => {
+    findButton("Add")?.click();
+    await flush();
+  });
+  await waitFor("AddMCPServer call", () => Boolean(addedInput));
+  ok(addedInput?.name === "yakit-next", "valid MCP JSON passes the server name to AddMCPServer");
+  ok(addedInput?.command === "npx", "valid MCP JSON keeps the executable separate from its arguments");
+  ok(addedInput?.args?.[2] === "hello world", "valid MCP JSON passes structured arguments to AddMCPServer");
+  ok(addedInput?.env?.TOKEN === "test-token", "valid MCP JSON passes environment variables to AddMCPServer");
 
   await act(async () => {
     root.unmount();

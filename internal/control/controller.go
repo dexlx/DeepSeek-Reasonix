@@ -121,7 +121,6 @@ type Controller struct {
 	startedOnce                       bool                             // guards the one-shot SessionStart hook on first turn
 	closeOnce                         sync.Once                        // makes close idempotent under racing teardown paths
 	onRemember                        func(rule string) RememberResult // set via Options; invoked when user picks "always allow"
-	onRememberMCPReadOnlyTrust        func(serverName, rawToolName string) MCPReadOnlyTrustResult
 	onRememberPlanModeReadOnlyCommand func(prefix string) PlanModeReadOnlyCommandTrustResult
 	sessionRecoveryMeta               func(SessionRecoveryRequest) agent.BranchMeta
 	onSessionRecovered                func(SessionRecoveryInfo) error
@@ -309,17 +308,6 @@ type RememberResult struct {
 	Err       error
 }
 
-// MCPReadOnlyTrustResult describes what happened when a trusted MCP read-only
-// tool was persisted.
-type MCPReadOnlyTrustResult struct {
-	Server    string
-	Tool      string
-	Path      string
-	Saved     bool
-	CoveredBy string
-	Err       error
-}
-
 // PlanModeReadOnlyCommandTrustResult describes what happened when a trusted bash
 // command prefix was persisted for plan-mode research.
 type PlanModeReadOnlyCommandTrustResult struct {
@@ -421,10 +409,6 @@ type Options struct {
 	// persist to disk (e.g. "Bash(go test:*)"). The callback is wired into the
 	// permission Gate on EnableInteractiveApproval.
 	OnRemember func(rule string) RememberResult
-	// OnRememberMCPReadOnlyTrust persists a raw MCP tool name as trusted
-	// read-only when the user chooses "always allow" from the plan-mode trust
-	// prompt.
-	OnRememberMCPReadOnlyTrust func(serverName, rawToolName string) MCPReadOnlyTrustResult
 	// OnRememberPlanModeReadOnlyCommand persists a bash command prefix as trusted
 	// read-only when the user chooses "always allow" from the plan-mode trust
 	// prompt.
@@ -494,7 +478,6 @@ func New(opts Options) *Controller {
 		shell:                             opts.Shell,
 		classifier:                        classifier,
 		onRemember:                        opts.OnRemember,
-		onRememberMCPReadOnlyTrust:        opts.OnRememberMCPReadOnlyTrust,
 		onRememberPlanModeReadOnlyCommand: opts.OnRememberPlanModeReadOnlyCommand,
 		sessionRecoveryMeta:               opts.SessionRecoveryMeta,
 		onSessionRecovered:                opts.OnSessionRecovered,
@@ -4636,6 +4619,27 @@ func (g gateApprover) ApproveWithReason(ctx context.Context, tool, subject strin
 	return allow, remember, "", err
 }
 
+func (g gateApprover) ApproveFresh(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, string, error) {
+	target := strings.TrimSpace(subject)
+	if target == "" {
+		target = toolName
+	}
+	reply, err := g.c.requestStrictFreshApprovalDecision(
+		ctx,
+		toolName,
+		fmt.Sprintf(i18n.M.MCPDestructiveSubjectFmt, target),
+		args,
+		i18n.M.MCPDestructiveReason,
+	)
+	if err != nil {
+		return false, "approval aborted", err
+	}
+	if !reply.allow {
+		return false, i18n.M.MCPDestructiveDeclined, nil
+	}
+	return true, "", nil
+}
+
 type planModeReadOnlyTrustApprover struct{ c *Controller }
 
 type sandboxEscapeApprover struct{ c *Controller }
@@ -4708,30 +4712,11 @@ func managedConfigWriteApprovalSubject(path string) string {
 }
 
 func (p planModeReadOnlyTrustApprover) CheckPlanModeReadOnlyTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest) (bool, string, error) {
-	if prefix := normalizePlanModeReadOnlyCommandPrefix(req.Prefix); prefix != "" {
-		return p.checkBashReadOnlyCommandTrust(ctx, req, prefix)
+	prefix := normalizePlanModeReadOnlyCommandPrefix(req.Prefix)
+	if prefix == "" {
+		return false, "missing plan-mode read-only command prefix", nil
 	}
-	server := strings.TrimSpace(req.ServerName)
-	rawTool := strings.TrimSpace(req.RawToolName)
-	if server == "" || rawTool == "" {
-		return false, i18n.M.PlanModeMCPTrustMetadataMissing, nil
-	}
-	subject := fmt.Sprintf(i18n.M.PlanModeMCPTrustSubjectFmt, server, rawTool)
-	reason := i18n.M.PlanModeMCPTrustReason
-	reply, err := p.c.requestFreshApprovalDecision(ctx, req.ToolName, subject, req.Args, reason)
-	if err != nil {
-		return false, "approval aborted", err
-	}
-	if !reply.allow {
-		return false, i18n.M.PlanModeMCPTrustDeclined, nil
-	}
-	if reply.session {
-		p.c.approval.grantSession(req.ToolName, subject)
-	}
-	if reply.persist && p.c.onRememberMCPReadOnlyTrust != nil {
-		p.c.emitMCPReadOnlyTrustResult(p.c.onRememberMCPReadOnlyTrust(server, rawTool))
-	}
-	return true, "", nil
+	return p.checkBashReadOnlyCommandTrust(ctx, req, prefix)
 }
 
 func (p planModeReadOnlyTrustApprover) checkBashReadOnlyCommandTrust(ctx context.Context, req agent.PlanModeReadOnlyTrustRequest, prefix string) (bool, string, error) {
@@ -5174,18 +5159,28 @@ func (c *Controller) requestFreshApprovalDecision(ctx context.Context, tool, sub
 	return c.requestApprovalDecisionWithOptions(ctx, tool, subject, args, reason, approvalDecisionOptions{fresh: true})
 }
 
+// requestStrictFreshApprovalDecision requires a new click for this invocation.
+// Unlike other fresh business decisions, it cannot reuse a session grant.
+func (c *Controller) requestStrictFreshApprovalDecision(ctx context.Context, tool, subject string, args json.RawMessage, reason string) (approvalReply, error) {
+	return c.requestApprovalDecisionWithOptions(ctx, tool, subject, args, reason, approvalDecisionOptions{fresh: true, alwaysPrompt: true})
+}
+
 type approvalDecisionOptions struct {
 	// fresh marks a user trust/business decision rather than an ordinary tool
 	// permission. It may reuse an explicit session grant, but YOLO/auto approval
 	// must not answer or drain the prompt.
 	fresh bool
+	// alwaysPrompt prevents even an explicit session grant from satisfying the
+	// decision. Destructive MCP calls use this because every invocation needs a
+	// current human approval.
+	alwaysPrompt bool
 }
 
 func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, tool, subject string, args json.RawMessage, reason string, opts approvalDecisionOptions) (approvalReply, error) {
 	// YOLO/full access and the just-approved-plan execution window auto-allow
 	// approval-gated tools without prompting. Plan approval is a user decision,
 	// not a tool permission, so it deliberately stays interactive.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if !opts.alwaysPrompt && c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
 		return approvalReply{allow: true}, nil
 	}
 
@@ -5194,7 +5189,7 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 
 	// Re-check: a session grant may have landed while we queued behind another
 	// prompt for the same subject.
-	if c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
+	if !opts.alwaysPrompt && c.approval.preApprovedForDecision(tool, subject, opts.fresh) {
 		return approvalReply{allow: true}, nil
 	}
 	var id string
@@ -5205,7 +5200,7 @@ func (c *Controller) requestApprovalDecisionWithOptions(ctx context.Context, too
 		id, reply = c.approval.register(tool, subject, reason)
 	}
 
-	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason}})
+	c.sink.Emit(event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: id, Tool: tool, Subject: subject, Reason: reason, Fresh: opts.fresh}})
 	if hookSubject, hookArgs, ok := permissionRequestHookPayload(tool, subject, args); ok {
 		go c.hooks.PermissionRequest(ctx, tool, hookSubject, hookArgs)
 	}
@@ -5239,25 +5234,6 @@ func (c *Controller) emitRememberResult(r RememberResult) {
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PermissionSavedFmt, r.Path, r.Rule)})
 	case strings.TrimSpace(r.CoveredBy) != "":
 		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.PermissionAlreadyAllowedFmt, r.Path, r.CoveredBy)})
-	}
-}
-
-func (c *Controller) emitMCPReadOnlyTrustResult(r MCPReadOnlyTrustResult) {
-	server := strings.TrimSpace(r.Server)
-	toolName := strings.TrimSpace(r.Tool)
-	if r.Err != nil {
-		c.sink.Emit(event.Event{
-			Kind:  event.Notice,
-			Level: event.LevelWarn,
-			Text:  fmt.Sprintf(i18n.M.MCPReadOnlyTrustFailedFmt, server, toolName, r.Err),
-		})
-		return
-	}
-	switch {
-	case r.Saved:
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustSavedFmt, r.Path, server, toolName)})
-	case strings.TrimSpace(r.CoveredBy) != "":
-		c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: fmt.Sprintf(i18n.M.MCPReadOnlyTrustAlreadyFmt, r.Path, server, r.CoveredBy)})
 	}
 }
 

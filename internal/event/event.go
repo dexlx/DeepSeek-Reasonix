@@ -160,6 +160,7 @@ type Approval struct {
 	Tool    string
 	Subject string
 	Reason  string // optional annotation explaining why approval is needed
+	Fresh   bool   // current human decision required; do not offer remembered grants
 }
 
 // AskOption is one choice the user can pick for an AskQuestion.

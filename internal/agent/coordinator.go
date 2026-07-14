@@ -221,8 +221,8 @@ func (c *Coordinator) SetPlanMode(v bool) {
 	}
 }
 
-// SetPlanModeReadOnlyTrustGate propagates MCP read-only trust approvals to both
-// tool-using agents in two-model mode.
+// SetPlanModeReadOnlyTrustGate propagates plan-mode bash read-only command
+// approvals to both tool-using agents in two-model mode.
 func (c *Coordinator) SetPlanModeReadOnlyTrustGate(g PlanModeReadOnlyTrustGate) {
 	if c == nil {
 		return

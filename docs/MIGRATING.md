@@ -110,20 +110,15 @@ and DeepSeek prefix-cache–oriented design.
   trust a concrete unknown query prefix once, and the persistent choice writes
   the same `plan_mode_read_only_commands` entry. Auto/YOLO tool approval does
   not answer this bash trust prompt. Use `read_only_task` / `read_only_skill`
-  instead of trying to unlock `task` / `run_skill` while planning. An MCP/plugin tool
-  whose read-only status comes from the server's untrusted `readOnlyHint` is
-  confirmed the first time an interactive plan-mode run needs it; choose the
-  persistent option to write the plugin-level `trusted_read_only_tools` raw-name
-  list. Auto/YOLO tool approval does not answer this trust prompt, although a
-  session or persistent trust choice prevents repeat prompts for the same MCP
-  tool. Non-interactive runs still fail closed, so pre-seed
-  `trusted_read_only_tools` or declare a concrete `mcp__<server>__<tool>` when no
-  user can approve. In the desktop MCP
-  panel, expand a server and use **Pre-trust read-only** for currently listed
-  `readOnlyHint` tools, per-tool **Pre-trust** for audited readers, or
-  **Untrust** to remove a tool; those actions write the same
-  `trusted_read_only_tools` list. First-party `ReadOnlyToolNames` overrides and
-  built-ins stay trusted.
+  instead of trying to unlock `task` / `run_skill` while planning. Installed MCP
+  tools now use the server's `readOnlyHint` directly: readers can run during
+  planning and read-only research without a separate trust prompt, while tools
+  without the hint remain writer-classified and use the normal Ask/Auto/YOLO
+  permission path even during planning. MCP tools declaring
+  `destructiveHint: true` still require a new interactive approval on every call
+  and fail closed in headless runs. Existing `trusted_read_only_tools`
+  entries still load as legacy read-only overrides for older servers that omit
+  annotations, but the desktop no longer exposes a pre-trust workflow.
 - **Read-only subagent research**: use `read_only_task` for generic isolated
   research in plan mode, or `read_only_skill` when the work should follow an
   existing skill. Both expose only read-only tools and safe foreground bash, do

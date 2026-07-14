@@ -460,6 +460,33 @@ func TestClientListToolsValidatesAfterCompatibilityNormalization(t *testing.T) {
 	}
 }
 
+func TestClientListToolsPropagatesReadOnlyAndDestructiveHints(t *testing.T) {
+	tr := &countingToolsTransport{raw: json.RawMessage(`{
+		"tools":[{
+			"name":"wipe",
+			"description":"Delete generated state.",
+			"inputSchema":{"type":"object"},
+			"annotations":{"readOnlyHint":true,"destructiveHint":true}
+		}]
+	}`)}
+	c := &Client{name: "srv", t: tr, spec: Spec{Name: "srv"}, transport: "stdio"}
+
+	tools, err := c.listTools(context.Background())
+	if err != nil {
+		t.Fatalf("listTools: %v", err)
+	}
+	if len(tools) != 1 || !tools[0].ReadOnly() {
+		t.Fatalf("tools = %v, want one read-only tool", names(tools))
+	}
+	annotations, ok := tools[0].(tool.MCPAnnotations)
+	if !ok || !annotations.MCPDestructiveHint() {
+		t.Fatalf("tool annotations = (%T, %v), want destructive hint", tools[0], ok)
+	}
+	if len(c.tools) != 1 || !c.tools[0].ReadOnlyHint || !c.tools[0].DestructiveHint {
+		t.Fatalf("tool status = %+v, want both MCP hints", c.tools)
+	}
+}
+
 func TestSpecReadOnlyToolNamesMarksUnhintedToolsReadOnly(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
@@ -530,9 +557,6 @@ func TestSpecReadOnlyModelToolNamesMarksVisibleToolsTrusted(t *testing.T) {
 	}
 	if !echo.ReadOnly() {
 		t.Fatal("model-visible read-only override did not mark echo tool read-only")
-	}
-	if u, ok := echo.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
-		t.Fatal("model-visible read-only override should be trusted in plan mode")
 	}
 	zed := byName["mcp__mock__zed"]
 	if zed == nil {
@@ -1178,13 +1202,10 @@ func TestHelperProcess(t *testing.T) {
 	}
 }
 
-// TestReadOnlyTrustDoesNotChangeModelVisibleSchema locks the cache invariant
-// behind the MCP trust controls: marking a tool trusted read-only changes its
-// execution/approval flags (ReadOnly / PlanModeUntrustedReadOnly) but must not
-// alter the model-visible tool name or input schema. If trust leaked into the
-// provider-visible tool list/schema, every trust toggle would break the stable
-// prompt prefix and drop the prompt-cache hit rate.
-func TestReadOnlyTrustDoesNotChangeModelVisibleSchema(t *testing.T) {
+// TestReadOnlyOverrideDoesNotChangeModelVisibleSchema locks the cache invariant
+// behind the backward-compatible MCP read-only override: classification may
+// change ReadOnly, but must not alter the provider-visible name or input schema.
+func TestReadOnlyOverrideDoesNotChangeModelVisibleSchema(t *testing.T) {
 	startMockEcho := func(spec Spec) (*Host, map[string]tool.Tool) {
 		t.Helper()
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -1205,34 +1226,31 @@ func TestReadOnlyTrustDoesNotChangeModelVisibleSchema(t *testing.T) {
 		return host, byName
 	}
 
-	_, untrusted := startMockEcho(Spec{})
-	_, trusted := startMockEcho(Spec{ReadOnlyModelToolNames: map[string]bool{"mcp__mock__echo": true}})
+	_, baseTools := startMockEcho(Spec{})
+	_, overriddenTools := startMockEcho(Spec{ReadOnlyModelToolNames: map[string]bool{"mcp__mock__echo": true}})
 
-	base, ok := untrusted["mcp__mock__echo"]
+	base, ok := baseTools["mcp__mock__echo"]
 	if !ok {
-		t.Fatalf("mcp__mock__echo missing from untrusted tools %v", untrusted)
+		t.Fatalf("mcp__mock__echo missing from base tools %v", baseTools)
 	}
-	trustedEcho, ok := trusted["mcp__mock__echo"]
+	overriddenEcho, ok := overriddenTools["mcp__mock__echo"]
 	if !ok {
-		t.Fatalf("mcp__mock__echo missing from trusted tools %v", trusted)
+		t.Fatalf("mcp__mock__echo missing from overridden tools %v", overriddenTools)
 	}
 
 	// The model-visible surface (name + schema bytes) must be byte-identical.
-	if base.Name() != trustedEcho.Name() {
-		t.Fatalf("trust changed model-visible tool name: %q vs %q", base.Name(), trustedEcho.Name())
+	if base.Name() != overriddenEcho.Name() {
+		t.Fatalf("override changed model-visible tool name: %q vs %q", base.Name(), overriddenEcho.Name())
 	}
-	if got, want := string(trustedEcho.Schema()), string(base.Schema()); got != want {
-		t.Fatalf("trust changed model-visible schema bytes:\n trusted=%s\n   base=%s", got, want)
+	if got, want := string(overriddenEcho.Schema()), string(base.Schema()); got != want {
+		t.Fatalf("override changed model-visible schema bytes:\n override=%s\n     base=%s", got, want)
 	}
 
-	// Trust only flips the execution/approval flags.
+	// The legacy override only flips the read-only classification.
 	if base.ReadOnly() {
-		t.Fatal("untrusted echo should not be read-only without a hint")
+		t.Fatal("base echo should not be read-only without a hint")
 	}
-	if !trustedEcho.ReadOnly() {
-		t.Fatal("trusted echo should be marked read-only")
-	}
-	if u, ok := trustedEcho.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
-		t.Fatal("trusted echo should be trusted in plan mode")
+	if !overriddenEcho.ReadOnly() {
+		t.Fatal("overridden echo should be marked read-only")
 	}
 }

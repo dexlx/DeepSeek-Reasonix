@@ -5823,10 +5823,11 @@ type ServerView struct {
 }
 
 type ToolView struct {
-	Name         string `json:"name"`
-	Description  string `json:"description"`
-	ReadOnlyHint bool   `json:"readOnlyHint,omitempty"`
-	SchemaError  string `json:"schemaError,omitempty"`
+	Name            string `json:"name"`
+	Description     string `json:"description"`
+	ReadOnlyHint    bool   `json:"readOnlyHint,omitempty"`
+	DestructiveHint bool   `json:"destructiveHint,omitempty"`
+	SchemaError     string `json:"schemaError,omitempty"`
 }
 
 // SkillView is one discoverable skill for the drawer. Also backs the
@@ -6783,94 +6784,6 @@ func (a *App) ClearMCPServerAuthentication(name string) error {
 	return nil
 }
 
-func (a *App) updateMCPServerTrustedReadOnlyTools(name string, update func([]string) []string) error {
-	ctrl := a.activeCtrl()
-	if ctrl == nil {
-		return fmt.Errorf("no active session")
-	}
-	if controllerHasActiveRuntimeWork(ctrl) {
-		return rebuildControllerActiveWorkError("MCP server")
-	}
-	name = strings.TrimSpace(name)
-	if name == "" {
-		return fmt.Errorf("MCP server name is required")
-	}
-	updated, found, err := a.desktopMCPServerForEdit(name)
-	if err != nil {
-		return err
-	}
-	if !found {
-		return fmt.Errorf("no configured MCP server named %q", name)
-	}
-	trusted := uniqueStrings(updated.TrustedReadOnlyTools)
-	next := uniqueStrings(update(trusted))
-	if sameStringList(trusted, next) {
-		updated.TrustedReadOnlyTools = trusted
-		return nil
-	}
-	updated.TrustedReadOnlyTools = next
-	if err := a.saveDesktopMCPServer(updated); err != nil {
-		return err
-	}
-
-	a.mu.RLock()
-	tab := a.activeTabLocked()
-	sessionDisabled := false
-	if tab != nil {
-		_, sessionDisabled = tab.disabledMCP[name]
-	}
-	a.mu.RUnlock()
-	if !mcpConnected(ctrl, name) {
-		return nil
-	}
-	ctrl.DisconnectMCPServer(name)
-	if h := ctrl.Host(); h != nil {
-		h.ClearFailure(name)
-	}
-	if !sessionDisabled {
-		if _, err := ctrl.ConnectMCPServer(updated); err != nil {
-			recordMCPFailure(ctrl, updated, err)
-			return nil
-		}
-	}
-	return nil
-}
-
-// TrustMCPServerTool marks one raw MCP tool name as trusted read-only and
-// refreshes the live connection so plan mode can use the updated trust boundary.
-func (a *App) TrustMCPServerTool(name, toolName string) error {
-	toolName = strings.TrimSpace(toolName)
-	if toolName == "" {
-		return fmt.Errorf("MCP tool name is required")
-	}
-	return a.updateMCPServerTrustedReadOnlyTools(name, func(trusted []string) []string {
-		return append(trusted, toolName)
-	})
-}
-
-// TrustMCPServerTools marks multiple raw MCP tool names as trusted read-only in
-// one config write and one live reconnect.
-func (a *App) TrustMCPServerTools(name string, toolNames []string) error {
-	if len(uniqueStrings(toolNames)) == 0 {
-		return fmt.Errorf("at least one MCP tool name is required")
-	}
-	return a.updateMCPServerTrustedReadOnlyTools(name, func(trusted []string) []string {
-		return append(trusted, toolNames...)
-	})
-}
-
-// UntrustMCPServerTool removes one raw MCP tool name from the trusted read-only
-// list and refreshes the live connection.
-func (a *App) UntrustMCPServerTool(name, toolName string) error {
-	toolName = strings.TrimSpace(toolName)
-	if toolName == "" {
-		return fmt.Errorf("MCP tool name is required")
-	}
-	return a.updateMCPServerTrustedReadOnlyTools(name, func(trusted []string) []string {
-		return removeString(trusted, toolName)
-	})
-}
-
 // SetMCPServerEnabled is the connector toggle: on reconnects a configured server
 // for this session, off disconnects it (config untouched either way — like Claude
 // Code's per-conversation enable/disable, it resets on the next session start).
@@ -7205,7 +7118,7 @@ func pluginToolsToView(tools []plugin.ToolInfo) []ToolView {
 	out := make([]ToolView, 0, len(tools))
 	for _, t := range tools {
 		out = append(out, ToolView{
-			Name: t.Name, Description: t.Description, ReadOnlyHint: t.ReadOnlyHint, SchemaError: t.SchemaError,
+			Name: t.Name, Description: t.Description, ReadOnlyHint: t.ReadOnlyHint, DestructiveHint: t.DestructiveHint, SchemaError: t.SchemaError,
 		})
 	}
 	return out

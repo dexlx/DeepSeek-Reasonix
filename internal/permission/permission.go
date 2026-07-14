@@ -428,6 +428,12 @@ type ReasonedApprover interface {
 	ApproveWithReason(ctx context.Context, toolName, subject string, args json.RawMessage) (allow, remember bool, reason string, err error)
 }
 
+// FreshApprover handles safety decisions that must come from a current human
+// and cannot be satisfied by an allow rule, Auto/YOLO, or a remembered choice.
+type FreshApprover interface {
+	ApproveFresh(ctx context.Context, toolName, subject string, args json.RawMessage) (allow bool, reason string, err error)
+}
+
 // Gate is what the agent consults at execute time: a Policy plus an optional
 // Approver. It satisfies the agent's Gate interface structurally.
 type Gate struct {
@@ -489,6 +495,30 @@ func (g *Gate) Check(ctx context.Context, toolName string, args json.RawMessage,
 	default:
 		return true, "", nil
 	}
+}
+
+// CheckFresh preserves explicit deny precedence, then requires a fresh approver
+// regardless of ordinary allow/ask/fallback posture. It deliberately never
+// persists or installs an in-memory allow rule.
+func (g *Gate) CheckFresh(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	if g.Policy.Decide(toolName, readOnly, args) == Deny {
+		return false, "denied by permission policy — this tool/command is on the deny list. Do not retry it; choose another approach or stop and explain.", nil
+	}
+	approver, ok := g.Approver.(FreshApprover)
+	if !ok {
+		return false, "this tool requires fresh human approval and cannot run in a non-interactive session.", nil
+	}
+	allow, reason, err := approver.ApproveFresh(ctx, toolName, subject, args)
+	if err != nil {
+		return false, "approval aborted", err
+	}
+	if !allow {
+		if strings.TrimSpace(reason) == "" {
+			reason = "the user declined this tool call"
+		}
+		return false, reason, nil
+	}
+	return true, "", nil
 }
 
 func (g *Gate) approve(ctx context.Context, toolName, subject string, args json.RawMessage) (bool, bool, string, error) {

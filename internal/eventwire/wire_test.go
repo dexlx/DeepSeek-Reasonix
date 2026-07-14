@@ -288,6 +288,11 @@ func TestToWireInteractionAndLifecyclePayloads(t *testing.T) {
 			want: []string{`"kind":"approval_request"`, `"approval":{"id":"a1","tool":"bash","subject":"rm"}`},
 		},
 		{
+			name: "fresh approval",
+			in:   event.Event{Kind: event.ApprovalRequest, Approval: event.Approval{ID: "a2", Tool: "mcp__srv__wipe", Subject: "srv/wipe", Fresh: true}},
+			want: []string{`"kind":"approval_request"`, `"tool":"mcp__srv__wipe"`, `"fresh":true`},
+		},
+		{
 			name: "ask",
 			in: event.Event{Kind: event.AskRequest, Ask: event.Ask{
 				ID: "ask-1",

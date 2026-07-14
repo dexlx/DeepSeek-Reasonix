@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"strings"
 	"testing"
 )
 
@@ -215,6 +216,23 @@ type stubApprover struct {
 	calls    int
 }
 
+type freshStubApprover struct {
+	allow   bool
+	reason  string
+	calls   int
+	subject string
+}
+
+func (s *freshStubApprover) Approve(context.Context, string, string, json.RawMessage) (bool, bool, error) {
+	return true, false, nil
+}
+
+func (s *freshStubApprover) ApproveFresh(_ context.Context, _ string, subject string, _ json.RawMessage) (bool, string, error) {
+	s.calls++
+	s.subject = subject
+	return s.allow, s.reason, nil
+}
+
 func (s *stubApprover) Approve(ctx context.Context, tool, subject string, args json.RawMessage) (bool, bool, error) {
 	s.calls++
 	return s.allow, s.remember, s.err
@@ -274,6 +292,30 @@ func TestGateInteractive(t *testing.T) {
 	allow, _, _ = g4.Check(context.Background(), "bash", json.RawMessage(`{"command":"ok go"}`), false)
 	if !allow || ap4.calls != 0 {
 		t.Errorf("allow-listed call reached approver: allow=%v calls=%d", allow, ap4.calls)
+	}
+}
+
+func TestGateFreshApprovalIgnoresAllowButHonorsDeny(t *testing.T) {
+	ap := &freshStubApprover{allow: true}
+	g := NewGate(New("allow", []string{"mcp__srv__danger"}, nil, nil), ap)
+	allow, reason, err := g.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", json.RawMessage(`{"target":"x"}`), true)
+	if err != nil || !allow || reason != "" || ap.calls != 1 || ap.subject != "srv/danger" {
+		t.Fatalf("fresh allow = (%v,%q,%v), calls=%d subject=%q", allow, reason, err, ap.calls, ap.subject)
+	}
+
+	deniedApprover := &freshStubApprover{allow: true}
+	denied := NewGate(New("allow", nil, nil, []string{"mcp__srv__danger"}), deniedApprover)
+	allow, reason, err = denied.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", nil, false)
+	if err != nil || allow || reason == "" || deniedApprover.calls != 0 {
+		t.Fatalf("fresh explicit deny = (%v,%q,%v), approver calls=%d", allow, reason, err, deniedApprover.calls)
+	}
+}
+
+func TestGateFreshApprovalFailsClosedWithoutFreshApprover(t *testing.T) {
+	g := NewGate(New("allow", nil, nil, nil), nil)
+	allow, reason, err := g.CheckFresh(context.Background(), "mcp__srv__danger", "srv/danger", nil, false)
+	if err != nil || allow || !strings.Contains(reason, "fresh human approval") {
+		t.Fatalf("headless fresh approval = (%v,%q,%v), want fail closed", allow, reason, err)
 	}
 }
 

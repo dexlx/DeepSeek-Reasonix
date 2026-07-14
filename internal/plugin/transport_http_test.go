@@ -59,7 +59,7 @@ func mcpHTTPServer(t *testing.T, sse bool) *httptest.Server {
 				"name":        "greet",
 				"description": "Greet someone.",
 				"inputSchema": map[string]any{"type": "object"},
-				"annotations": map[string]any{"readOnlyHint": true},
+				"annotations": map[string]any{"readOnlyHint": true, "destructiveHint": true},
 			}}}
 		case "tools/call":
 			var p struct {
@@ -109,6 +109,10 @@ func runHTTPTransportTest(t *testing.T, sse bool) {
 	}
 	if !tools[0].ReadOnly() {
 		t.Error("readOnlyHint not honoured over HTTP")
+	}
+	annotations, ok := tools[0].(tool.MCPAnnotations)
+	if !ok || !annotations.MCPDestructiveHint() {
+		t.Error("destructiveHint not honoured over HTTP")
 	}
 	got, err := tools[0].Execute(ctx, json.RawMessage(`{"name":"sam"}`))
 	if err != nil {

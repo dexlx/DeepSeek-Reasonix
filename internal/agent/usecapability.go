@@ -347,7 +347,13 @@ func (t *UseCapabilityTool) resolveCall(ctx context.Context, id string, args jso
 	if !ok {
 		return t.resolveUnavailable(base, id, modelName, fmt.Sprintf("MCP server %q is not configured", server)), nil
 	}
-	lazy := &onDemandMCPTool{proxy: t, spec: spec, server: server, raw: raw, modelName: modelName}
+	destructive := false
+	if t.catalog != nil {
+		if entry, found := t.catalog().Lookup(id); found {
+			destructive = entry.Destructive
+		}
+	}
+	lazy := &onDemandMCPTool{proxy: t, spec: spec, server: server, raw: raw, modelName: modelName, destructive: destructive}
 	base.Target = lazy
 	base.TargetName = modelName
 	// Conservative: an unstarted tool counts as a writer unless the user
@@ -395,16 +401,18 @@ func findMCPTool(tools []tool.Tool, raw, modelName string) tool.Tool {
 }
 
 // onDemandMCPTool defers MCP server startup to Execute so permission and hook
-// gates always run before any subprocess or network side effect. It reports
-// itself read-only only under config-level trust; everything else is treated
-// as a writer until the live handshake proves otherwise, so plan mode and
-// permission prompts see the conservative classification.
+// gates always run before any subprocess or network side effect. Before the live
+// handshake it can only use a backward-compatible local read-only override;
+// otherwise it remains write-capable until the resolved MCP tool is classified.
 type onDemandMCPTool struct {
 	proxy     *UseCapabilityTool
 	spec      plugin.Spec
 	server    string
 	raw       string
 	modelName string
+	// destructive comes from the schema cache when available. A live promotion
+	// is detected in Execute and deferred to a fresh-approved retry.
+	destructive bool
 }
 
 func (o *onDemandMCPTool) Name() string { return o.modelName }
@@ -419,15 +427,13 @@ func (o *onDemandMCPTool) ReadOnly() bool {
 	return o.spec.ReadOnlyToolNames[o.raw] || o.spec.ReadOnlyModelToolNames[o.modelName]
 }
 
-// PlanModeUntrustedReadOnly is false because ReadOnly() is true only under an
-// explicit user config assertion (trusted_read_only_tools), never a server
-// hint — there is no server yet.
-func (o *onDemandMCPTool) PlanModeUntrustedReadOnly() bool { return false }
-
 // MCPServerName/MCPRawToolName expose the deferred target for audit and
-// plan-mode trust prompts (tool.MCPMetadata).
+// diagnostics (tool.MCPMetadata).
 func (o *onDemandMCPTool) MCPServerName() string  { return o.server }
 func (o *onDemandMCPTool) MCPRawToolName() string { return o.raw }
+func (o *onDemandMCPTool) MCPDestructiveHint() bool {
+	return o.destructive
+}
 
 func (o *onDemandMCPTool) Execute(ctx context.Context, args json.RawMessage) (string, error) {
 	tools, err := o.proxy.ensureServerTools(ctx, o.server)
@@ -447,7 +453,14 @@ func (o *onDemandMCPTool) Execute(ctx context.Context, args json.RawMessage) (st
 		}
 		return "", fmt.Errorf("%s", msg)
 	}
+	if annotations, ok := target.(tool.MCPAnnotations); ok && annotations.MCPDestructiveHint() && !o.destructive {
+		return "", destructiveMCPDiscoveryError(o.server, o.raw)
+	}
 	return target.Execute(ctx, args)
+}
+
+func destructiveMCPDiscoveryError(server, rawTool string) error {
+	return fmt.Errorf("MCP server %q marks tool %q as destructive; retry so Reasonix can request fresh approval before execution", server, rawTool)
 }
 
 func (t *UseCapabilityTool) ensureServerTools(ctx context.Context, server string) ([]tool.Tool, error) {
@@ -511,6 +524,7 @@ func (t *UseCapabilityTool) serverTools(ctx context.Context, server string) ([]t
 			Description: tl.Description(),
 			Schema:      tl.Schema(),
 			ReadOnly:    tl.ReadOnly(),
+			Destructive: mcpDestructiveHint(tl),
 		})
 	}
 	t.mu.Lock()

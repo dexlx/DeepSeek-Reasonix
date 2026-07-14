@@ -148,6 +148,13 @@ func (g *SharedHeadlessGate) Check(ctx context.Context, toolName string, args js
 	return gate.Check(ctx, toolName, args, readOnly)
 }
 
+func (g *SharedHeadlessGate) CheckFresh(ctx context.Context, toolName, subject string, args json.RawMessage, readOnly bool) (bool, string, error) {
+	g.mu.RLock()
+	gate := g.gate
+	g.mu.RUnlock()
+	return gate.CheckFresh(ctx, toolName, subject, args, readOnly)
+}
+
 type freshHumanHeadlessGate struct {
 	gate *permission.Gate
 }
@@ -157,6 +164,10 @@ func (g *freshHumanHeadlessGate) Check(ctx context.Context, toolName string, arg
 		return false, "this tool requires fresh human approval and cannot run in a non-interactive session. Use an interactive session or a user-initiated memory command.", nil
 	}
 	return g.gate.Check(ctx, toolName, args, readOnly)
+}
+
+func (g *freshHumanHeadlessGate) CheckFresh(context.Context, string, string, json.RawMessage, bool) (bool, string, error) {
+	return false, "this tool requires fresh human approval and cannot run in a non-interactive session.", nil
 }
 
 // preApproved reports whether a tool call can skip the prompt — either the
@@ -336,7 +347,7 @@ func (a *approvalManager) snapshotPrompts() ([]event.Approval, []event.Ask) {
 	defer a.mu.Unlock()
 	approvals := make([]event.Approval, 0, len(a.approvals))
 	for id, p := range a.approvals {
-		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason})
+		approvals = append(approvals, event.Approval{ID: id, Tool: p.tool, Subject: p.subject, Reason: p.reason, Fresh: p.fresh})
 	}
 	asks := make([]event.Ask, 0, len(a.asks))
 	for id, p := range a.asks {

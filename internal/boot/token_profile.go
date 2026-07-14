@@ -10,7 +10,6 @@ import (
 
 	"reasonix/internal/agent"
 	"reasonix/internal/planmode"
-	"reasonix/internal/plugin"
 	"reasonix/internal/tool"
 )
 
@@ -91,9 +90,6 @@ type toolSourceConnector struct {
 	workflow      func(context.Context) (string, error)
 	mcp           func(context.Context, string) (string, error)
 	mcpNames      []string
-
-	planModeAllowedTools     []string
-	planModeTrustedMCPServer map[string]bool
 }
 
 func (*toolSourceConnector) Name() string { return "connect_tool_source" }
@@ -211,10 +207,10 @@ func (t *toolSourceConnector) planModeSourceBlocked(ctx context.Context, source,
 		return false, ""
 	}
 	if source == "mcp" {
-		if name == "" || planModeAllowsMCPServer(t.planModeAllowedTools, name) || t.planModeTrustedMCPServer[name] {
-			return false, ""
-		}
-		return true, fmt.Sprintf("blocked: MCP source %q is not available in plan mode until at least one concrete tool is trusted. Connect it outside plan mode, choose always allow from the read-only trust prompt, pre-seed trusted_read_only_tools, or declare a concrete %q tool in plan_mode_allowed_tools. Keep exploring with read-only tools, then write your plan for approval before using this MCP server.", name, plugin.ToolPrefix(name))
+		// The user chose to install this server. Connecting it makes its live tool
+		// metadata available; each resolved tool is still classified by ReadOnly
+		// and checked by plan mode before execution.
+		return false, ""
 	}
 	// Sources are read-only iff they expose only read-only research surfaces; the
 	// moderate plan-mode gate then trusts that ReadOnly flag (step 6), while any
@@ -225,17 +221,6 @@ func (t *toolSourceConnector) planModeSourceBlocked(ctx context.Context, source,
 	readOnlySource := source == "web_fetch" || source == "lsp" || source == "search" || source == "sessions" || source == "commands" || source == "workflow" || source == "read_only_task" || source == "read_only_skill"
 	decision := planmode.Policy{}.Decide(planmode.Call{Name: source, ReadOnly: readOnlySource})
 	return decision.Blocked, decision.Message
-}
-
-func planModeAllowsMCPServer(allowedTools []string, server string) bool {
-	prefix := plugin.ToolPrefix(server)
-	for _, name := range allowedTools {
-		name = strings.TrimSpace(name)
-		if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
-			return true
-		}
-	}
-	return false
 }
 
 func normalizeToolSource(source string) string {

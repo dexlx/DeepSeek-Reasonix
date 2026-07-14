@@ -2317,7 +2317,7 @@ READ ONLY SKILL BODY`)
 	}
 }
 
-func TestBuildTokenEconomyPlanModeCanConnectAllowedMCPSource(t *testing.T) {
+func TestBuildTokenEconomyPlanModeCanConnectInstalledMCPSource(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -2335,7 +2335,6 @@ default_model = "test-model"
 
 [agent]
 system_prompt = "BASE"
-plan_mode_allowed_tools = ["mcp__mockmcp__echo"]
 
 [[providers]]
 name = "test-model"
@@ -2364,12 +2363,12 @@ env = { GO_WANT_HELPER_PROCESS = "1" }
 		t.Fatalf("requests = %d, want 2", len(reqs))
 	}
 	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
-		t.Fatalf("second request should expose allowed MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+		t.Fatalf("second request should expose installed MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
 	}
 	for _, msg := range ctrl.History() {
 		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" {
 			if strings.Contains(msg.Content, "blocked:") {
-				t.Fatalf("connect_tool_source should not block allowed MCP in plan mode, got:\n%s", msg.Content)
+				t.Fatalf("connect_tool_source should not block installed MCP in plan mode, got:\n%s", msg.Content)
 			}
 			if !strings.Contains(msg.Content, `enabled MCP server "mockmcp" tools: mcp__mockmcp__echo`) {
 				t.Fatalf("connect_tool_source should report enabled MCP tools, got:\n%s", msg.Content)
@@ -2378,7 +2377,7 @@ env = { GO_WANT_HELPER_PROCESS = "1" }
 	}
 }
 
-func TestBuildTokenEconomyPlanModeCanConnectTrustedReadOnlyMCPSource(t *testing.T) {
+func TestBuildTokenEconomyPlanModeKeepsLegacyMCPReadOnlyOverride(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
 	t.Chdir(dir)
@@ -2425,30 +2424,20 @@ trusted_read_only_tools = ["echo"]
 		t.Fatalf("requests = %d, want 2", len(reqs))
 	}
 	if !requestHasTool(reqs[1], "mcp__mockmcp__echo") {
-		t.Fatalf("second request should expose trusted MCP source in plan economy mode; tools=%v", toolSchemaNames(reqs[1].Tools))
+		t.Fatalf("second request should expose MCP source with a legacy read-only override; tools=%v", toolSchemaNames(reqs[1].Tools))
 	}
 	for _, msg := range ctrl.History() {
 		if msg.Role == provider.RoleTool && msg.Name == "connect_tool_source" && strings.Contains(msg.Content, "blocked:") {
-			t.Fatalf("connect_tool_source should not block trusted MCP in plan mode, got:\n%s", msg.Content)
+			t.Fatalf("connect_tool_source should not block MCP with a legacy override in plan mode, got:\n%s", msg.Content)
 		}
-	}
-}
-
-func TestPlanModeAllowsMCPServerRequiresConcreteToolName(t *testing.T) {
-	if planModeAllowsMCPServer([]string{"mcp__mockmcp__"}, "mockmcp") {
-		t.Fatal("bare MCP namespace prefix should not allow a server in plan mode")
-	}
-	if !planModeAllowsMCPServer([]string{"mcp__mockmcp__echo"}, "mockmcp") {
-		t.Fatal("concrete MCP tool name should allow its server in plan mode")
 	}
 }
 
 func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
 	tests := []struct {
-		source          string
-		args            string
-		forbiddenTools  []string
-		forbiddenPrefix string
+		source         string
+		args           string
+		forbiddenTools []string
 	}{
 		{
 			source:         "task",
@@ -2477,11 +2466,6 @@ func TestBuildTokenEconomyPlanModeBlocksSourcesWithPolicy(t *testing.T) {
 				"run_skill", "read_only_skill", "read_skill", "install_skill",
 				"explore", "research", "review", "security_review",
 			},
-		},
-		{
-			source:          "mcp",
-			args:            `{"source":"mcp","name":"mockmcp"}`,
-			forbiddenPrefix: "mcp__mockmcp",
 		},
 	}
 	for _, tt := range tests {
@@ -2544,9 +2528,6 @@ command = "reasonix-missing-mockmcp"
 				if requestHasTool(reqs[1], forbidden) {
 					t.Fatalf("blocked source %s should not expose %q; tools=%v", tt.source, forbidden, toolSchemaNames(reqs[1].Tools))
 				}
-			}
-			if tt.forbiddenPrefix != "" && requestHasToolPrefix(reqs[1], tt.forbiddenPrefix) {
-				t.Fatalf("blocked source %s should not expose tools with prefix %q; tools=%v", tt.source, tt.forbiddenPrefix, toolSchemaNames(reqs[1].Tools))
 			}
 		})
 	}

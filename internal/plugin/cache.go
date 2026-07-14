@@ -41,6 +41,7 @@ func cacheableToolsOf(tools []tool.Tool) []CachedTool {
 			Description: rt.desc,
 			Schema:      rt.schema,
 			ReadOnly:    rt.readOnly,
+			Destructive: rt.destructive,
 		})
 	}
 	return out
@@ -66,12 +67,13 @@ type CachedSchema struct {
 // CachedTool mirrors the subset of an MCP tool definition we need to register
 // a placeholder before the real handshake completes: Name (raw, server-local),
 // Description (model-visible), Schema (raw JSON for input validation),
-// ReadOnly (drives confirmation prompts).
+// ReadOnly and Destructive (drive local approval policy).
 type CachedTool struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description"`
 	Schema      json.RawMessage `json:"schema"`
 	ReadOnly    bool            `json:"read_only"`
+	Destructive bool            `json:"destructive,omitempty"`
 }
 
 // SpecFingerprint hashes the load-bearing parts of a Spec so changing the

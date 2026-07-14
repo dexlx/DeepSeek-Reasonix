@@ -38,6 +38,7 @@ func sampleCachedSchema(hash string) CachedSchema {
 			Description: "does a thing",
 			Schema:      json.RawMessage(`{"type":"object"}`),
 			ReadOnly:    true,
+			Destructive: true,
 		}},
 	}
 }
@@ -64,6 +65,9 @@ func TestCacheRoundTrip(t *testing.T) {
 	if !got.Tools[0].ReadOnly {
 		t.Error("ReadOnly: lost across save/load")
 	}
+	if !got.Tools[0].Destructive {
+		t.Error("Destructive: lost across save/load")
+	}
 	if !got.Capabilities["prompts"] || got.Capabilities["resources"] {
 		t.Errorf("Capabilities: %+v", got.Capabilities)
 	}
@@ -72,6 +76,28 @@ func TestCacheRoundTrip(t *testing.T) {
 	}
 	if got.LastValidated.IsZero() {
 		t.Error("LastValidated: expected non-zero after save")
+	}
+}
+
+func TestCacheLoadsLegacyToolWithoutDestructiveField(t *testing.T) {
+	redirectCache(t)
+	spec := sampleSpec()
+	hash := SpecFingerprint(spec)
+	p := cachePath(spec.Name)
+	if err := os.MkdirAll(filepath.Dir(p), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	legacy := `{"version":1,"spec_hash":"` + hash + `","capabilities":{},"tools":[{"name":"read","description":"legacy","schema":{"type":"object"},"read_only":true}],"last_validated":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(p, []byte(legacy), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	got, ok := LoadCachedSchema(spec.Name, hash)
+	if !ok || len(got.Tools) != 1 {
+		t.Fatalf("legacy cache = (%+v,%v), want one tool", got, ok)
+	}
+	if got.Tools[0].Destructive {
+		t.Fatal("legacy cache without destructive field must default to false")
 	}
 }
 
