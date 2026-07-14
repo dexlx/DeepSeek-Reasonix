@@ -1386,6 +1386,20 @@ export interface DesktopStartupSettingsView {
   checkUpdates: boolean; // check for new versions on startup
 }
 
+export type ExternalOpenerKind = "file-manager" | "editor" | "terminal";
+
+export interface ExternalOpenerView {
+  id: string;
+  name: string;
+  kind: ExternalOpenerKind;
+  iconDataUrl?: string;
+}
+
+export interface ExternalOpenersView {
+  openers: ExternalOpenerView[];
+  preferred: string;
+}
+
 // Auto-updater payloads (desktop/updater.go). UpdateInfo drives the update banner;
 // UpdateProgress streams on the "updater:progress" event during download/install.
 export interface UpdateInfo {
