@@ -117,9 +117,40 @@ func RestoreConfigSnapshot(id string) (*RepairTransaction, error) {
 	}
 	tx := newRepairTransaction(time.Now())
 	backup := filepath.Join(config.MemoryUserDir(), "repair", "restore-backups", tx.ID+".toml")
-	if current, err := os.ReadFile(dest); err == nil {
-		if err := fileutil.AtomicWriteFile(backup, current, 0o600); err != nil {
+	moved := false
+	if info, err := os.Lstat(dest); err == nil {
+		// Move the live file aside instead of copying its bytes: dest may be a
+		// symlink (a dotfiles-managed config), and a byte copy would record a
+		// plain file, so undo could never restore the link. Rename preserves
+		// the exact node; undo recreates symlinks from the quarantined link.
+		if err := os.MkdirAll(filepath.Dir(backup), 0o700); err != nil {
 			return nil, err
+		}
+		if renameErr := os.Rename(dest, backup); renameErr == nil {
+			moved = true
+		} else if info.Mode()&os.ModeSymlink != 0 {
+			// Cross-device fallback: recreate the link node at the backup path
+			// so undo still restores a symlink, then drop the original.
+			linkTarget, err := os.Readlink(dest)
+			if err != nil {
+				return nil, err
+			}
+			if err := os.Symlink(linkTarget, backup); err != nil {
+				return nil, err
+			}
+			if err := os.Remove(dest); err != nil {
+				_ = os.Remove(backup)
+				return nil, err
+			}
+			moved = true
+		} else {
+			current, err := os.ReadFile(dest)
+			if err != nil {
+				return nil, err
+			}
+			if err := fileutil.AtomicWriteFile(backup, current, 0o600); err != nil {
+				return nil, err
+			}
 		}
 		tx.Changes = append(tx.Changes, RepairChange{Scope: "global", TargetPath: dest, PreviousPath: backup})
 	} else if os.IsNotExist(err) {
@@ -129,16 +160,24 @@ func RestoreConfigSnapshot(id string) (*RepairTransaction, error) {
 	}
 	b, err := os.ReadFile(selected.Path)
 	if err != nil {
+		if moved {
+			_ = os.Rename(backup, dest)
+		}
 		return nil, err
 	}
 	if err := fileutil.AtomicWriteFile(dest, b, 0o600); err != nil {
+		if moved {
+			_ = os.Remove(dest)
+			_ = os.Rename(backup, dest)
+		}
 		return nil, err
 	}
 	if err := saveRepairTransaction(tx); err != nil {
-		if previous, readErr := os.ReadFile(backup); readErr == nil {
-			_ = fileutil.AtomicWriteFile(dest, previous, 0o600)
-		} else if tx.Changes[0].RemoveOnUndo {
+		if tx.Changes[0].RemoveOnUndo {
 			_ = os.Remove(dest)
+		} else {
+			_ = os.Remove(dest)
+			_ = os.Rename(backup, dest)
 		}
 		return nil, err
 	}

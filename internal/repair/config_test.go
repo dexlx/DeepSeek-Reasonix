@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"reasonix/internal/config"
 )
 
 func TestInspectInvalidProjectConfigIsReadOnlyByDefault(t *testing.T) {
@@ -173,5 +175,64 @@ func TestSnapshotUndoAcrossSeparateStateHome(t *testing.T) {
 	}
 	if string(got) != string(current) {
 		t.Fatalf("undo restored %q, want %q", got, current)
+	}
+}
+
+// TestRestoreConfigSnapshotPreservesSymlinkThroughUndo pins the dotfiles
+// contract: restoring a snapshot over a symlinked config materializes the
+// snapshot as a plain file (without writing through the link), and undo
+// brings back the original symlink node itself.
+func TestRestoreConfigSnapshotPreservesSymlinkThroughUndo(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("REASONIX_HOME", home)
+	dest := config.UserConfigPath()
+	dotfiles := filepath.Join(t.TempDir(), "dotfiles-config.toml")
+	if err := os.WriteFile(dotfiles, []byte("default_model = \"good\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(dotfiles, dest); err != nil {
+		t.Fatal(err)
+	}
+	if err := RecordHealthyConfig("v1"); err != nil {
+		t.Fatal(err)
+	}
+	snapshots, err := ListConfigSnapshots()
+	if err != nil || len(snapshots) != 1 {
+		t.Fatalf("snapshots = %+v, err = %v", snapshots, err)
+	}
+	if err := os.WriteFile(dotfiles, []byte("default_model = \"drifted\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := RestoreConfigSnapshot(snapshots[0].ID); err != nil {
+		t.Fatal(err)
+	}
+	info, err := os.Lstat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		t.Fatal("restore should materialize the snapshot as a plain file")
+	}
+	if got, _ := os.ReadFile(dest); string(got) != "default_model = \"good\"\n" {
+		t.Fatalf("restored config = %q", got)
+	}
+	if got, _ := os.ReadFile(dotfiles); string(got) != "default_model = \"drifted\"\n" {
+		t.Fatalf("restore wrote through the symlink: %q", got)
+	}
+	if _, err := UndoLastRepair(); err != nil {
+		t.Fatal(err)
+	}
+	info, err = os.Lstat(dest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Fatalf("undo materialized a regular file, want symlink (mode %v)", info.Mode())
+	}
+	if got, err := os.Readlink(dest); err != nil || got != dotfiles {
+		t.Fatalf("restored link target = %q (%v), want %q", got, err, dotfiles)
+	}
+	if got, _ := os.ReadFile(dest); string(got) != "default_model = \"drifted\"\n" {
+		t.Fatalf("config through restored link = %q", got)
 	}
 }
