@@ -151,11 +151,15 @@ export type ProjectTreeTopicHoverCard = {
 
 export function projectTreeTopicHoverCardModel(node: ProjectNode, t: Translator, projectLabel: string): ProjectTreeTopicHoverCard {
   const activityAt = node.lastActivityAt || node.createdAt || 0;
+  const metaLine = projectTreeTopicMetaLine(node, t);
+  const exactTime = activityAt ? topicActivityDateLabel(activityAt) : "";
   return {
     title: (node.label || node.topicId || "Untitled").replace(/^●\s*/, ""),
     statusLabel: topicStatusLabel(node, t),
-    metaLine: projectTreeTopicMetaLine(node, t),
-    exactTime: activityAt ? topicActivityDateLabel(activityAt) : "",
+    metaLine,
+    // Activity labels older than a week are already this calendar date (it is
+    // always the meta line's last part), so keep a single copy on the card.
+    exactTime: exactTime && metaLine.endsWith(exactTime) ? "" : exactTime,
     projectLabel,
   };
 }
@@ -227,6 +231,12 @@ export function projectTreeShouldRenderTopicActions(isSessionNode: boolean, vari
   return !isSessionNode && variant !== "creation" && !unread;
 }
 
+// Pinning reorders the classic/workbench trees shared with creation mode, so
+// the creation context menu keeps its original rename/trash-only entries.
+export function projectTreeTopicMenuOffersPin(variant: ProjectTreeVariant): boolean {
+  return variant !== "creation";
+}
+
 function topicActivityLabel(ms: number, t: Translator, compact = false): string {
   if (ms <= 0) return "";
   const delta = Date.now() - ms;
@@ -243,7 +253,7 @@ function topicActivityLabel(ms: number, t: Translator, compact = false): string 
     if (delta < hour) return rtf.format(-Math.max(1, Math.round(delta / minute)), "minute");
     if (delta < day) return rtf.format(-Math.round(delta / hour), "hour");
     if (delta < 7 * day) return rtf.format(-Math.round(delta / day), "day");
-    return new Date(ms).toLocaleDateString();
+    return topicActivityDateLabel(ms);
   }
   if (delta < hour) {
     const value = Math.max(1, Math.round(delta / minute));
@@ -621,6 +631,7 @@ export function ProjectTree({
   const [hoverCard, setHoverCard] = useState<{ key: string; card: ProjectTreeTopicHoverCard; left: number; top: number } | null>(null);
   const hoverCardTimerRef = useRef<number | null>(null);
   const creatingRef = useRef(false);
+  const trashingRef = useRef(false);
   const clickTimerRef = useRef<ProjectTreePendingTopicOpen | null>(null);
   useEffect(() => {
     return () => {
@@ -999,6 +1010,8 @@ export function ProjectTree({
   };
 
   const trashTopic = async (topicId: string) => {
+    if (trashingRef.current) return;
+    trashingRef.current = true;
     try {
       await app.TrashTopic(topicId);
       setMenuTopic(null);
@@ -1008,6 +1021,8 @@ export function ProjectTree({
       await onTopicsChanged?.();
     } catch (err) {
       showToast(err instanceof Error ? err.message : String(err), "error");
+    } finally {
+      trashingRef.current = false;
     }
   };
 
@@ -1295,12 +1310,16 @@ export function ProjectTree({
         setConfirmAction(null);
       };
       const topicMenuItems: ContextMenuItem[] = [
-        {
-          key: pinned ? "unpin" : "pin",
-          icon: <Pin size={13} />,
-          label: pinLabel,
-          onSelect: () => void setTopicPinned(topicId, !pinned),
-        },
+        ...(projectTreeTopicMenuOffersPin(variant)
+          ? [
+              {
+                key: pinned ? "unpin" : "pin",
+                icon: <Pin size={13} />,
+                label: pinLabel,
+                onSelect: () => void setTopicPinned(topicId, !pinned),
+              },
+            ]
+          : []),
         {
           key: "rename",
           icon: <Pencil size={13} />,

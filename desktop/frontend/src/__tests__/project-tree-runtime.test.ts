@@ -13,6 +13,7 @@ import {
   arrangeClassicProjectTree,
   classicTopicWindow,
   projectTreeTopicHoverCardModel,
+  projectTreeTopicMenuOffersPin,
 } from "../components/ProjectTree";
 import type { ProjectNode } from "../lib/types";
 
@@ -391,6 +392,52 @@ eq(
     projectLabel: "my-project",
   },
   "hover card model strips the running marker and carries turns, status, and project",
+);
+
+const day = 24 * 60 * 60 * 1000;
+
+eq(
+  (() => {
+    const card = projectTreeTopicHoverCardModel(
+      { key: "topic_old", kind: "topic", label: "Old topic", root: "/repo", topicId: "old", turns: 3, lastActivityAt: Date.now() - 30 * day },
+      testT,
+      "my-project",
+    );
+    return { exactTime: card.exactTime, metaHasTurns: card.metaLine.startsWith("3 turns · ") };
+  })(),
+  { exactTime: "", metaHasTurns: true },
+  "hover card keeps a single calendar-date copy for week-old sessions",
+);
+
+eq(
+  (() => {
+    const card = projectTreeTopicHoverCardModel(
+      { key: "topic_recent", kind: "topic", label: "Recent topic", root: "/repo", topicId: "recent", turns: 2, lastActivityAt: Date.now() - 2 * day },
+      testT,
+      "my-project",
+    );
+    return { hasExactTime: card.exactTime.length > 0, metaRepeatsDate: card.metaLine.includes(card.exactTime) };
+  })(),
+  { hasExactTime: true, metaRepeatsDate: false },
+  "hover card for recent sessions still pairs relative time with the exact date",
+);
+
+eq(
+  projectTreeTopicMenuOffersPin("classic"),
+  true,
+  "classic context menu offers the pin entry",
+);
+
+eq(
+  projectTreeTopicMenuOffersPin("workbench"),
+  true,
+  "workbench context menu keeps the pin entry",
+);
+
+eq(
+  projectTreeTopicMenuOffersPin("creation"),
+  false,
+  "creation context menu hides pin so the shared ordering stays untouched",
 );
 
 eq(
