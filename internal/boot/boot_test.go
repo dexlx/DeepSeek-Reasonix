@@ -2016,6 +2016,54 @@ model = "x"
 	}
 }
 
+func TestBuildTokenEconomyExplicitOnDemandAllowlistDoesNotEnableAllBuiltins(t *testing.T) {
+	isolateConfigHome(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	registerBootTokenProfileTestProvider()
+	prov := testutil.NewMock("token-economy",
+		testutil.Turn{ToolCalls: []provider.ToolCall{
+			{ID: "source-1", Name: "connect_tool_source", Arguments: `{"source":"search"}`},
+		}},
+		testutil.Turn{Text: "done"},
+	)
+	setBootTokenProfileTestProvider(t, prov)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[tools]
+enabled = ["grep", "glob", "ls"]
+
+[agent]
+system_prompt = "BASE"
+
+[[providers]]
+name = "test-model"
+kind = "boot-token-profile-test"
+model = "x"
+`)
+
+	ctrl, err := Build(context.Background(), Options{Sink: event.Discard, TokenMode: TokenModeEconomy})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	if err := ctrl.Run(context.Background(), "enable search tools"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	reqs := prov.Requests()
+	if len(reqs) != 2 {
+		t.Fatalf("requests = %d, want 2", len(reqs))
+	}
+	if got, want := toolSchemaNames(reqs[0].Tools), []string{"ask", "connect_tool_source"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("first request tools = %v, want %v", got, want)
+	}
+	if got, want := toolSchemaNames(reqs[1].Tools), []string{"ask", "connect_tool_source", "glob", "grep", "ls"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("second request tools = %v, want %v", got, want)
+	}
+}
+
 func TestBuildTokenEconomyConnectsWebFetchOnDemand(t *testing.T) {
 	isolateConfigHome(t)
 	dir := robustTempDir(t)
