@@ -986,10 +986,14 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.input.Reset()
 					return m, finalize(m, cmds)
 				}
+				beforeInput := m.input.Value()
 				var ic tea.Cmd
 				m.input, ic = m.input.Update(msg)
 				cmds = append(cmds, ic)
 				m.growInputToFit()
+				if shouldClearWideInputChange(beforeInput, m.input.Value()) {
+					cmds = append(cmds, tea.ClearScreen)
+				}
 				return m, finalize(m, cmds)
 			}
 			return m.handleChooserKey(msg)
