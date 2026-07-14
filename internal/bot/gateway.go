@@ -50,7 +50,16 @@ type GatewayConfig struct {
 	Allowlist          AllowlistConfig
 	Enabled            map[Platform]bool
 	Debounce           time.Duration
-	OnInbound          func(InboundMessage)
+	// OnInbound observes every allowlisted inbound message before dispatch.
+	//
+	// Reentrancy contract for all GatewayConfig callbacks (OnInbound,
+	// OnSessionReady, OnToolApprovalModeChange): they run synchronously on
+	// gateway-owned dispatch/turn goroutines that Stop drains before returning.
+	// A callback must therefore never call Stop, nor block until a goroutine
+	// that does so completes — Stop would wait on the very goroutine running
+	// the callback, a guaranteed deadlock. Hosts that want to shut the gateway
+	// down in reaction to a callback must trigger the shutdown asynchronously.
+	OnInbound func(InboundMessage)
 	// OnSessionReady notifies the host after the bot has created or reused the
 	// controller for an inbound remote. Hosts may persist the concrete session ID
 	// or keep the remote as a read-only channel.
@@ -556,7 +565,9 @@ func (gw *BotGateway) ensureAdapterHealthLocked(binding AdapterBinding) *Adapter
 	return health
 }
 
-// Stop 停止所有适配器并关闭所有 session。
+// Stop 停止所有适配器并关闭所有 session。它会等待 dispatch 与 turn goroutine
+// 全部退出，所以绝不能在 GatewayConfig 回调里同步调用（见 OnInbound 的
+// reentrancy contract），否则 Stop 会等待正在运行该回调的 goroutine 自己。
 func (gw *BotGateway) Stop() {
 	gw.lifecycleMu.Lock()
 	if gw.stopped {
@@ -609,7 +620,28 @@ func (gw *BotGateway) closeSessions() {
 	}
 	gw.mu.Unlock()
 	for _, state := range states {
-		closeBotSessionState(state)
+		gw.closeSessionState(state)
+	}
+}
+
+// closeSessionState tears down a session state that has been unlinked from
+// gw.controllers. runTurn publishes state.cancel under gw.mu on every turn —
+// possibly after the state was already unlinked — so snapshot and clear the
+// field inside the lock and invoke it outside (the same discipline as
+// cancelActiveSession).
+func (gw *BotGateway) closeSessionState(state *sessionState) {
+	if state == nil {
+		return
+	}
+	gw.mu.Lock()
+	cancel := state.cancel
+	state.cancel = nil
+	gw.mu.Unlock()
+	if cancel != nil {
+		cancel()
+	}
+	if state.ctrl != nil {
+		state.ctrl.Close()
 	}
 }
 
@@ -1554,7 +1586,7 @@ func (gw *BotGateway) setSessionRuntimeOverride(key string, override sessionRunt
 		delete(gw.sessionOverrides, key)
 	}
 	gw.mu.Unlock()
-	closeBotSessionState(old)
+	gw.closeSessionState(old)
 	gw.sessions.ForceRelease(key)
 }
 
@@ -1850,9 +1882,18 @@ func (gw *BotGateway) runTurn(ctx context.Context, adapter Adapter, key string, 
 	defer cancel()
 
 	gw.mu.Lock()
-	state.cancel = cancel
+	live := gw.controllers[key] == state
+	if live {
+		state.cancel = cancel
+	}
 	state.lastActive = time.Now()
 	gw.mu.Unlock()
+	if !live {
+		// The session was closed (gateway stop or runtime rebuild) after this
+		// turn picked it up; a cancel published now would never be consumed, so
+		// abort the turn instead of running it uncancellable.
+		cancel()
+	}
 
 	// 运行一轮对话
 	err := state.ctrl.RunTurn(turnCtx, input)
@@ -1896,7 +1937,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 			delete(gw.controllers, key)
 			stale = state
 			gw.mu.Unlock()
-			closeBotSessionState(stale)
+			gw.closeSessionState(stale)
 			gw.logger.Warn("bot session runtime changed; rebuilding", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8], "old_workspace_set", strings.TrimSpace(stale.workspaceRoot) != "", "new_workspace_set", profile.workspaceRoot != "", "old_model", stale.model, "new_model", profile.model)
 		} else {
 			updateSessionStateRuntime(state, msg, profile)
@@ -1974,7 +2015,7 @@ func (gw *BotGateway) getOrCreateSession(ctx context.Context, key string, msg In
 	}
 	gw.controllers[key] = state
 	gw.mu.Unlock()
-	closeBotSessionState(replace)
+	gw.closeSessionState(replace)
 
 	gw.logger.Info("bot session created", "platform", msg.Platform, "chat_type", msg.ChatType, "chat", hashID(msg.ChatID), "session", key[:8])
 	return state
@@ -1995,18 +2036,6 @@ func updateSessionStateRuntime(state *sessionState, msg InboundMessage, profile 
 	state.toolApprovalMode = profile.toolApprovalMode
 	state.sessionPath = profile.sessionPath
 	state.lastActive = time.Now()
-}
-
-func closeBotSessionState(state *sessionState) {
-	if state == nil {
-		return
-	}
-	if state.cancel != nil {
-		state.cancel()
-	}
-	if state.ctrl != nil {
-		state.ctrl.Close()
-	}
 }
 
 func (gw *BotGateway) sessionProfileForMessage(msg InboundMessage) sessionRuntimeProfile {

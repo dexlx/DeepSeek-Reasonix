@@ -96,5 +96,8 @@ export function formatSelectionReference(path: string, text: string): string {
   const body = text.replace(/\r\n|\r/g, "\n").trimEnd();
   const fence = fenceFor(body);
   const lang = languageFor(path);
-  return `From \`${path}\`:\n\n${fence}${lang ?? ""}\n${body}\n${fence}`;
+  // The path is a JSON string, not a backtick code span: backticks and
+  // newlines are legal in file names and would terminate a code span early,
+  // letting the path spill out as plain (instruction-like) text.
+  return `From ${JSON.stringify(path)}:\n\n${fence}${lang ?? ""}\n${body}\n${fence}`;
 }
