@@ -243,13 +243,23 @@ console.log("\ncomposer session draft");
 
   eq(
     formatSelectionReference("src/a.ts", "const `x` = ```1```;\r\n"),
-    "From `src/a.ts`:\n\n````typescript\nconst `x` = ```1```;\n````",
+    'From "src/a.ts":\n\n````typescript\nconst `x` = ```1```;\n````',
     "plan-revision rendering escalates the fence past embedded backtick runs and tags the language",
   );
   eq(
     formatSelectionReference("notes.xyz", "plain body"),
-    "From `notes.xyz`:\n\n```\nplain body\n```",
+    'From "notes.xyz":\n\n```\nplain body\n```',
     "unknown extensions render an untagged fence",
+  );
+  eq(
+    formatSelectionReference("weird ` name\r\n.ts", "body"),
+    'From "weird ` name\\r\\n.ts":\n\n```typescript\nbody\n```',
+    "backticks and newlines in file names stay escaped inside the quoted path",
+  );
+  eq(
+    formatSelectionReference('has "quotes" \\ slashes.md', "body"),
+    'From "has \\"quotes\\" \\\\ slashes.md":\n\n```markdown\nbody\n```',
+    "quotes and backslashes in file names cannot break the path string",
   );
 
   const oversized = normalizeSelectedText("x".repeat(SELECTED_TEXT_MAX_CHARS + 500));
