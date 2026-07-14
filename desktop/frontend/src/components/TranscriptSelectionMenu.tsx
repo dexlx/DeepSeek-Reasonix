@@ -4,7 +4,13 @@ import { MessageSquare } from "lucide-react";
 import { ContextMenu, type ContextMenuPoint } from "./ContextMenu";
 import { messageSelectionContextText } from "../lib/messageSelectionCopy";
 import { writeClipboardText } from "../lib/clipboard";
-import { detectShortcutPlatform, formatShortcutCombo } from "../lib/keyboardShortcuts";
+import {
+  detectShortcutPlatform,
+  formatShortcutCombo,
+  onShortcutsChanged,
+  resolvedShortcutCombo,
+  useGlobalShortcut,
+} from "../lib/keyboardShortcuts";
 import { useT } from "../lib/i18n";
 
 // Inside the Wails shell main.tsx suppresses the webview's default context
@@ -34,13 +40,18 @@ export function TranscriptSelectionMenu({
   const [action, setAction] = useState<SelectionAction | null>(null);
   const [actionPoint, setActionPoint] = useState<ContextMenuPoint | null>(null);
   const actionRef = useRef<HTMLDivElement>(null);
+  // Escape dismisses the floating action but browsers keep the text selection,
+  // so the trailing keyup would immediately re-show it. Remember the dismissed
+  // selection and stay hidden until it changes or a new pointer gesture lands.
+  const dismissedRef = useRef<string | null>(null);
   const shortcutPlatform = useMemo(() => detectShortcutPlatform(), []);
+  const [shortcutRevision, setShortcutRevision] = useState(0);
+  useEffect(() => onShortcutsChanged(() => setShortcutRevision((value) => value + 1)), []);
   const addShortcut = useMemo(
-    () => formatShortcutCombo(
-      shortcutPlatform === "darwin" ? { key: "l", meta: true } : { key: "l", ctrl: true },
-      shortcutPlatform,
-    ),
-    [shortcutPlatform],
+    () => formatShortcutCombo(resolvedShortcutCombo("selection.addToChat", shortcutPlatform), shortcutPlatform),
+    // shortcutRevision re-resolves the combo after the user rebinds it in settings.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [shortcutPlatform, shortcutRevision],
   );
 
   const closeAction = useCallback(() => {
@@ -55,6 +66,16 @@ export function TranscriptSelectionMenu({
     closeAction();
     onAddToChat(selectedText);
   }, [action, closeAction, onAddToChat]);
+
+  // The shortcut is registered in SHORTCUT_DEFINITIONS so settings can rebind
+  // it and conflict-check it against other actions; it only arms while the
+  // floating action is visible.
+  useGlobalShortcut(
+    "selection.addToChat",
+    addSelectionToChat,
+    [],
+    Boolean(action) && enabled && Boolean(onAddToChat),
+  );
 
   useLayoutEffect(() => {
     if (!action) {
@@ -103,9 +124,12 @@ export function TranscriptSelectionMenu({
       const selection = document.getSelection();
       const range = selection?.rangeCount ? selection.getRangeAt(selection.rangeCount - 1) : null;
       if (selected == null || !range) {
+        dismissedRef.current = null;
         closeAction();
         return;
       }
+      if (dismissedRef.current === selected) return;
+      dismissedRef.current = null;
       const rect = typeof range.getBoundingClientRect === "function" ? range.getBoundingClientRect() : null;
       setAction({
         text: selected,
@@ -123,6 +147,7 @@ export function TranscriptSelectionMenu({
     };
     const onPointerUp = (event: PointerEvent) => {
       if (event.button !== 0) return;
+      dismissedRef.current = null;
       scheduleShow(event.target);
     };
     const onKeyUp = (event: KeyboardEvent) => {
@@ -134,13 +159,15 @@ export function TranscriptSelectionMenu({
     };
     const onSelectionChange = () => {
       const selection = document.getSelection();
-      if (!selection || selection.isCollapsed || selection.toString().trim() === "") closeAction();
+      if (!selection || selection.isCollapsed || selection.toString().trim() === "") {
+        dismissedRef.current = null;
+        closeAction();
+      }
     };
     const onKeyDown = (event: KeyboardEvent) => {
-      const platformModifier = shortcutPlatform === "darwin" ? event.metaKey : event.ctrlKey;
-      if (!action || !platformModifier || event.altKey || event.shiftKey || event.key.toLowerCase() !== "l") return;
-      event.preventDefault();
-      addSelectionToChat();
+      if (event.key !== "Escape" || !action) return;
+      dismissedRef.current = action.text;
+      closeAction();
     };
     const close = () => closeAction();
 
@@ -159,7 +186,7 @@ export function TranscriptSelectionMenu({
       window.removeEventListener("resize", close);
       window.removeEventListener("scroll", close, true);
     };
-  }, [action, addSelectionToChat, closeAction, enabled, onAddToChat, shortcutPlatform]);
+  }, [action, closeAction, enabled, onAddToChat]);
 
   return <>
     <ContextMenu

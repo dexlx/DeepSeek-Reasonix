@@ -12,6 +12,10 @@
 // - the target message must itself touch the selection: selecting message A
 //   and right-clicking message B offers nothing (Copy would copy A), while a
 //   selection spanning both accepts a right-click on either
+// - Escape dismisses the floating action without clearing the selection, the
+//   trailing keyup does not re-open it, and a fresh pointer gesture does
+// - the add-to-chat shortcut lives in the shared registry: rebinding it in
+//   settings remaps both the handler and the visible hint
 
 import { JSDOM } from "jsdom";
 import React from "react";
@@ -19,6 +23,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { TranscriptSelectionMenu } from "../components/TranscriptSelectionMenu";
 import { LocaleProvider } from "../lib/i18n";
+import { resetCustomShortcuts, saveCustomShortcut } from "../lib/keyboardShortcuts";
 
 let passed = 0;
 let failed = 0;
@@ -61,6 +66,7 @@ function installDom() {
   globalThis.HTMLElement = dom.window.HTMLElement;
   globalThis.HTMLTextAreaElement = dom.window.HTMLTextAreaElement;
   globalThis.Event = dom.window.Event;
+  globalThis.CustomEvent = dom.window.CustomEvent;
   globalThis.KeyboardEvent = dom.window.KeyboardEvent;
   globalThis.MouseEvent = dom.window.MouseEvent;
   globalThis.PointerEvent = dom.window.MouseEvent as unknown as typeof PointerEvent;
@@ -171,6 +177,57 @@ console.log("\ntranscript selection menu");
     await flushTimers();
   });
   eq(additions[1], "assistant reply text", "Cmd/Ctrl+L adds the active transcript selection");
+
+  // Escape dismisses the floating action while the browser selection survives;
+  // the trailing keyup must not re-open it, but a fresh pointer gesture does.
+  selectNodeText(msgBody.firstChild as Node);
+  await act(async () => {
+    msgBody.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true, button: 0 }));
+    await drainFrame();
+  });
+  ok(document.querySelector(".transcript-selection-action") != null, "pointer selection re-exposes the floating action");
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "Escape", bubbles: true }));
+    await flushTimers();
+  });
+  eq(document.querySelector(".transcript-selection-action"), null, "Escape dismisses the floating action");
+  eq(document.getSelection()?.isCollapsed, false, "Escape keeps the browser selection");
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keyup", { key: "Escape", bubbles: true }));
+    await drainFrame();
+  });
+  eq(document.querySelector(".transcript-selection-action"), null, "the Escape keyup does not re-open the dismissed action");
+  await act(async () => {
+    msgBody.dispatchEvent(new window.MouseEvent("pointerup", { bubbles: true, button: 0 }));
+    await drainFrame();
+  });
+  ok(document.querySelector(".transcript-selection-action") != null, "a fresh pointer gesture re-opens the dismissed action");
+
+  // Rebinding selection.addToChat through the shared shortcut registry remaps
+  // both the handler and the visible hint; the old combo stops firing.
+  await act(async () => {
+    saveCustomShortcut("selection.addToChat", { key: "m", ctrl: true });
+    await flushTimers();
+  });
+  eq(
+    document.querySelector(".transcript-selection-action kbd")?.textContent,
+    "Ctrl+M",
+    "the floating action hint tracks the rebound shortcut",
+  );
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "l", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(additions.length, 2, "the old combo no longer fires after a rebind");
+  await act(async () => {
+    document.dispatchEvent(new window.KeyboardEvent("keydown", { key: "m", ctrlKey: true, bubbles: true, cancelable: true }));
+    await flushTimers();
+  });
+  eq(additions[2], "assistant reply text", "the rebound combo adds the selection");
+  await act(async () => {
+    resetCustomShortcuts();
+    await flushTimers();
+  });
 
   // Collapsed selection: no menu, default untouched.
   document.getSelection()?.removeAllRanges();
