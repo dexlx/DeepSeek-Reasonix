@@ -235,10 +235,15 @@ func (a *adapter) connectGateway(ctx context.Context, token string) error {
 		return fmt.Errorf("dial gateway: %w", err)
 	}
 	defer conn.Close()
+	defer a.dropConn(conn)
+	if !a.trackConn(ctx, conn) {
+		// Stop already closed the tracked conn slot; entering a blocking read
+		// now would leave a connection Stop can no longer unblock.
+		return ctx.Err()
+	}
 	a.logger.Info("qq gateway connected", "sandbox", a.cfg.Sandbox)
 
 	ws := &wsClient{conn: conn, token: token, logger: a.logger}
-	a.ws = ws
 
 	var msg gatewayPayload
 	decoder := json.NewDecoder(conn)
@@ -347,6 +352,38 @@ func (a *adapter) connectGateway(ctx context.Context, token string) error {
 			<-heartbeatDone
 			return nil
 		}
+	}
+}
+
+// trackConn publishes the live gateway connection so Stop can close it and
+// unblock the blocking websocket reads, which do not honor ctx. Publication is
+// refused once ctx is cancelled, so a conn that finishes dialing concurrently
+// with Stop can never be left open but unreachable.
+func (a *adapter) trackConn(ctx context.Context, conn *websocket.Conn) bool {
+	a.connMu.Lock()
+	defer a.connMu.Unlock()
+	if ctx.Err() != nil {
+		return false
+	}
+	a.conn = conn
+	return true
+}
+
+func (a *adapter) dropConn(conn *websocket.Conn) {
+	a.connMu.Lock()
+	if a.conn == conn {
+		a.conn = nil
+	}
+	a.connMu.Unlock()
+}
+
+func (a *adapter) closeConn() {
+	a.connMu.Lock()
+	conn := a.conn
+	a.conn = nil
+	a.connMu.Unlock()
+	if conn != nil {
+		conn.Close()
 	}
 }
 
