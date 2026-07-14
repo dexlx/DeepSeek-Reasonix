@@ -962,10 +962,13 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, finalize(m, cmds)
 
 	case tea.PasteMsg:
+		pasteBefore := m.input.Value()
 		if m.state != tuiRunning && m.attachPastedImages(msg.Content) {
+			if shouldClearWideInputChange(pasteBefore, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 			return m, finalize(m, cmds)
 		}
-		pasteBefore := m.input.Value()
 		if m.validComposerSelection() && !m.composerSel.empty() {
 			inputBeforeSelection = pasteBefore
 			m.deleteComposerSelection()
@@ -1577,19 +1580,30 @@ func (m chatTUI) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.notice("paste image: " + msg.err.Error())
 			break
 		}
+		imageBefore := m.input.Value()
 		m.insertImageRef(msg.path)
+		if shouldClearWideInputChange(imageBefore, m.input.Value()) {
+			cmds = append(cmds, tea.ClearScreen)
+		}
 
 	case clipboardPasteMsg:
 		switch {
 		case msg.err != nil:
 			m.notice("paste: " + msg.err.Error())
 		case msg.path != "":
+			before := m.input.Value()
 			m.insertImageRef(msg.path)
+			if shouldClearWideInputChange(before, m.input.Value()) {
+				cmds = append(cmds, tea.ClearScreen)
+			}
 		case msg.text != "":
+			before := m.input.Value()
 			if m.attachPastedImages(msg.text) {
+				if shouldClearWideInputChange(before, m.input.Value()) {
+					cmds = append(cmds, tea.ClearScreen)
+				}
 				return m, finalize(m, cmds)
 			}
-			before := m.input.Value()
 			m.deleteComposerSelection()
 			if ref, ok := pastedFileRef(msg.text); ok {
 				m.input.InsertString(ref + " ")
