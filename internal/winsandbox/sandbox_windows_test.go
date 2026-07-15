@@ -57,6 +57,33 @@ func TestWindowsAppContainerNetworkCapabilities(t *testing.T) {
 	}
 }
 
+func TestWindowsSandboxAccessSIDScopes(t *testing.T) {
+	userSID, err := currentProcessUserSID()
+	if err != nil || userSID == nil {
+		t.Fatalf("current user SID: %v", err)
+	}
+	defer windows.FreeSid(userSID)
+	exact := appContainerObjectAccessSIDStrings(userSID)
+	if len(exact) != 1 || exact[0] != userSID.String() {
+		t.Fatalf("AppContainer object SIDs = %v, want exact package SID only", exact)
+	}
+	for _, broad := range appContainerLoaderSIDStrings() {
+		if contains(exact, broad) {
+			t.Fatalf("exact AppContainer data grant contains broad SID %s", broad)
+		}
+	}
+
+	restricted := restrictedSandboxAccessSIDStrings(userSID)
+	if !contains(restricted, userSID.String()) {
+		t.Fatalf("restricted sandbox SIDs = %v, missing current user", restricted)
+	}
+	for _, broad := range appContainerLoaderSIDStrings() {
+		if !contains(restricted, broad) {
+			t.Fatalf("restricted sandbox SIDs = %v, missing Windows access SID %s", restricted, broad)
+		}
+	}
+}
+
 func TestWindowsCleanupPathSecurityRemovesACEsBeforeRestore(t *testing.T) {
 	var calls []string
 	cleanup := cleanupPathSecurity(
@@ -392,6 +419,11 @@ func TestWindowsAppContainerRunsExactNonSystemExecutable(t *testing.T) {
 		sddl := pathDACLSDDLForTest(t, path)
 		if sddlContainsSID(sddl, profileSIDText) {
 			t.Fatalf("%s still contains executable grant SID %s: %s", path, profileSIDText, sddl)
+		}
+		for _, loaderSID := range appContainerLoaderSIDStrings() {
+			if sddlContainsSID(sddl, loaderSID) {
+				t.Fatalf("%s still contains temporary loader SID %s: %s", path, loaderSID, sddl)
+			}
 		}
 	}
 }

@@ -349,10 +349,12 @@ func isWindowsSystemRoot(path string) bool {
 // owning process is gone. Stable user/group trustees use the legacy marker
 // shape; exact AppContainer trustees are recorded by a validated Reasonix
 // profile name and re-derived during cleanup, so unrelated package ACLs cannot
-// be removed.
+// be removed. Temporary image-loader grants record the one validated built-in
+// SID actually added, preserving any loader ACE that predated the sandbox.
 //
-// Legacy marker lines are "<kind>\t<path>". Exact-package lines are
-// "<kind>\t<WinSandbox.profile>\t<path>". Lines are appended and fsync'd one
+// Legacy marker lines are "<kind>\t<path>". Scoped lines are either
+// "<kind>\t<WinSandbox.profile>\t<path>" or
+// "grant_loader\t<validated SID>\t<path>". Lines are appended and fsync'd one
 // at a time, and a write failure aborts the run before the corresponding ACE is
 // applied, so the marker can never lag behind the on-disk ACLs.
 
@@ -361,6 +363,7 @@ type residueKind string
 const (
 	residueDeny         residueKind = "deny"
 	residueGrant        residueKind = "grant"
+	residueGrantLoader  residueKind = "grant_loader"
 	residueDenyProfile  residueKind = "deny_profile"
 	residueGrantProfile residueKind = "grant_profile"
 )
@@ -369,6 +372,7 @@ type residueEntry struct {
 	kind    residueKind
 	path    string
 	profile string
+	sid     string
 }
 
 func windowsDenyMarkerDir() string {
@@ -450,6 +454,13 @@ func (r *windowsResidueRun) recordBeforeApply(kind residueKind, path string) err
 
 func (r *windowsResidueRun) recordProfileGrantBeforeApply(profile, path string) error {
 	return r.recordProfileBeforeApply(residueGrantProfile, profile, path)
+}
+
+func (r *windowsResidueRun) recordLoaderGrantBeforeApply(sid, path string) error {
+	if !validAppContainerLoaderSID(sid) {
+		return fmt.Errorf("invalid AppContainer loader SID %q", sid)
+	}
+	return r.recordLine(string(residueGrantLoader) + "\t" + sid + "\t" + path + "\n")
 }
 
 func (r *windowsResidueRun) recordProfileBeforeApply(kind residueKind, profile, path string) error {
@@ -595,6 +606,8 @@ func sweepResidueMarkerFile(markerPath string, sandboxSIDs []string) {
 			removeDeniedAppContainerSIDs(e.path, sandboxSIDs)
 		case residueGrant:
 			removeGrantedAppContainerSIDs(e.path, sandboxSIDs)
+		case residueGrantLoader:
+			removeGrantedAppContainerSIDs(e.path, []string{e.sid})
 		case residueGrantProfile:
 			sid, err := deriveAppContainerSIDFromName(e.profile)
 			if err == nil && sid != nil {
@@ -655,6 +668,10 @@ func readResidueMarker(path string) []residueEntry {
 		case residueGrant:
 			if fields[1] != "" {
 				out = append(out, residueEntry{kind: residueKind(fields[0]), path: fields[1]})
+			}
+		case residueGrantLoader:
+			if len(fields) == 3 && validAppContainerLoaderSID(fields[1]) && fields[2] != "" {
+				out = append(out, residueEntry{kind: residueGrantLoader, sid: fields[1], path: fields[2]})
 			}
 		case residueDenyProfile, residueGrantProfile:
 			if len(fields) == 3 && validWindowsSandboxProfileName(fields[1]) && fields[2] != "" {

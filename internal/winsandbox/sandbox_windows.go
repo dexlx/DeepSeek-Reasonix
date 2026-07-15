@@ -91,6 +91,10 @@ func prepareWindowsSandboxACLs(residueRun *windowsResidueRun, sid *windows.SID, 
 	if err != nil {
 		return nil, err
 	}
+	// Residue cleanup mutates the same ACLs as normal setup. Keep it in this
+	// critical section so a stale-marker sweep cannot interleave with a live
+	// setup or cleanup in another helper process.
+	sweepWindowsDenyResidue()
 	cleanupFS, err := grantAppContainerFilesystem(residueRun, sid, profileName, spec, extraWritableRoots...)
 	if err != nil {
 		mutationLock.release()
@@ -114,6 +118,30 @@ func prepareWindowsSandboxACLs(residueRun *windowsResidueRun, sid *windows.SID, 
 	}, nil
 }
 
+// startAppContainerProcessWithLoaderGrant gives Windows' image loader access to
+// one non-system executable only while CreateProcess constructs the suspended
+// AppContainer child. The exact package SID remains on the executable for the
+// run, while any newly added built-in loader SIDs are removed before the child
+// is resumed. Holding the ACL mutation mutex across grant, CreateProcess, and
+// restore prevents another sandbox cleanup from opening a loader race.
+func startAppContainerProcessWithLoaderGrant(residueRun *windowsResidueRun, ac *appContainerLaunch, argv []string, env []string, opts RunOptions) (windows.ProcessInformation, error) {
+	resolved := windowsMutableExecutableGrantFile(argv[0])
+	if resolved == "" {
+		return startAppContainerProcess(ac, argv, env, opts)
+	}
+	mutationLock, err := lockWindowsACLMutation()
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	defer mutationLock.release()
+	cleanupLoader, err := grantTemporaryAppContainerLoaderFile(residueRun, resolved)
+	if err != nil {
+		return windows.ProcessInformation{}, err
+	}
+	defer cleanupLoader()
+	return startAppContainerProcess(ac, argv, env, opts)
+}
+
 func runWindowsSandboxed(spec Spec, argv []string, opts RunOptions) (int, error) {
 	if spec.Writable {
 		return runWindowsRestrictedSandboxed(spec, argv, opts)
@@ -128,7 +156,6 @@ func runWindowsSandboxed(spec Spec, argv []string, opts RunOptions) (int, error)
 		return 0, err
 	}
 	defer lock.release()
-	sweepWindowsDenyResidue()
 	residueRun := newWindowsDenyResidueRun()
 	// Clear this run's residue marker last — after every grant/deny cleanup below
 	// has run — so a crash at any point leaves a marker covering all ACEs still on
@@ -157,7 +184,7 @@ func runWindowsSandboxed(spec Spec, argv []string, opts RunOptions) (int, error)
 	defer windows.CloseHandle(job)
 
 	childEnv := windowsSandboxEnv(spec, tempRoot, opts.Env)
-	pi, err := startAppContainerProcess(ac, argv, childEnv, opts)
+	pi, err := startAppContainerProcessWithLoaderGrant(residueRun, ac, argv, childEnv, opts)
 	if err != nil {
 		return 0, err
 	}
@@ -203,7 +230,6 @@ func runWindowsRestrictedSandboxed(spec Spec, argv []string, opts RunOptions) (i
 		return 0, err
 	}
 	defer lock.release()
-	sweepWindowsDenyResidue()
 	residueRun := newWindowsDenyResidueRun()
 	// Clear this run's residue marker last — after every grant/deny cleanup below
 	// has run — so a crash at any point leaves a marker covering all ACEs still on
@@ -661,6 +687,9 @@ func uniqueNonZeroHandles(handles []windows.Handle) []windows.Handle {
 
 func grantAppContainerFilesystem(residueRun *windowsResidueRun, sid *windows.SID, profileName string, spec Spec, extraWritableRoots ...string) (func(), error) {
 	objectSIDStrs := appContainerObjectAccessSIDStrings(sid)
+	if profileName == "" {
+		objectSIDStrs = restrictedSandboxAccessSIDStrings(sid)
+	}
 	appContainerWritable := map[string]bool{}
 	for _, root := range normalizedWindowsRoots(spec.AppContainerWritableRoots) {
 		appContainerWritable[strings.ToLower(filepath.Clean(root))] = true
@@ -771,6 +800,9 @@ func forbidReadDenySIDStrings(base []string) []string {
 
 func grantAppContainerExecutable(residueRun *windowsResidueRun, sid *windows.SID, profileName, exe string) (func(), error) {
 	objectSIDStrs := appContainerObjectAccessSIDStrings(sid)
+	if profileName == "" {
+		objectSIDStrs = restrictedSandboxAccessSIDStrings(sid)
+	}
 	var cleanup []func()
 	for _, dir := range windowsMutableExecutableGrantRoots(exe) {
 		// Only non-system tool directories reach here; system locations already
@@ -830,6 +862,25 @@ func grantExactAppContainerExecutableFile(residueRun *windowsResidueRun, profile
 		return nil, false
 	}
 	return removeGrant, true
+}
+
+func grantTemporaryAppContainerLoaderFile(residueRun *windowsResidueRun, resolved string) (func(), error) {
+	loaderSIDs, err := missingAppContainerLoaderSIDs(resolved)
+	if err != nil {
+		return nil, err
+	}
+	if len(loaderSIDs) == 0 {
+		return func() {}, nil
+	}
+	for _, sid := range loaderSIDs {
+		if err := residueRun.recordLoaderGrantBeforeApply(sid, resolved); err != nil {
+			return nil, err
+		}
+	}
+	if err := grantAppContainerSIDs(resolved, loaderSIDs, "RX"); err != nil {
+		return nil, err
+	}
+	return func() { removeGrantedAppContainerSIDs(resolved, loaderSIDs) }, nil
 }
 
 func grantExactAppContainerPath(residueRun *windowsResidueRun, profileName, path string, sidStrs []string, perm string) (func(), error) {
@@ -940,6 +991,46 @@ func appContainerObjectAccessSIDStrings(sid *windows.SID) []string {
 	// groups here would expose a workspace (or the user's home) to every other
 	// AppContainer for the lifetime of a long-running MCP server.
 	return appContainerPackageSIDStrings(sid)
+}
+
+func appContainerLoaderSIDStrings() []string {
+	return []string{allApplicationPackagesSID, allRestrictedApplicationPackagesSID}
+}
+
+func validAppContainerLoaderSID(sid string) bool {
+	for _, allowed := range appContainerLoaderSIDStrings() {
+		if sid == allowed {
+			return true
+		}
+	}
+	return false
+}
+
+func missingAppContainerLoaderSIDs(path string) ([]string, error) {
+	sd, err := windows.GetNamedSecurityInfo(path, windows.SE_FILE_OBJECT, windows.DACL_SECURITY_INFORMATION)
+	if err != nil {
+		return nil, fmt.Errorf("get loader DACL %q: %w", path, err)
+	}
+	sddl := ""
+	if sd != nil {
+		sddl = sd.String()
+	}
+	var missing []string
+	for _, sid := range appContainerLoaderSIDStrings() {
+		if !strings.Contains(sddl, ";;;"+sid+")") {
+			missing = append(missing, sid)
+		}
+	}
+	return missing, nil
+}
+
+func restrictedSandboxAccessSIDStrings(sid *windows.SID) []string {
+	out := append([]string(nil), appContainerObjectAccessSIDStrings(sid)...)
+	out = append(out, appContainerLoaderSIDStrings()...)
+	if userSID, err := currentProcessUserSIDString(); err == nil && userSID != "" {
+		out = append(out, userSID)
+	}
+	return dedupeSIDStrings(out)
 }
 
 func currentProcessUserSIDString() (string, error) {

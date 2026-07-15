@@ -260,6 +260,9 @@ func TestWindowsResidueMarkerIncrementalRoundTrip(t *testing.T) {
 	if err := run.recordBeforeApply(residueGrant, `C:\Users\me\tools`); err != nil {
 		t.Fatalf("record grant: %v", err)
 	}
+	if err := run.recordLoaderGrantBeforeApply(allApplicationPackagesSID, `C:\Users\me\loader.exe`); err != nil {
+		t.Fatalf("record loader grant: %v", err)
+	}
 
 	marker := run.marker
 	if !pathExists(marker) {
@@ -269,6 +272,7 @@ func TestWindowsResidueMarkerIncrementalRoundTrip(t *testing.T) {
 	want := []residueEntry{
 		{kind: residueDeny, path: `C:\Users\me\.ssh`},
 		{kind: residueGrant, path: `C:\Users\me\tools`},
+		{kind: residueGrantLoader, sid: allApplicationPackagesSID, path: `C:\Users\me\loader.exe`},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("marker round-trip = %v, want %v", got, want)
@@ -301,6 +305,8 @@ func TestWindowsResidueMarkerSkipsMalformedLines(t *testing.T) {
 		"grant_profile\tOtherApp.0123456789abcdef0123\tC:\\wrong\n" + // untrusted profile
 		"deny_profile\tWinSandbox.0123456789abcdef0123\tC:\\Users\\me\\secret\n" + // valid profile deny
 		"grant_profile\tWinSandbox.abcdef0123456789abcd\tC:\\Users\\me\\profile tools\n" + // valid profile grant
+		"grant_loader\t" + allRestrictedApplicationPackagesSID + "\tC:\\Users\\me\\loader.exe\n" + // valid temporary loader grant
+		"grant_loader\tS-1-15-2-999\tC:\\Users\\me\\wrong-loader.exe\n" + // untrusted loader SID
 		"grant\t\n" + // empty path
 		"grant\tC:\\Users\\me\\my tools\n" // valid, path with a space
 	if err := os.WriteFile(marker, []byte(content), 0o600); err != nil {
@@ -311,6 +317,7 @@ func TestWindowsResidueMarkerSkipsMalformedLines(t *testing.T) {
 		{kind: residueDeny, path: `C:\Users\me\.ssh`},
 		{kind: residueDenyProfile, profile: "WinSandbox.0123456789abcdef0123", path: `C:\Users\me\secret`},
 		{kind: residueGrantProfile, profile: "WinSandbox.abcdef0123456789abcd", path: `C:\Users\me\profile tools`},
+		{kind: residueGrantLoader, sid: allRestrictedApplicationPackagesSID, path: `C:\Users\me\loader.exe`},
 		{kind: residueGrant, path: `C:\Users\me\my tools`},
 	}
 	if len(got) != len(want) {
@@ -587,7 +594,7 @@ func TestWindowsAppContainerLockRootsAreProfileScoped(t *testing.T) {
 	if contains(keysA, home) || contains(keysB, home) {
 		t.Fatalf("additive home grants must not hold a global lifetime lock: A=%v B=%v", keysA, keysB)
 	}
-	if !contains(keysA, forbid) || !contains(keysB, forbid) {
+	if !containsWindowsPath(keysA, forbid) || !containsWindowsPath(keysB, forbid) {
 		t.Fatalf("forbid_read must retain its global path lock: A=%v B=%v", keysA, keysB)
 	}
 }
