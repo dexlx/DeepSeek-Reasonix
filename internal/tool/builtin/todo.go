@@ -107,8 +107,9 @@ func verifyTodoCurrentContinuity(ctx context.Context, todos []todoItem) error {
 	if len(previous) == 0 {
 		return nil
 	}
-	// The current chain may hold two in_progress items — a phase header and
-	// one of its sub-steps — and each must survive the rewrite.
+	// The single current item must survive the rewrite. In a layered phase this
+	// is either its active sub-step or, after all children finish, the phase
+	// header waiting for final sign-off.
 	for i, todo := range previous {
 		if strings.TrimSpace(todo.Status) != "in_progress" {
 			continue
