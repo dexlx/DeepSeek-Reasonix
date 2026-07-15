@@ -3755,6 +3755,26 @@ func TestPluginSpecsMapMCPApprovalPolicy(t *testing.T) {
 	}
 }
 
+func TestOfficialMCPTrustRequiresMatchingTransport(t *testing.T) {
+	entry := config.PluginEntry{Name: "official", Type: "http", URL: "https://example.com/mcp"}
+	official := OfficialMCPTrust{
+		CatalogEntryID: "official@1", PackageDigest: "digest", Readers: []string{"read"}, Transport: "stdio",
+	}
+	specs := PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, "/workspace", PluginSpecOptions{
+		OfficialServers: map[string]OfficialMCPTrust{"official": official},
+	})
+	if len(specs) != 1 || specs[0].OfficialCatalogEntryID != "" {
+		t.Fatalf("mismatched transport received official trust: %+v", specs)
+	}
+	official.Transport = "streamable-http"
+	specs = PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, "/workspace", PluginSpecOptions{
+		OfficialServers: map[string]OfficialMCPTrust{"official": official},
+	})
+	if len(specs) != 1 || specs[0].OfficialCatalogEntryID != "official@1" {
+		t.Fatalf("equivalent HTTP transport did not receive official trust: %+v", specs)
+	}
+}
+
 func TestApplyDefaultMCPCallTimeoutPreservesConfiguredDefault(t *testing.T) {
 	specs := applyDefaultMCPCallTimeout([]plugin.Spec{
 		{Name: "configured", DefaultCallTimeout: 2 * time.Minute},

@@ -593,7 +593,11 @@ func checkoutPluginCommit(ctx context.Context, cloneRoot, commit string) error {
 }
 
 func pluginGitCommand(ctx context.Context, args ...string) *exec.Cmd {
-	cmd := exec.CommandContext(ctx, "git", args...)
+	// Preserve repository bytes across platforms. A user's global autocrlf
+	// setting must not rewrite JSON/scripts on Windows and make the installed
+	// tree differ from the catalog's signed package digest.
+	gitArgs := append([]string{"-c", "core.autocrlf=false"}, args...)
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
 	cmd.Env = secrets.ProcessEnv()
 	proc.HideWindow(cmd)
 	return cmd

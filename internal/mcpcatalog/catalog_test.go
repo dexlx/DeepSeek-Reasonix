@@ -157,6 +157,15 @@ func TestTreeSHA256StableAndRejectsSymlink(t *testing.T) {
 	if err != nil || first != second {
 		t.Fatalf("tree digest = %q %q, %v", first, second, err)
 	}
+	if runtime.GOOS != "windows" {
+		if err := os.Chmod(filepath.Join(root, "b.txt"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		modeChanged, err := TreeSHA256(root)
+		if err != nil || modeChanged != first {
+			t.Fatalf("platform-specific mode changed portable tree digest: %q != %q, %v", modeChanged, first, err)
+		}
+	}
 	if err := os.Symlink(filepath.Join(root, "b.txt"), filepath.Join(root, "link")); err == nil {
 		if _, err := TreeSHA256(root); err == nil {
 			t.Fatal("symlink accepted")

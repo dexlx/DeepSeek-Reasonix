@@ -15,6 +15,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/mod/semver"
+
 	"reasonix/internal/mcptrust"
 	"reasonix/internal/secrets"
 )
@@ -44,6 +46,10 @@ func mutableLauncherLocator(spec Spec) (launcherLocator, bool) {
 	if strings.TrimSpace(spec.OfficialCatalogEntryID) != "" {
 		return launcherLocator{}, false
 	}
+	return launcherLocatorForSpec(spec)
+}
+
+func launcherLocatorForSpec(spec Spec) (launcherLocator, bool) {
 	command := strings.TrimSuffix(strings.ToLower(filepath.Base(strings.TrimSpace(spec.Command))), ".exe")
 	var kind string
 	switch command {
@@ -78,6 +84,41 @@ func mutableLauncherLocator(spec Spec) (launcherLocator, bool) {
 		return launcherLocator{kind: kind, value: arg, arg: i, command: command}, true
 	}
 	return launcherLocator{kind: kind, command: command}, true
+}
+
+func validateOfficialLauncher(spec Spec) error {
+	if strings.TrimSpace(spec.OfficialCatalogEntryID) == "" {
+		return nil
+	}
+	locator, launcher := launcherLocatorForSpec(spec)
+	if !launcher {
+		return nil
+	}
+	if strings.TrimSpace(locator.value) == "" || !immutableLauncherLocator(locator) {
+		return fmt.Errorf("official MCP server %q uses mutable %s package locator %q; catalog packages must pin an exact version or Git commit", spec.Name, locator.kind, locator.value)
+	}
+	return nil
+}
+
+func immutableLauncherLocator(locator launcherLocator) bool {
+	value := strings.TrimSpace(locator.value)
+	if strings.HasPrefix(value, "git+") {
+		at := strings.LastIndex(value, "@")
+		return at > len("git+https://") && fullGitCommit.MatchString(value[at+1:])
+	}
+	switch locator.kind {
+	case "npx", "bunx":
+		name := npmPackageName(value)
+		if name == "" || len(value) <= len(name)+1 || value[len(name)] != '@' {
+			return false
+		}
+		return semver.IsValid("v" + value[len(name)+1:])
+	case "uvx":
+		match := pep508Package.FindStringSubmatch(value)
+		return match != nil && strings.TrimSpace(match[3]) != ""
+	default:
+		return false
+	}
 }
 
 func safeLauncherFlag(kind, flag string) bool {

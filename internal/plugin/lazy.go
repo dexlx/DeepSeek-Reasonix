@@ -414,12 +414,15 @@ func (lt *lazyTool) reconcileLiveSafety(real tool.Tool) error {
 	if real == nil {
 		return nil
 	}
-	if remote, ok := real.(*remoteTool); ok && lt.capabilityFingerprint != "" && remote.capabilityFingerprint != "" && lt.capabilityFingerprint != remote.capabilityFingerprint {
-		lt.readOnly = remote.readOnly
-		lt.readOnlyTrusted = remote.readOnlyTrusted
-		lt.destructive = remote.destructive
-		lt.capabilityFingerprint = remote.capabilityFingerprint
-		return fmt.Errorf("MCP server %q changed the security schema for tool %q; the current call was blocked before execution, retry after the parent session reviews the change", lt.shared.spec.Name, lt.rawName)
+	if remote, ok := real.(*remoteTool); ok {
+		_, readOnly, trusted, destructive, fingerprint := remote.securitySnapshot()
+		if lt.capabilityFingerprint != "" && fingerprint != "" && lt.capabilityFingerprint != fingerprint {
+			lt.readOnly = readOnly
+			lt.readOnlyTrusted = trusted
+			lt.destructive = destructive
+			lt.capabilityFingerprint = fingerprint
+			return fmt.Errorf("MCP server %q changed the security schema for tool %q; the current call was blocked before execution, retry after the parent session reviews the change", lt.shared.spec.Name, lt.rawName)
+		}
 	}
 	if lt.readOnly && !real.ReadOnly() {
 		lt.readOnly = false

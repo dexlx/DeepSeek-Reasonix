@@ -442,7 +442,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		WriterRoots:          writeRoots,
 		ForbidReadRoots:      forbidReadRoots,
 		Network:              cfg.Sandbox.Network,
-		OfficialServers:      loadOfficialMCPTrust(ctx, cfg),
+		OfficialServers:      LoadOfficialMCPTrust(ctx, cfg),
 	}
 	autoStartEntries := cfg.AutoStartPlugins()
 	eagerEntries, bgEntries := partitionByTier(autoStartEntries)
@@ -2071,9 +2071,11 @@ type OfficialMCPTrust struct {
 	CatalogEntryID  string
 	Readers         []string
 	PackageDigest   string
+	PackageRoot     string
 	Version         string
 	CatalogSequence uint64
 	Network         bool
+	Transport       string
 }
 
 // PluginSpecsForRootWithPlanModeAllowedTools promotes legacy model-visible MCP
@@ -2126,9 +2128,13 @@ func applyOfficialMCPTrust(spec *plugin.Spec, opts PluginSpecOptions) {
 		return
 	}
 	if official, ok := opts.OfficialServers[spec.Name]; ok {
+		if normalizeMCPTransport(spec.Type) != normalizeMCPTransport(official.Transport) {
+			return
+		}
 		spec.OfficialCatalogEntryID = official.CatalogEntryID
 		spec.OfficialReaderNames = append([]string(nil), official.Readers...)
 		spec.PackageDigest = official.PackageDigest
+		spec.PackageRoot = official.PackageRoot
 		spec.VerifiedVersion = official.Version
 		spec.CatalogSequence = official.CatalogSequence
 		spec.ReaderSandbox.Network = official.Network
@@ -2136,7 +2142,10 @@ func applyOfficialMCPTrust(spec *plugin.Spec, opts PluginSpecOptions) {
 	}
 }
 
-func loadOfficialMCPTrust(ctx context.Context, cfg *config.Config) map[string]OfficialMCPTrust {
+// LoadOfficialMCPTrust resolves verified installed package metadata against the
+// signed catalog. Frontends use the same helper as boot so inspect/revoke never
+// silently downgrade an official server to an unrelated custom-server spec.
+func LoadOfficialMCPTrust(ctx context.Context, cfg *config.Config) map[string]OfficialMCPTrust {
 	out := map[string]OfficialMCPTrust{}
 	if cfg == nil {
 		return out
@@ -2167,13 +2176,24 @@ func loadOfficialMCPTrust(ctx context.Context, cfg *config.Config) map[string]Of
 				}
 				out[configured.Name] = OfficialMCPTrust{
 					CatalogEntryID: entry.ID, Readers: append([]string(nil), server.Readers...),
-					PackageDigest: entry.PackageSHA256, Version: entry.Version,
-					CatalogSequence: result.Index.Sequence, Network: server.Network,
+					PackageDigest: entry.PackageSHA256, PackageRoot: pluginpkg.ResolveRoot(home, installed.Root), Version: entry.Version,
+					CatalogSequence: result.Index.Sequence, Network: server.Network, Transport: server.Transport,
 				}
 			}
 		}
 	}
 	return out
+}
+
+func normalizeMCPTransport(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "stdio":
+		return "stdio"
+	case "http", "streamable-http", "streamable_http":
+		return "http"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func applyMCPIsolation(spec *plugin.Spec, workspaceRoot string, opts PluginSpecOptions) {

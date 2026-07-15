@@ -23,6 +23,21 @@ func specIdentityFingerprint(ctx context.Context, s Spec) (string, error) {
 	if transport == "" {
 		transport = "stdio"
 	}
+	if strings.TrimSpace(s.OfficialCatalogEntryID) != "" {
+		if err := validateOfficialLauncher(s); err != nil {
+			return "", err
+		}
+		if strings.TrimSpace(s.PackageRoot) == "" || strings.TrimSpace(s.PackageDigest) == "" {
+			return "", fmt.Errorf("official MCP server %q is missing its verified package root or digest", s.Name)
+		}
+		liveDigest, err := mcpcatalog.TreeSHA256(s.PackageRoot)
+		if err != nil {
+			return "", fmt.Errorf("reverify official MCP package for %q: %w", s.Name, err)
+		}
+		if !strings.EqualFold(liveDigest, s.PackageDigest) {
+			return "", fmt.Errorf("official MCP package for %q changed after verification; blocked before process or network startup", s.Name)
+		}
+	}
 	identity := mcptrust.Identity{
 		Server: s.Name, Transport: transport, ConfigSource: s.ConfigSource,
 		Dir: s.Dir, Args: append([]string(nil), effectiveLaunchArgs(s)...),
@@ -30,7 +45,9 @@ func specIdentityFingerprint(ctx context.Context, s Spec) (string, error) {
 		Network: s.ReaderSandbox.Network || s.WriterSandbox.Network,
 		WriteRoots: append(append(append([]string(nil), s.ReaderSandbox.WriteRoots...),
 			s.ReaderSandbox.AppContainerWriteRoots...), s.WriterSandbox.WriteRoots...),
-		ReadRoots:       append(append([]string(nil), s.ReaderSandbox.ReadRoots...), s.WriterSandbox.ReadRoots...),
+		ReadRoots: append(append([]string(nil), s.ReaderSandbox.ReadRoots...), s.WriterSandbox.ReadRoots...),
+		ForbidReadRoots: append(append([]string(nil), s.ReaderSandbox.ForbidReadRoots...),
+			s.WriterSandbox.ForbidReadRoots...),
 		IsolationPolicy: isolationPolicy(s),
 		PackageDigest:   s.PackageDigest,
 		LauncherDigest:  s.LauncherDigest,
@@ -42,6 +59,8 @@ func specIdentityFingerprint(ctx context.Context, s Spec) (string, error) {
 		identity.Args = nil
 		identity.Dir = ""
 		identity.WriteRoots = nil
+		identity.ReadRoots = nil
+		identity.ForbidReadRoots = nil
 		identity.ConfigSource = "official_catalog:" + s.OfficialCatalogEntryID
 	}
 	switch transport {
@@ -84,7 +103,7 @@ func MCPStateDir(reasonixHome, workspace, server string) string {
 	if workspaceID == "" {
 		workspaceID = "global"
 	}
-	return filepath.Join(reasonixHome, "mcp-state", workspaceID, normalizeName(server))
+	return filepath.Join(reasonixHome, "mcp-state", workspaceID, slug(server))
 }
 
 func isolationPolicy(s Spec) string {

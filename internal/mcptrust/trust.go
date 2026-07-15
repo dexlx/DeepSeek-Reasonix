@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -80,6 +81,7 @@ type Identity struct {
 	Network         bool     `json:"network"`
 	WriteRoots      []string `json:"write_roots,omitempty"`
 	ReadRoots       []string `json:"read_roots,omitempty"`
+	ForbidReadRoots []string `json:"forbid_read_roots,omitempty"`
 	IsolationPolicy string   `json:"isolation_policy,omitempty"`
 }
 
@@ -211,10 +213,13 @@ func IdentityFingerprint(identity Identity) (string, error) {
 	// and duplicates (including intentional whitespace) so changing launcher
 	// semantics always invalidates the saved identity.
 	identity.Args = append([]string(nil), identity.Args...)
-	identity.EnvKeys = cleanStrings(identity.EnvKeys, true)
+	// Environment names are case-sensitive on Unix and case-insensitive on
+	// Windows. Header names are case-insensitive on every supported platform.
+	identity.EnvKeys = cleanStrings(identity.EnvKeys, runtime.GOOS == "windows")
 	identity.HeaderKeys = cleanStrings(identity.HeaderKeys, true)
 	identity.WriteRoots = canonicalPaths(identity.WriteRoots)
 	identity.ReadRoots = canonicalPaths(identity.ReadRoots)
+	identity.ForbidReadRoots = canonicalPaths(identity.ForbidReadRoots)
 	body, err := json.Marshal(identity)
 	if err != nil {
 		return "", err
@@ -333,7 +338,7 @@ func (m *Manager) trust(scope Scope, source Source, server, configSource, identi
 // capability comparison upgrades the receipt without trusting new tools.
 func (m *Manager) ImportLegacy(server, configSource, identityFingerprint string, rawReaders []string) error {
 	caps := make([]Capability, 0, len(rawReaders))
-	for _, name := range cleanStrings(rawReaders, true) {
+	for _, name := range cleanStrings(rawReaders, false) {
 		caps = append(caps, Capability{RawName: name, ModelName: name, ReadOnly: true})
 	}
 	if len(caps) == 0 {
@@ -693,7 +698,20 @@ func stripDisplayFields(value any) {
 		for _, key := range []string{"description", "title", "examples", "$comment"} {
 			delete(v, key)
 		}
-		for _, child := range v {
+		for key, child := range v {
+			// These keywords contain maps keyed by user-defined property/schema
+			// names. Recurse into their values, not the container itself: deleting
+			// a key named "title" from properties would erase a real argument from
+			// the security fingerprint rather than a display-only annotation.
+			switch key {
+			case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+				if named, ok := child.(map[string]any); ok {
+					for _, schema := range named {
+						stripDisplayFields(schema)
+					}
+					continue
+				}
+			}
 			stripDisplayFields(child)
 		}
 	case []any:
@@ -760,7 +778,7 @@ func selectReceipt(receipts []Receipt, server, configSource, workspaceFP string)
 		if receipt.Server != server {
 			continue
 		}
-		if receipt.ConfigSource != "" && configSource != "" && receipt.ConfigSource != configSource {
+		if receipt.ConfigSource != configSource {
 			continue
 		}
 		if receipt.Scope != ScopeGlobal && receipt.WorkspaceFingerprint != workspaceFP {

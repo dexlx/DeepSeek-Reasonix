@@ -304,6 +304,7 @@ func mcpSecuritySpec(name string) (plugin.Spec, error) {
 		TrustManager:       mcptrust.ForWorkspace(config.ReasonixHomeDir(), root), ConfigSource: "workspace_config",
 		StateHome: config.ReasonixHomeDir(), WriterRoots: cfg.WriteRootsForRoot(root),
 		ForbidReadRoots: cfg.ForbidReadRootsForRoot(root), Network: cfg.Sandbox.Network,
+		OfficialServers: boot.LoadOfficialMCPTrust(context.Background(), cfg),
 	})
 	if len(specs) != 1 {
 		return plugin.Spec{}, fmt.Errorf("failed to build MCP server %q", name)

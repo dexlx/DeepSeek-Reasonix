@@ -126,6 +126,41 @@ func runHTTPTransportTest(t *testing.T, sse bool) {
 func TestHTTPTransportJSON(t *testing.T) { runHTTPTransportTest(t, false) }
 func TestHTTPTransportSSE(t *testing.T)  { runHTTPTransportTest(t, true) }
 
+func TestHTTPTransportDoesNotRedirectCredentialsAcrossOrigins(t *testing.T) {
+	var targetCalls atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		targetCalls.Add(1)
+		if got := r.Header.Get("X-API-Key"); got != "" {
+			t.Errorf("redirect target received credential header %q", got)
+		}
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer target.Close()
+	source := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Redirect(w, r, target.URL+"/mcp", http.StatusTemporaryRedirect)
+	}))
+	defer source.Close()
+
+	transport, err := newHTTPTransport(Spec{
+		Name: "redirect", Type: "http", URL: source.URL,
+		Headers: map[string]string{"X-API-Key": "secret"},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp, err := transport.do(context.Background(), []byte(`{}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusTemporaryRedirect {
+		t.Fatalf("cross-origin redirect status = %d, want %d", resp.StatusCode, http.StatusTemporaryRedirect)
+	}
+	if targetCalls.Load() != 0 {
+		t.Fatalf("cross-origin redirect target received %d requests", targetCalls.Load())
+	}
+}
+
 func TestHTTPTransportReinitializesExpiredSession(t *testing.T) {
 	var initializeCount atomic.Int32
 	var toolCallCount atomic.Int32

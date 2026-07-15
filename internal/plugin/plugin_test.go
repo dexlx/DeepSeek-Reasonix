@@ -16,6 +16,7 @@ import (
 	"time"
 
 	"reasonix/internal/event"
+	"reasonix/internal/mcpcatalog"
 	"reasonix/internal/mcptrust"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/tool"
@@ -1143,6 +1144,7 @@ func TestHelperProcess(t *testing.T) {
 	}
 	defer os.Exit(0)
 	helperProcessNumber := incrementHelperCounter(os.Getenv("GO_WANT_HELPER_START_COUNT"))
+	toolsListCount := 0
 
 	var initDelay time.Duration
 	if ms := os.Getenv("GO_WANT_HELPER_INIT_MS"); ms != "" {
@@ -1190,6 +1192,9 @@ func TestHelperProcess(t *testing.T) {
 				time.Sleep(initDelay)
 			}
 			caps := map[string]any{}
+			if os.Getenv("GO_WANT_HELPER_EMPTY_FIRST_TOOLS") == "1" {
+				caps["tools"] = map[string]any{}
+			}
 			if os.Getenv("GO_WANT_HELPER_PROMPTS") == "1" {
 				caps["prompts"] = map[string]any{}
 			}
@@ -1210,6 +1215,11 @@ func TestHelperProcess(t *testing.T) {
 				"arguments":   []map[string]any{},
 			}}}
 		case "tools/list":
+			toolsListCount++
+			if os.Getenv("GO_WANT_HELPER_EMPTY_FIRST_TOOLS") == "1" && toolsListCount == 1 {
+				result = map[string]any{"tools": []map[string]any{}}
+				break
+			}
 			messageType := "string"
 			if os.Getenv("GO_WANT_HELPER_DRIFT_ON_SECOND") == "1" && helperProcessNumber > 1 {
 				messageType = "integer"
@@ -1322,6 +1332,44 @@ func TestStdioWriterUsesFreshOneShotProcess(t *testing.T) {
 	}
 }
 
+func TestStdioOneShotWriterWaitsForDynamicToolRegistration(t *testing.T) {
+	spec := Spec{
+		Name: "dynamic-writer", Command: os.Args[0], Args: []string{"-test.run=TestHelperProcess", "--"},
+		Env: map[string]string{
+			"GO_WANT_HELPER_PROCESS":           "1",
+			"GO_WANT_HELPER_EMPTY_FIRST_TOOLS": "1",
+		},
+		StateDir: t.TempDir(),
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	host, tools, err := StartAll(ctx, []Spec{spec})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer host.Close()
+	writer := findToolByName(tools, "mcp__dynamic-writer__echo")
+	if writer == nil {
+		t.Fatalf("writer tool missing from %v", toolNames(tools))
+	}
+	if _, err := writer.Execute(ctx, json.RawMessage(`{"msg":"ready","z":"ok"}`)); err != nil {
+		t.Fatalf("dynamic one-shot writer call: %v", err)
+	}
+}
+
+func TestValidateMCPToolNamesRejectsAmbiguousLists(t *testing.T) {
+	for name, tools := range map[string][]mcpTool{
+		"empty":     {{Name: " "}},
+		"duplicate": {{Name: "read"}, {Name: "read"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if err := validateMCPToolNames(tools); err == nil {
+				t.Fatalf("validateMCPToolNames(%+v) succeeded", tools)
+			}
+		})
+	}
+}
+
 func TestStdioWriterSchemaDriftBlocksBeforeToolCall(t *testing.T) {
 	startCount := filepath.Join(t.TempDir(), "starts")
 	callCount := filepath.Join(t.TempDir(), "calls")
@@ -1422,6 +1470,81 @@ func TestPersistentHTTPTrustRequiresHTTPSBeforePreflight(t *testing.T) {
 	}, "workspace")
 	if err == nil || !strings.Contains(err.Error(), "requires an HTTPS URL") {
 		t.Fatalf("workspace trust error = %v, want HTTPS refusal before network preflight", err)
+	}
+}
+
+func TestNormalizeIdentityURLPreservesEndpointSemantics(t *testing.T) {
+	a := normalizeIdentityURL("HTTPS://alice:secret@Example.COM:443/mcp?access_token=abc&workspace=one#fragment")
+	b := normalizeIdentityURL("https://bob:rotated@example.com/mcp?workspace=two&access_token=xyz")
+	if a == b {
+		t.Fatalf("different endpoint credentials/query values collapsed to one identity URL: %q", a)
+	}
+	if strings.Contains(a, "#fragment") {
+		t.Fatalf("identity URL retained non-semantic fragment: %q", a)
+	}
+}
+
+func TestOfficialIdentityIsStableAcrossWorkspaceIsolationRoots(t *testing.T) {
+	packageRoot := t.TempDir()
+	packageFile := filepath.Join(packageRoot, "server.js")
+	if err := os.WriteFile(packageFile, []byte("verified"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	packageDigest, err := mcpcatalog.TreeSHA256(packageRoot)
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := Spec{
+		Name: "official", Command: os.Args[0], OfficialCatalogEntryID: "official@1",
+		PackageDigest: packageDigest, PackageRoot: packageRoot, ConfigSource: "workspace_config",
+		ReaderSandbox: sandbox.Spec{
+			Mode: "enforce", ReadRoots: []string{"/workspace/a", "/home/user"},
+			WriteRoots: []string{"/state/a"}, ForbidReadRoots: []string{"/workspace/a/private"},
+		},
+		WriterSandbox: sandbox.Spec{Mode: "enforce", ReadRoots: []string{"/workspace/a"}, WriteRoots: []string{"/workspace/a"}},
+	}
+	other := base
+	other.ReaderSandbox.ReadRoots = []string{"/workspace/b", "/home/user"}
+	other.ReaderSandbox.WriteRoots = []string{"/state/b"}
+	other.ReaderSandbox.ForbidReadRoots = []string{"/workspace/b/private"}
+	other.WriterSandbox.ReadRoots = []string{"/workspace/b"}
+	other.WriterSandbox.WriteRoots = []string{"/workspace/b"}
+	a, err := specIdentityFingerprint(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := specIdentityFingerprint(context.Background(), other)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a != b {
+		t.Fatalf("official global identity changed across workspaces: %s != %s", a, b)
+	}
+	if err := os.WriteFile(packageFile, []byte("tampered"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := specIdentityFingerprint(context.Background(), base); err == nil || !strings.Contains(err.Error(), "changed after verification") {
+		t.Fatalf("tampered official package identity error = %v", err)
+	}
+}
+
+func TestWorkspaceIdentityTracksForbiddenReadRoots(t *testing.T) {
+	base := Spec{
+		Name: "custom", Command: os.Args[0], ConfigSource: "workspace_config",
+		ReaderSandbox: sandbox.Spec{Mode: "enforce", ForbidReadRoots: []string{"/secret/a"}},
+	}
+	changed := base
+	changed.ReaderSandbox.ForbidReadRoots = []string{"/secret/b"}
+	a, err := specIdentityFingerprint(context.Background(), base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := specIdentityFingerprint(context.Background(), changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("forbidden-read policy change did not alter workspace identity")
 	}
 }
 

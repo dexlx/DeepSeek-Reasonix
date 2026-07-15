@@ -40,10 +40,41 @@ func TestCapabilityFingerprintIgnoresDisplayFields(t *testing.T) {
 	}
 }
 
+func TestCapabilityFingerprintPreservesPropertyNamesThatLookLikeDisplayFields(t *testing.T) {
+	base := testCapability("read", true, false, `{
+		"type":"object",
+		"properties":{
+			"title":{"type":"string","title":"Display label"},
+			"description":{"type":"integer"},
+			"examples":{"type":"boolean"}
+		}
+	}`)
+	changed := base
+	changed.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"properties":{
+			"title":{"type":"number","title":"Another label"},
+			"description":{"type":"integer"},
+			"examples":{"type":"boolean"}
+		}
+	}`)
+	a, err := CapabilityFingerprint(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := CapabilityFingerprint(changed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if a == b {
+		t.Fatal("structural change to a property named title was erased from the fingerprint")
+	}
+}
+
 func TestIdentityFingerprintCanonicalizesOrderingAndPaths(t *testing.T) {
 	dir := t.TempDir()
 	a := Identity{Server: "srv", Transport: "streamable-http", Dir: dir, EnvKeys: []string{"TOKEN", "PATH"}, HeaderKeys: []string{"X-B", "Authorization"}, WriteRoots: []string{filepath.Join(dir, "."), dir}}
-	b := Identity{Server: "srv", Transport: "http", Dir: dir, EnvKeys: []string{"path", "token"}, HeaderKeys: []string{"authorization", "x-b"}, WriteRoots: []string{dir}}
+	b := Identity{Server: "srv", Transport: "http", Dir: dir, EnvKeys: []string{"PATH", "TOKEN"}, HeaderKeys: []string{"authorization", "x-b"}, WriteRoots: []string{dir}}
 	af, err := IdentityFingerprint(a)
 	if err != nil {
 		t.Fatal(err)
@@ -54,6 +85,17 @@ func TestIdentityFingerprintCanonicalizesOrderingAndPaths(t *testing.T) {
 	}
 	if af != bf {
 		t.Fatalf("canonical identities differ: %s != %s", af, bf)
+	}
+	b.EnvKeys = []string{"PATH", "token"}
+	bf, err = IdentityFingerprint(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if runtime.GOOS != "windows" && af == bf {
+		t.Fatal("case-sensitive environment key change did not alter identity")
+	}
+	if runtime.GOOS == "windows" && af != bf {
+		t.Fatal("case-insensitive Windows environment key change altered identity")
 	}
 }
 
@@ -356,6 +398,24 @@ func TestHasReceiptTracksCurrentWorkspace(t *testing.T) {
 	other := NewManager(path, "/workspace/b")
 	if ok, err := other.HasReceipt("srv", "project"); err != nil || ok {
 		t.Fatalf("cross-workspace HasReceipt = %v, %v", ok, err)
+	}
+}
+
+func TestReceiptDoesNotCrossConfigSources(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	caps := []Capability{testCapability("read", true, false, `{"type":"object"}`)}
+	if err := m.Trust(ScopeWorkspace, SourceUser, "srv", "project:.mcp.json", "identity", "", caps); err != nil {
+		t.Fatal(err)
+	}
+	for _, source := range []string{"", "workspace_config", "host_session"} {
+		eval, err := m.Evaluate("srv", source, "identity", caps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if eval.State != TrustUntrusted || len(eval.TrustedReaders) != 0 {
+			t.Fatalf("receipt crossed from project config into %q: %+v", source, eval)
+		}
 	}
 }
 

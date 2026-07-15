@@ -6256,6 +6256,27 @@ func (a *App) RefreshMCPCatalog() (MCPCatalogRefreshView, error) {
 	} else {
 		a.recordMCPSecurityMetric("mcp_catalog_verify", "offline_snapshot")
 	}
+	// A manual refresh is an explicit security action, so apply newly fetched
+	// revocations to every live shared host immediately instead of waiting for a
+	// restart or the six-hour background refresh window.
+	a.mu.RLock()
+	controllers := make([]control.SessionAPI, 0, len(a.tabs)+len(a.detachedSessions))
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab != nil && tab.Ctrl != nil {
+			controllers = append(controllers, tab.Ctrl)
+		}
+	}
+	a.mu.RUnlock()
+	hosts := map[*plugin.Host]struct{}{}
+	for _, ctrl := range controllers {
+		if host := ctrl.Host(); host != nil {
+			hosts[host] = struct{}{}
+		}
+	}
+	revoked := result.Index.RevokedEntryIDs()
+	for host := range hosts {
+		host.ApplyCatalogRevocations(revoked)
+	}
 	return MCPCatalogRefreshView{Source: string(result.Source), Sequence: result.Index.Sequence, Offline: result.Offline, Stale: result.Stale}, nil
 }
 
@@ -6299,7 +6320,8 @@ func (a *App) mcpTrustSpec(name string) (plugin.Spec, error) {
 		TrustManager:       mcptrust.ForWorkspace(config.ReasonixHomeDir(), root),
 		ConfigSource:       "workspace_config", StateHome: config.ReasonixHomeDir(),
 		WriterRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: cfg.ForbidReadRootsForRoot(root),
-		Network: cfg.Sandbox.Network,
+		Network:         cfg.Sandbox.Network,
+		OfficialServers: boot.LoadOfficialMCPTrust(context.Background(), cfg),
 	})
 	if len(specs) != 1 {
 		return plugin.Spec{}, fmt.Errorf("failed to build MCP server %q", name)

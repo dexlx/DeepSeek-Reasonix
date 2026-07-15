@@ -14,7 +14,6 @@ import (
 	"encoding/json"
 	"io"
 	"log/slog"
-	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -22,6 +21,7 @@ import (
 	"time"
 
 	"reasonix/internal/config"
+	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/tool"
 )
@@ -36,13 +36,14 @@ func cacheableToolsOf(tools []tool.Tool) []CachedTool {
 		if !ok {
 			continue
 		}
+		declaredReadOnly, _, _, destructive, _ := rt.securitySnapshot()
 		out = append(out, CachedTool{
 			Name:         rt.rawName,
 			Description:  rt.desc,
 			Schema:       rt.schema,
 			OutputSchema: rt.outputSchema,
-			ReadOnly:     rt.declaredReadOnly,
-			Destructive:  rt.destructive,
+			ReadOnly:     declaredReadOnly,
+			Destructive:  destructive,
 		})
 	}
 	return out
@@ -85,9 +86,10 @@ type CachedTool struct {
 // input still invalidates the cached schema.
 func SpecFingerprint(s Spec) string {
 	h := sha256.New()
+	writeField(h, "name", s.Name)
 	writeField(h, "type", s.Type)
 	writeField(h, "command", s.Command)
-	writeField(h, "url", s.URL)
+	writeField(h, "url", normalizeIdentityURL(s.URL))
 	writeField(h, "dir", s.Dir)
 	for _, a := range s.Args {
 		writeField(h, "arg", a)
@@ -152,19 +154,13 @@ func filterValidCachedTools(tools []CachedTool) []CachedTool {
 	return out
 }
 
-// SaveCachedSchema atomically writes cs under name. Best-effort: an error
-// is logged at debug level and dropped. Uses tmpfile + os.Rename in the
-// parent dir so a crash mid-write can't leave a half-written JSON behind
-// that the next Load would mis-parse.
+// SaveCachedSchema atomically writes cs under name. Best-effort: an error is
+// logged at debug level and returned. The shared replacement helper preserves
+// overwrite semantics on Windows as well as crash safety on Unix.
 func SaveCachedSchema(name string, cs CachedSchema) error {
 	p := cachePath(name)
 	if p == "" {
 		return nil
-	}
-	dir := filepath.Dir(p)
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		slog.Debug("plugin cache: mkdir", "name", name, "err", err)
-		return err
 	}
 	cs.Version = cacheVersion
 	if cs.LastValidated.IsZero() {
@@ -175,26 +171,8 @@ func SaveCachedSchema(name string, cs CachedSchema) error {
 		slog.Debug("plugin cache: marshal", "name", name, "err", err)
 		return err
 	}
-	tmp, err := os.CreateTemp(dir, ".mcp-*.tmp")
-	if err != nil {
-		slog.Debug("plugin cache: tempfile", "name", name, "err", err)
-		return err
-	}
-	tmpPath := tmp.Name()
-	if _, err := tmp.Write(b); err != nil {
-		tmp.Close()
-		os.Remove(tmpPath)
-		slog.Debug("plugin cache: write", "name", name, "err", err)
-		return err
-	}
-	if err := tmp.Close(); err != nil {
-		os.Remove(tmpPath)
-		slog.Debug("plugin cache: close", "name", name, "err", err)
-		return err
-	}
-	if err := os.Rename(tmpPath, p); err != nil {
-		os.Remove(tmpPath)
-		slog.Debug("plugin cache: rename", "name", name, "err", err)
+	if err := fileutil.AtomicWriteFile(p, b, 0o600); err != nil {
+		slog.Debug("plugin cache: atomic write", "name", name, "err", err)
 		return err
 	}
 	return nil
@@ -215,14 +193,18 @@ func cachePath(name string) string {
 // the user's display capitalisation.
 var slugReplace = regexp.MustCompile(`[^a-z0-9_-]+`)
 
-// slug sanitises name for use as a filename: lowercase, only [a-z0-9_-]. An
-// empty result (all chars stripped) falls back to "_" so cachePath stays
-// valid for any input.
+// slug sanitises name for use as a filename. Names changed by sanitization get
+// a strong suffix so case-only and punctuation collisions cannot make one MCP
+// server consume another server's cached schemas.
 func slug(name string) string {
 	s := slugReplace.ReplaceAllString(strings.ToLower(name), "-")
 	s = strings.Trim(s, "-")
 	if s == "" {
-		return "_"
+		s = "_"
+	}
+	if s != name {
+		sum := sha256.Sum256([]byte(name))
+		s += "-" + hex.EncodeToString(sum[:6])
 	}
 	return s
 }

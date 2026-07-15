@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"reasonix/internal/mcptrust"
@@ -305,6 +306,12 @@ func TestSpecFingerprintIgnoresHostLocalTrustAndIsolation(t *testing.T) {
 
 func TestSpecFingerprintTracksNonSecretIdentityOnly(t *testing.T) {
 	a := sampleSpec()
+	renamed := a
+	renamed.Name = "other-server"
+	if SpecFingerprint(a) == SpecFingerprint(renamed) {
+		t.Fatal("SpecFingerprint did not change when server name changed")
+	}
+
 	b := a
 	b.Command = "/usr/local/bin/other"
 	if SpecFingerprint(a) == SpecFingerprint(b) {
@@ -341,6 +348,15 @@ func TestSpecFingerprintTracksNonSecretIdentityOnly(t *testing.T) {
 	if SpecFingerprint(a) == SpecFingerprint(g) {
 		t.Fatal("SpecFingerprint did not change when header key names changed")
 	}
+
+	h := a
+	h.Type = "http"
+	h.URL = "https://user:secret@example.com/mcp?access_token=first&workspace=one"
+	i := h
+	i.URL = "https://other:rotated@example.com/mcp?access_token=second&workspace=two"
+	if SpecFingerprint(h) == SpecFingerprint(i) {
+		t.Fatal("SpecFingerprint did not bind URL credential/query values")
+	}
 }
 
 func TestCacheMissForUnknownName(t *testing.T) {
@@ -351,16 +367,32 @@ func TestCacheMissForUnknownName(t *testing.T) {
 }
 
 func TestSlugSafeForFilesystem(t *testing.T) {
-	cases := map[string]string{
-		"My Server!":           "my-server",
-		"weird/name\\with:bad": "weird-name-with-bad",
-		"":                     "_",
-		"------":               "_",
-		"a_b-c":                "a_b-c",
+	if got := slug("a_b-c"); got != "a_b-c" {
+		t.Fatalf("safe slug changed: %q", got)
 	}
-	for in, want := range cases {
-		if got := slug(in); got != want {
-			t.Errorf("slug(%q) = %q want %q", in, got, want)
+	inputs := []string{"My Server!", "my-server", "weird/name\\with:bad", "weird-name-with-bad", "", "------", "Foo", "foo"}
+	seen := map[string]string{}
+	for _, in := range inputs {
+		got := slug(in)
+		if got == "" || strings.ContainsAny(got, `/\\:`) {
+			t.Fatalf("slug(%q) is not filesystem-safe: %q", in, got)
 		}
+		if previous, exists := seen[got]; exists {
+			t.Fatalf("slug collision: %q and %q both became %q", previous, in, got)
+		}
+		seen[got] = in
+	}
+}
+
+func TestMCPStateDirSeparatesConfusableServerNames(t *testing.T) {
+	home, workspace := t.TempDir(), t.TempDir()
+	names := []string{"foo", "Foo", "foo bar", "foo-bar", "foo/bar", "foo\\bar"}
+	seen := map[string]string{}
+	for _, name := range names {
+		dir := MCPStateDir(home, workspace, name)
+		if previous, exists := seen[dir]; exists {
+			t.Fatalf("state-directory collision: %q and %q both use %q", previous, name, dir)
+		}
+		seen[dir] = name
 	}
 }

@@ -93,6 +93,7 @@ type Spec struct {
 	OfficialCatalogEntryID string
 	OfficialReaderNames    []string
 	PackageDigest          string
+	PackageRoot            string
 	VerifiedVersion        string
 	CatalogSequence        uint64
 	// LaunchArgs and launcher metadata are host-local immutable resolutions for
@@ -807,9 +808,11 @@ func SetSpecTrust(ctx context.Context, spec Spec, decision string) error {
 		Capabilities: map[string]bool{
 			"tools": client.hasTools, "prompts": client.hasPrompts, "resources": client.hasResources,
 		},
-		Tools: cacheableToolsOf(tools),
 	}
 	client.toolsMu.Unlock()
+	// cacheableToolsOf snapshots each tool's security state under this same
+	// client's toolsMu, so it must run outside the critical section above.
+	cache.Tools = cacheableToolsOf(tools)
 	// Persist the exact preflight snapshot before granting trust. A cache without
 	// a receipt is inert, while a receipt without its schema would force a strict
 	// read-only child to start the process merely to rediscover classification.
@@ -1551,28 +1554,12 @@ func (c *Client) listTools(ctx context.Context) ([]tool.Tool, error) {
 		return append([]tool.Tool(nil), c.toolAdapters...), nil
 	}
 
-	out, err := c.listToolsRaw(ctx)
+	out, err := c.listToolsRawSettled(ctx)
 	if err != nil {
 		return nil, err
 	}
-
-	// Some MCP servers start accepting requests before dynamically registered
-	// tools have been added. If the server advertised the tools capability, a
-	// first empty list may be a startup race; give it a small bounded window to
-	// settle before freezing the provider-visible tool surface for this client.
-	if c.hasTools && len(out) == 0 {
-		for _, delay := range advertisedToolsEmptyListRetryDelays {
-			if err := sleepContext(ctx, delay); err != nil {
-				return nil, err
-			}
-			out, err = c.listToolsRaw(ctx)
-			if err != nil {
-				return nil, err
-			}
-			if len(out) > 0 {
-				break
-			}
-		}
+	if err := validateMCPToolNames(out); err != nil {
+		return nil, fmt.Errorf("plugin %q: %w", c.name, err)
 	}
 
 	toolInfos := make([]ToolInfo, 0, len(out))
@@ -1670,6 +1657,42 @@ func (c *Client) listToolsRaw(ctx context.Context) ([]mcpTool, error) {
 		return nil, fmt.Errorf("plugin %q: decode tools/list: %w", c.name, err)
 	}
 	return out.Tools, nil
+}
+
+// listToolsRawSettled gives dynamically registering servers the same bounded
+// startup window in both the long-lived reader lane and a fresh one-shot writer
+// lane. Without this, a writer that is present a few milliseconds after
+// initialize can appear in the UI but then fail every approved invocation.
+func (c *Client) listToolsRawSettled(ctx context.Context) ([]mcpTool, error) {
+	out, err := c.listToolsRaw(ctx)
+	if err != nil || !c.hasTools || len(out) > 0 {
+		return out, err
+	}
+	for _, delay := range advertisedToolsEmptyListRetryDelays {
+		if err := sleepContext(ctx, delay); err != nil {
+			return nil, err
+		}
+		out, err = c.listToolsRaw(ctx)
+		if err != nil || len(out) > 0 {
+			return out, err
+		}
+	}
+	return out, nil
+}
+
+func validateMCPToolNames(tools []mcpTool) error {
+	seen := make(map[string]bool, len(tools))
+	for _, candidate := range tools {
+		name := strings.TrimSpace(candidate.Name)
+		if name == "" {
+			return fmt.Errorf("tools/list returned an empty tool name")
+		}
+		if seen[candidate.Name] {
+			return fmt.Errorf("tools/list returned duplicate tool name %q", candidate.Name)
+		}
+		seen[candidate.Name] = true
+	}
+	return nil
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) error {
@@ -1809,13 +1832,29 @@ func (t *remoteTool) MCPRawToolName() string { return t.rawName }
 // ReadOnly reflects MCP readOnlyHint plus backward-compatible Spec overrides.
 // It defaults to false, so opaque tools remain write-capable unless the server
 // or local configuration explicitly classifies them as read-only.
-func (t *remoteTool) ReadOnly() bool { return t.readOnly }
-
-func (t *remoteTool) PlanModeUntrustedReadOnly() bool {
-	return t.readOnly && !t.readOnlyTrusted
+func (t *remoteTool) securitySnapshot() (declaredReadOnly, readOnly, trusted, destructive bool, fingerprint string) {
+	if t.client == nil {
+		return t.declaredReadOnly, t.readOnly, t.readOnlyTrusted, t.destructive, t.capabilityFingerprint
+	}
+	t.client.toolsMu.Lock()
+	defer t.client.toolsMu.Unlock()
+	return t.declaredReadOnly, t.readOnly, t.readOnlyTrusted, t.destructive, t.capabilityFingerprint
 }
 
-func (t *remoteTool) MCPDestructiveHint() bool { return t.destructive }
+func (t *remoteTool) ReadOnly() bool {
+	_, readOnly, _, _, _ := t.securitySnapshot()
+	return readOnly
+}
+
+func (t *remoteTool) PlanModeUntrustedReadOnly() bool {
+	_, readOnly, trusted, _, _ := t.securitySnapshot()
+	return readOnly && !trusted
+}
+
+func (t *remoteTool) MCPDestructiveHint() bool {
+	_, _, _, destructive, _ := t.securitySnapshot()
+	return destructive
+}
 
 func (t *remoteTool) MCPApprovalMode() string {
 	if t.client == nil {
@@ -1853,7 +1892,8 @@ func (t *remoteTool) ExecuteWithImages(ctx context.Context, args json.RawMessage
 			return "", nil, fmt.Errorf("invalid args: %w", err)
 		}
 	}
-	if t.client != nil && t.client.usesOneShotWriterLane() && (!t.readOnly || t.destructive) {
+	_, readOnly, _, destructive, _ := t.securitySnapshot()
+	if t.client != nil && t.client.usesOneShotWriterLane() && (!readOnly || destructive) {
 		return t.client.callOneShotTool(ctx, t, argMap)
 	}
 	res, err := t.client.call(ctx, "tools/call", map[string]any{
@@ -1879,8 +1919,11 @@ func (c *Client) callOneShotTool(ctx context.Context, expected *remoteTool, args
 		return "", nil, fmt.Errorf("start isolated one-shot MCP writer %q: %w", c.name, err)
 	}
 	defer writer.close()
-	tools, err := writer.listToolsRaw(ctx)
+	tools, err := writer.listToolsRawSettled(ctx)
 	if err != nil {
+		return "", nil, fmt.Errorf("revalidate one-shot MCP writer %q: %w", c.name, err)
+	}
+	if err := validateMCPToolNames(tools); err != nil {
 		return "", nil, fmt.Errorf("revalidate one-shot MCP writer %q: %w", c.name, err)
 	}
 	var live *mcpTool

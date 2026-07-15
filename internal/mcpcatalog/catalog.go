@@ -443,7 +443,6 @@ func TreeSHA256(root string) (string, error) {
 	}
 	type item struct {
 		path string
-		mode fs.FileMode
 		body []byte
 	}
 	var items []item
@@ -478,7 +477,7 @@ func TreeSHA256(root string) (string, error) {
 		if err != nil {
 			return err
 		}
-		items = append(items, item{path: filepath.ToSlash(rel), mode: info.Mode().Perm(), body: body})
+		items = append(items, item{path: filepath.ToSlash(rel), body: body})
 		return nil
 	})
 	if err != nil {
@@ -487,7 +486,11 @@ func TreeSHA256(root string) (string, error) {
 	sort.Slice(items, func(i, j int) bool { return items[i].path < items[j].path })
 	h := sha256.New()
 	for _, item := range items {
-		_, _ = fmt.Fprintf(h, "%s\x00%04o\x00%d\x00", item.path, item.mode, len(item.body))
+		// Permission bits are intentionally excluded: Windows checkouts do not
+		// preserve POSIX modes, so including them makes a catalog package verify
+		// on Linux but silently lose official status on Windows. Paths, lengths,
+		// and bytes still bind the complete regular-file tree.
+		_, _ = fmt.Fprintf(h, "%s\x00%d\x00", item.path, len(item.body))
 		_, _ = h.Write(item.body)
 	}
 	return hex.EncodeToString(h.Sum(nil)), nil
