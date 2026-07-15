@@ -40,10 +40,10 @@ type Spec struct {
 	// Windows this selects the low-integrity writer lane; it is deliberately
 	// false for ordinary read-only helpers such as rg.
 	DirectWrites bool
-	// ForbidReadRoots are directories the command may not read from when
-	// confined. The OS sandbox denies access to these paths (macOS Seatbelt
-	// deny file-read* rules, Linux bubblewrap --tmpfs overlays); on other
-	// platforms the in-process tools enforce this instead.
+	// ForbidReadRoots are files or directories the command may not read from
+	// when confined. The OS sandbox denies access to these paths (macOS Seatbelt
+	// deny file-read* rules, Linux bubblewrap masks); on other platforms the
+	// in-process tools enforce this instead.
 	ForbidReadRoots []string
 	// Network allows network egress from inside the sandbox. Off blocks it so a
 	// command cannot exfiltrate or fetch; many dev commands (module/package

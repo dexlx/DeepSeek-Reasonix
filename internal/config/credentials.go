@@ -178,6 +178,14 @@ func credentialEnvNamesFromConfig(cfg *Config) []string {
 	return out
 }
 
+// CredentialEnvNames returns the environment-variable names whose values are
+// loaded from Reasonix's global credential store for this configuration.
+// Callers use the names (never the values) to keep saved credentials out of
+// child-process environments.
+func (c *Config) CredentialEnvNames() []string {
+	return credentialEnvNamesFromConfig(c)
+}
+
 func resolveProviderCredentialsForRoot(root string, cfg *Config) {
 	if cfg == nil || len(cfg.Providers) == 0 {
 		return

@@ -192,6 +192,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	secrets.SetRedactToolOutput(cfg.SecretsRedactToolOutput())
 	secrets.SetFilterSubprocessEnv(cfg.Secrets.FilterSubprocessEnv)
 	secrets.SetProtectSensitiveFiles(cfg.Secrets.ProtectSensitiveFiles)
+	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
 	modelName := opts.Model
 	if modelName == "" {
 		modelName = cfg.DefaultModel
@@ -391,7 +392,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	reg := tool.NewRegistry()
 	writeRoots := cfg.WriteRootsForRoot(root)
 	writeRoots = appendUniquePaths(writeRoots, additionalDirs...)
-	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	forbidReadRoots := RuntimeForbidReadRoots(cfg, root)
 	// managedConfig names the Reasonix-owned config FILES (config.toml,
 	// compatibility TOMLs, legacy v0.x config.json) the file-writers may repair
 	// outside the workspace after a fresh per-write human approval. The bash
@@ -1841,6 +1842,36 @@ func appendUniquePaths(base []string, extra ...string) []string {
 		out = append(out, path)
 	}
 	return out
+}
+
+// RuntimeForbidReadRoots returns the configured deny roots plus Reasonix's
+// global credential FILE when it exists. It also registers the corresponding
+// credential environment names for subprocess filtering. Runtime tool
+// assemblers outside Build must use this helper instead of reading the config
+// roots directly.
+//
+// Provider and bot credentials are loaded into the parent process from this
+// file, so readers, shell commands, and MCP servers must not be able to recover
+// them even when the optional broad sensitive-file denylist is off. Project
+// .env files retain their existing behavior.
+func RuntimeForbidReadRoots(cfg *config.Config, root string) []string {
+	if cfg == nil {
+		return nil
+	}
+	secrets.RegisterCredentialEnvKeys(cfg.CredentialEnvNames())
+	base := cfg.ForbidReadRootsForRoot(root)
+	credentialPath := strings.TrimSpace(config.UserCredentialsPath())
+	if credentialPath == "" {
+		return append([]string(nil), base...)
+	}
+	info, err := os.Stat(credentialPath)
+	if err != nil || info.IsDir() {
+		return append([]string(nil), base...)
+	}
+	if real, err := filepath.EvalSymlinks(credentialPath); err == nil {
+		credentialPath = real
+	}
+	return appendUniquePaths(base, credentialPath)
 }
 
 func pathComparisonKey(path string) string {

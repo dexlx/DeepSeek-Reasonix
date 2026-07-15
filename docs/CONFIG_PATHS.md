@@ -56,6 +56,13 @@ skill, sandbox, bot, and agent settings that Reasonix renders into user config.
 Provider entries store the name of the credential variable in `api_key_env`, not
 the secret value.
 
+Saved provider and bot credential variables are removed from every
+model-controlled child-process environment. The global credential `.env` is
+also hidden from Reasonix's file readers, sandboxed shell commands, and MCP
+servers; this does not change the visibility of a project's ordinary `.env`.
+On Windows, shell commands remain outside an OS sandbox as documented in the
+Guide, so approve shell access only for trusted tasks.
+
 Example:
 
 ```toml

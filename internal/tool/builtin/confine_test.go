@@ -351,6 +351,24 @@ func TestConfineReadInsideAndOutside(t *testing.T) {
 	}
 }
 
+func TestConfineReadExactFileRoot(t *testing.T) {
+	dir := t.TempDir()
+	secret := filepath.Join(dir, "credentials.env")
+	visible := filepath.Join(dir, "project.env")
+	for _, path := range []string{secret, visible} {
+		if err := os.WriteFile(path, []byte("value"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	forbidRoots := realRoots([]string{secret})
+	if !confineRead(forbidRoots, secret) {
+		t.Fatal("exact forbidden file should be unreadable")
+	}
+	if confineRead(forbidRoots, visible) {
+		t.Fatal("sibling file should remain readable")
+	}
+}
+
 func TestConfineReadBlocksReadFile(t *testing.T) {
 	forbidDir := t.TempDir()
 	secretPath := filepath.Join(forbidDir, "secret.txt")

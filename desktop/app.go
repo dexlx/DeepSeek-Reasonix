@@ -41,6 +41,7 @@ import (
 	"reasonix/internal/fileref"
 	fileenc "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/i18n"
+	"reasonix/internal/jobs"
 	"reasonix/internal/mcpcatalog"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/mcptrust"
@@ -2842,12 +2843,22 @@ func (a *App) destroyHandlesForSession(dir, sessionPath string, removed []remove
 }
 
 func waitDestroyHandles(destroys []control.SessionDestroyHandle) bool {
-	timedOut := false
+	results := make(chan jobs.TeardownResult, len(destroys))
+	waits := 0
 	for _, destroy := range destroys {
-		if destroy.Wait != nil {
-			if destroy.Wait().HasTimedOut() {
-				timedOut = true
-			}
+		if destroy.Wait == nil {
+			continue
+		}
+		waits++
+		go func(wait func() jobs.TeardownResult) {
+			results <- wait()
+		}(destroy.Wait)
+	}
+
+	timedOut := false
+	for range waits {
+		if (<-results).HasTimedOut() {
+			timedOut = true
 		}
 	}
 	return timedOut
@@ -6319,7 +6330,7 @@ func (a *App) mcpTrustSpec(name string) (plugin.Spec, error) {
 		DefaultCallTimeout: time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
 		TrustManager:       mcptrust.ForWorkspace(config.ReasonixHomeDir(), root),
 		ConfigSource:       "workspace_config", StateHome: config.ReasonixHomeDir(),
-		WriterRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: cfg.ForbidReadRootsForRoot(root),
+		WriterRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: boot.RuntimeForbidReadRoots(cfg, root),
 		Network:         cfg.Sandbox.Network,
 		OfficialServers: boot.LoadOfficialMCPTrust(context.Background(), cfg),
 	})

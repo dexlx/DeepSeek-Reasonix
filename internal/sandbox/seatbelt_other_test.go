@@ -46,13 +46,36 @@ func TestBwrapExecutableMountArgsLeavesVisibleExecutableAlone(t *testing.T) {
 }
 
 func TestBwrapArgsForArgsMountsTemporaryExecutableAfterMasks(t *testing.T) {
+	secretDir := t.TempDir()
 	argv := bwrapArgsForArgs(Spec{
-		ForbidReadRoots: []string{"/tmp/secret"},
+		ForbidReadRoots: []string{secretDir},
 	}, []string{"/tmp/go-build123/b456/plugin.test", "-test.run=Helper"})
-	mask := indexArgs(argv, "--tmpfs", "/tmp/secret")
+	mask := indexArgs(argv, "--tmpfs", secretDir)
 	mount := indexArgs(argv, "--ro-bind", "/tmp/go-build123/b456/plugin.test", "/tmp/go-build123/b456/plugin.test")
 	if mask < 0 || mount < 0 || mount < mask {
 		t.Fatalf("temporary executable must be mounted after masks: %v", argv)
+	}
+}
+
+func TestBwrapForbidReadArgsMasksFilesAndDirectories(t *testing.T) {
+	dir := t.TempDir()
+	nested := filepath.Join(dir, "nested")
+	if err := os.Mkdir(nested, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(t.TempDir(), "credentials.env")
+	if err := os.WriteFile(file, []byte("secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(dir, "missing")
+
+	got := bwrapForbidReadArgs([]string{dir, nested, file, file, missing})
+	want := []string{
+		"--tmpfs", dir,
+		"--ro-bind", "/dev/null", file,
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("forbid-read mount args = %v, want %v", got, want)
 	}
 }
 

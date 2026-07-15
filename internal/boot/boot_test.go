@@ -4002,6 +4002,50 @@ func TestAppendUniquePathsDeduplicatesSymlinkEquivalentRoots(t *testing.T) {
 	}
 }
 
+func TestRuntimeForbidReadRootsAddsOnlyGlobalCredentialFile(t *testing.T) {
+	home := isolateConfigHome(t)
+	t.Setenv("REASONIX_HOME", filepath.Join(home, "reasonix-home"))
+	configured := filepath.Join(t.TempDir(), "configured-secret")
+	projectEnv := filepath.Join(t.TempDir(), ".env")
+	for _, path := range []string{configured, projectEnv} {
+		if err := os.WriteFile(path, []byte("secret"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	cfg := config.Default()
+	cfg.Sandbox.ForbidRead = []string{configured}
+	withoutCredentials := RuntimeForbidReadRoots(cfg, ".")
+	if !reflect.DeepEqual(withoutCredentials, []string{configured}) {
+		t.Fatalf("roots without global credentials = %v", withoutCredentials)
+	}
+
+	credentialPath := config.UserCredentialsPath()
+	if err := os.MkdirAll(filepath.Dir(credentialPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialPath, []byte("PROVIDER_KEY=secret"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	got := RuntimeForbidReadRoots(cfg, ".")
+	if !pathListContains(got, credentialPath) || !pathListContains(got, configured) {
+		t.Fatalf("runtime forbid roots = %v", got)
+	}
+	if pathListContains(got, projectEnv) {
+		t.Fatalf("project .env was unexpectedly added to runtime forbid roots: %v", got)
+	}
+}
+
+func pathListContains(paths []string, want string) bool {
+	want = pathComparisonKey(want)
+	for _, path := range paths {
+		if pathComparisonKey(path) == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestNormalizeAdditionalDirsRejectsInvalidPaths(t *testing.T) {
 	root := t.TempDir()
 	file := filepath.Join(root, "file.txt")

@@ -123,7 +123,7 @@ func buildReviewSubagentRegistry(reviewSk skill.Skill, cfg *config.Config, root 
 	// [sandbox] config, so `reasonix review` previously read forbid_read
 	// paths a normal session would refuse.
 	writeRoots := cfg.WriteRootsForRoot(root)
-	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	forbidReadRoots := boot.RuntimeForbidReadRoots(cfg, root)
 	guard := builtin.NewSessionDataGuard(config.MemoryUserDir(), cfg.AllowWriteRoots())
 	bashSpec := sandbox.Spec{
 		Mode:            cfg.BashMode(),

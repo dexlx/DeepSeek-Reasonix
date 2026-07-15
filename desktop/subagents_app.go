@@ -394,7 +394,7 @@ func (a *App) CancelTrySubagentProfile() {
 // if the read-only posture is ever relaxed.
 func trySubagentToolRegistry(cfg *config.Config, root string, allowedTools []string) *tool.Registry {
 	writeRoots := cfg.WriteRootsForRoot(root)
-	forbidReadRoots := cfg.ForbidReadRootsForRoot(root)
+	forbidReadRoots := boot.RuntimeForbidReadRoots(cfg, root)
 	bashSpec := sandbox.Spec{
 		Mode:            cfg.BashMode(),
 		WriteRoots:      writeRoots,

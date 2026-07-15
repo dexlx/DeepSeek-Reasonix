@@ -4,6 +4,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 
 	"reasonix/internal/provider"
@@ -47,6 +48,10 @@ var (
 	redactToolOutputEnabled      atomic.Bool
 	filterSubprocessEnvEnabled   atomic.Bool
 	protectSensitiveFilesEnabled atomic.Bool
+	credentialEnvKeys            = struct {
+		sync.RWMutex
+		keys map[string]struct{}
+	}{keys: map[string]struct{}{}}
 )
 
 func init() {
@@ -81,6 +86,32 @@ func SetProtectSensitiveFiles(enabled bool) { protectSensitiveFilesEnabled.Store
 // denylist is active.
 func ProtectSensitiveFiles() bool { return protectSensitiveFilesEnabled.Load() }
 
+// RegisterCredentialEnvKeys permanently marks names whose values came from
+// Reasonix's credential store. Registration is a process-lifetime union so two
+// concurrent workspaces with different custom providers cannot make each
+// other's saved keys visible to tools. Explicit per-tool/plugin env config may
+// still add a value back after ProcessEnv has produced the safe base env.
+func RegisterCredentialEnvKeys(keys []string) {
+	credentialEnvKeys.Lock()
+	defer credentialEnvKeys.Unlock()
+	for _, key := range keys {
+		if key = credentialEnvKey(key); key != "" {
+			credentialEnvKeys.keys[key] = struct{}{}
+		}
+	}
+}
+
+func credentialEnvKey(key string) string {
+	return strings.ToUpper(strings.TrimSpace(key))
+}
+
+func registeredCredentialEnvKey(key string) bool {
+	credentialEnvKeys.RLock()
+	defer credentialEnvKeys.RUnlock()
+	_, ok := credentialEnvKeys.keys[credentialEnvKey(key)]
+	return ok
+}
+
 // EnvKeySensitive reports whether an environment variable name is likely to
 // carry credentials. It intentionally keys off the name, not the value, so child
 // processes do not inherit saved provider secrets when filtering is enabled.
@@ -97,7 +128,7 @@ func FilterEnv(env []string) []string {
 	out := env[:0]
 	for _, item := range env {
 		key, _, ok := strings.Cut(item, "=")
-		if !ok || EnvKeySensitive(key) {
+		if !ok || EnvKeySensitive(key) || registeredCredentialEnvKey(key) {
 			continue
 		}
 		out = append(out, item)
@@ -105,12 +136,25 @@ func FilterEnv(env []string) []string {
 	return out
 }
 
-// ProcessEnv returns the environment for shell/tool subprocesses: the current
-// process environment as-is by default, with credential-like assignments
-// removed when the user opted into [secrets] filter_subprocess_env.
+func filterRegisteredCredentialEnv(env []string) []string {
+	out := env[:0]
+	for _, item := range env {
+		key, _, ok := strings.Cut(item, "=")
+		if !ok || registeredCredentialEnvKey(key) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+// ProcessEnv returns the environment for shell/tool subprocesses. Values loaded
+// from Reasonix's credential store are always removed. Other credential-like
+// inherited variables are removed only when the user opted into [secrets]
+// filter_subprocess_env, preserving existing gh/git/npm workflows by default.
 func ProcessEnv() []string {
 	if !filterSubprocessEnvEnabled.Load() {
-		return os.Environ()
+		return filterRegisteredCredentialEnv(os.Environ())
 	}
 	return FilterEnv(os.Environ())
 }
