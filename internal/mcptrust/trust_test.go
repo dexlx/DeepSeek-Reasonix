@@ -454,3 +454,268 @@ func TestLauncherLocksAreWorkspaceScoped(t *testing.T) {
 		t.Fatalf("cross-workspace launcher lock = %v, %v", ok, err)
 	}
 }
+
+func TestEvaluateOfficialFollowsCurrentSignedAllowlist(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	capA := testCapability("alpha", true, false, `{"type":"object"}`)
+	capB := testCapability("beta", true, false, `{"type":"object"}`)
+	capC := testCapability("gamma", true, false, `{"type":"object"}`)
+	caps := []Capability{capA, capB, capC}
+	identity := "identity"
+	// Catalog sequence N signs alpha and beta as readers; gamma is snapshotted
+	// for drift detection but carries no reader authority.
+	if err := m.TrustOfficial("srv", "official_catalog:srv@1", identity, "srv@1", caps, []string{"alpha", "beta"}); err != nil {
+		t.Fatal(err)
+	}
+	authority := OfficialAuthority{CatalogEntryID: "srv@1", Readers: []string{"alpha", "beta"}}
+	eval, err := m.EvaluateOfficial("srv", "official_catalog:srv@1", identity, caps, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.State != TrustOfficial || !eval.TrustedReaders["alpha"] || !eval.TrustedReaders["beta"] || eval.TrustedReaders["gamma"] {
+		t.Fatalf("sequence N evaluation = %+v", eval)
+	}
+
+	// Sequence N+1 removes beta: it must lose authority immediately with no
+	// receipt rewrite, while alpha stays available.
+	authority.Readers = []string{"alpha"}
+	eval, err = m.EvaluateOfficial("srv", "official_catalog:srv@1", identity, caps, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.State != TrustOfficial || !eval.TrustedReaders["alpha"] || eval.TrustedReaders["beta"] {
+		t.Fatalf("post-revocation evaluation = %+v", eval)
+	}
+
+	// Sequence N+1 also adds gamma: the already-verified snapshot matches and
+	// gamma is a safe reader, so it gains authority without a new receipt.
+	authority.Readers = []string{"alpha", "gamma"}
+	eval, err = m.EvaluateOfficial("srv", "official_catalog:srv@1", identity, caps, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !eval.TrustedReaders["gamma"] || eval.TrustedReaders["beta"] {
+		t.Fatalf("catalog-added reader evaluation = %+v", eval)
+	}
+
+	// A drifted capability cannot be granted through the allowlist alone.
+	drifted := append([]Capability(nil), caps...)
+	drifted[0] = testCapability("alpha", true, false, `{"type":"object","properties":{"q":{"type":"string"}}}`)
+	eval, err = m.EvaluateOfficial("srv", "official_catalog:srv@1", identity, drifted, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.State != TrustChanged || eval.TrustedReaders["alpha"] {
+		t.Fatalf("drifted capability evaluation = %+v", eval)
+	}
+
+	// A destructive flip disqualifies a listed reader even with a fingerprint
+	// recorded at trust time.
+	flipped := append([]Capability(nil), caps...)
+	flipped[2] = testCapability("gamma", true, true, `{"type":"object"}`)
+	eval, err = m.EvaluateOfficial("srv", "official_catalog:srv@1", identity, flipped, authority)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.TrustedReaders["gamma"] {
+		t.Fatalf("destructive reader kept authority: %+v", eval)
+	}
+}
+
+func TestEvaluateOfficialRejectsForeignCatalogEntry(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	caps := []Capability{testCapability("alpha", true, false, `{"type":"object"}`)}
+	if err := m.TrustOfficial("srv", "official_catalog:srv@1", "identity", "srv@1", caps, []string{"alpha"}); err != nil {
+		t.Fatal(err)
+	}
+	eval, err := m.EvaluateOfficial("srv", "official_catalog:srv@1", "identity", caps, OfficialAuthority{CatalogEntryID: "srv@2", Readers: []string{"alpha"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.State != TrustUntrusted || len(eval.TrustedReaders) != 0 {
+		t.Fatalf("foreign catalog entry gained authority: %+v", eval)
+	}
+}
+
+func TestCapabilityFingerprintPreservesDependentConstraintContainers(t *testing.T) {
+	base := testCapability("write", false, false, `{
+		"type":"object",
+		"dependentRequired":{"title":["description"],"credit_card":["billing"]},
+		"dependencies":{
+			"examples":["title"],
+			"description":{"type":"object","title":"Display only","required":["reason"]}
+		}
+	}`)
+	af, err := CapabilityFingerprint(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Pure annotation churn inside a schema-form dependency must not move the
+	// fingerprint, and constraint keys named like annotations must survive.
+	annotated := base
+	annotated.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"dependentRequired":{"title":["description"],"credit_card":["billing"]},
+		"dependencies":{
+			"examples":["title"],
+			"description":{"type":"object","title":"Renamed label","required":["reason"]}
+		}
+	}`)
+	bf, err := CapabilityFingerprint(annotated)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if af != bf {
+		t.Fatalf("annotation-only dependency change altered fingerprint")
+	}
+
+	// Dropping one required name from a constraint list is a structural change.
+	constrained := base
+	constrained.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"dependentRequired":{"title":[],"credit_card":["billing"]},
+		"dependencies":{
+			"examples":["title"],
+			"description":{"type":"object","title":"Display only","required":["reason"]}
+		}
+	}`)
+	cf, err := CapabilityFingerprint(constrained)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if af == cf {
+		t.Fatal("dependentRequired constraint change did not alter fingerprint")
+	}
+
+	// Removing the array-form dependency keyed by an annotation-like name is a
+	// structural change too: the key must not have been stripped.
+	removed := base
+	removed.InputSchema = json.RawMessage(`{
+		"type":"object",
+		"dependentRequired":{"title":["description"],"credit_card":["billing"]},
+		"dependencies":{
+			"description":{"type":"object","title":"Display only","required":["reason"]}
+		}
+	}`)
+	rf, err := CapabilityFingerprint(removed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if af == rf {
+		t.Fatal("dependencies entry removal did not alter fingerprint")
+	}
+}
+
+func TestReceiptDedupPrefersExplicitUserOverLegacyImport(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	caps := []Capability{testCapability("read", true, false, `{"type":"object"}`)}
+
+	// Legacy import first, then an explicit user decision: user replaces legacy.
+	if err := m.Trust(ScopeWorkspace, SourceLegacyImport, "srv", "workspace_config", "identity", "", caps); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.Trust(ScopeWorkspace, SourceUser, "srv", "workspace_config", "identity", "", caps); err != nil {
+		t.Fatal(err)
+	}
+	state, err := m.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Receipts) != 1 || state.Receipts[0].Source != SourceUser {
+		t.Fatalf("user decision did not replace legacy import: %+v", state.Receipts)
+	}
+
+	// A later legacy import must not overwrite the explicit user receipt.
+	if err := m.Trust(ScopeWorkspace, SourceLegacyImport, "srv", "workspace_config", "other-identity", "", caps); err != nil {
+		t.Fatal(err)
+	}
+	state, err = m.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(state.Receipts) != 1 || state.Receipts[0].Source != SourceUser || state.Receipts[0].IdentityFingerprint != "identity" {
+		t.Fatalf("legacy import overwrote user receipt: %+v", state.Receipts)
+	}
+}
+
+func TestLoadNormalizesPreexistingDuplicateReceipts(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	workspaceFP := m.WorkspaceFingerprint()
+	older := time.Now().Add(-time.Hour).UTC()
+	newer := time.Now().UTC()
+	state := State{
+		Version: StoreVersion,
+		Receipts: []Receipt{
+			{Scope: ScopeWorkspace, WorkspaceFingerprint: workspaceFP, Server: "srv", ConfigSource: "workspace_config", IdentityFingerprint: "legacy-fp", Source: SourceLegacyImport, CreatedAt: older, LastVerifiedAt: newer},
+			{Scope: ScopeWorkspace, WorkspaceFingerprint: workspaceFP, Server: "srv", ConfigSource: "workspace_config", IdentityFingerprint: "user-fp", Source: SourceUser, CreatedAt: older, LastVerifiedAt: older},
+			{Scope: ScopeWorkspace, WorkspaceFingerprint: workspaceFP, Server: "other", ConfigSource: "workspace_config", IdentityFingerprint: "stale", Source: SourceUser, CreatedAt: older, LastVerifiedAt: older},
+			{Scope: ScopeWorkspace, WorkspaceFingerprint: workspaceFP, Server: "other", ConfigSource: "workspace_config", IdentityFingerprint: "fresh", Source: SourceUser, CreatedAt: older, LastVerifiedAt: newer},
+		},
+	}
+	body, err := json.MarshalIndent(state, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, body, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := m.Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(loaded.Receipts) != 2 {
+		t.Fatalf("duplicate receipts survived normalization: %+v", loaded.Receipts)
+	}
+	for _, receipt := range loaded.Receipts {
+		switch receipt.Server {
+		case "srv":
+			if receipt.Source != SourceUser || receipt.IdentityFingerprint != "user-fp" {
+				t.Fatalf("srv slot did not keep the explicit user receipt: %+v", receipt)
+			}
+		case "other":
+			if receipt.IdentityFingerprint != "fresh" {
+				t.Fatalf("other slot did not keep the most recently verified receipt: %+v", receipt)
+			}
+		}
+	}
+}
+
+func TestMigrateIdentityFingerprintRequiresExactMatchAndNoDrift(t *testing.T) {
+	path := filepath.Join(t.TempDir(), StateFilename)
+	m := NewManager(path, "/workspace")
+	caps := []Capability{testCapability("read", true, false, `{"type":"object"}`)}
+	if err := m.Trust(ScopeWorkspace, SourceUser, "srv", "workspace_config", "legacy-fp", "", caps); err != nil {
+		t.Fatal(err)
+	}
+
+	// Wrong legacy fingerprint: nothing migrates.
+	migrated, err := m.MigrateIdentityFingerprint("srv", "workspace_config", "unrelated-fp", "new-fp", caps)
+	if err != nil || migrated {
+		t.Fatalf("migrate with wrong legacy fingerprint = (%v,%v)", migrated, err)
+	}
+
+	// Capability drift blocks migration.
+	drifted := []Capability{testCapability("read", true, false, `{"type":"object","properties":{"q":{"type":"string"}}}`)}
+	migrated, err = m.MigrateIdentityFingerprint("srv", "workspace_config", "legacy-fp", "new-fp", drifted)
+	if err != nil || migrated {
+		t.Fatalf("migrate with drifted capabilities = (%v,%v)", migrated, err)
+	}
+
+	// Exact legacy fingerprint and unchanged capabilities migrate atomically.
+	migrated, err = m.MigrateIdentityFingerprint("srv", "workspace_config", "legacy-fp", "new-fp", caps)
+	if err != nil || !migrated {
+		t.Fatalf("migrate = (%v,%v), want (true,nil)", migrated, err)
+	}
+	eval, err := m.Evaluate("srv", "workspace_config", "new-fp", caps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if eval.State != TrustWorkspace || !eval.TrustedReaders["read"] {
+		t.Fatalf("post-migration evaluation = %+v", eval)
+	}
+}

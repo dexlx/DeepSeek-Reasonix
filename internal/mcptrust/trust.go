@@ -548,7 +548,32 @@ func (m *Manager) IdentityChanged(server, configSource, identityFingerprint stri
 	return true, receipt.IdentityFingerprint != identityFingerprint, nil
 }
 
+// OfficialAuthority is the signed catalog's live reader policy for one entry.
+// It is evaluation-time input only: the stored receipt keeps the identity and
+// capability drift snapshot, while the current signed allowlist decides which
+// unchanged capabilities act as trusted readers. Receipts therefore never gain
+// authority the current catalog no longer signs.
+type OfficialAuthority struct {
+	CatalogEntryID string
+	Readers        []string
+}
+
 func (m *Manager) Evaluate(server, configSource, identityFingerprint string, capabilities []Capability) (Evaluation, error) {
+	return m.evaluate(server, configSource, identityFingerprint, capabilities, nil)
+}
+
+// EvaluateOfficial evaluates an official catalog server against both its
+// receipt snapshot and the current signed reader allowlist. A reader removed
+// from the catalog loses authority immediately; a newly listed reader is
+// granted only when its already-verified capability snapshot still matches and
+// it remains a non-destructive reader. Every caller that can execute official
+// tools — the live handshake and the schema-cache preflight alike — must use
+// this entry point instead of Evaluate.
+func (m *Manager) EvaluateOfficial(server, configSource, identityFingerprint string, capabilities []Capability, authority OfficialAuthority) (Evaluation, error) {
+	return m.evaluate(server, configSource, identityFingerprint, capabilities, &authority)
+}
+
+func (m *Manager) evaluate(server, configSource, identityFingerprint string, capabilities []Capability, authority *OfficialAuthority) (Evaluation, error) {
 	eval := Evaluation{State: TrustUntrusted, TrustedReaders: map[string]bool{}}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -562,6 +587,20 @@ func (m *Manager) Evaluate(server, configSource, identityFingerprint string, cap
 		return eval, nil
 	}
 	eval.Source, eval.Scope = receipt.Source, receipt.Scope
+	var officialReaders map[string]bool
+	if authority != nil && receipt.Source == SourceOfficialCatalog {
+		if receipt.CatalogEntryID != strings.TrimSpace(authority.CatalogEntryID) {
+			// The receipt was issued by a different catalog entry. Nothing in it
+			// may grant authority for the current entry.
+			return eval, nil
+		}
+		officialReaders = make(map[string]bool, len(authority.Readers))
+		for _, name := range authority.Readers {
+			if name = strings.TrimSpace(name); name != "" {
+				officialReaders[name] = true
+			}
+		}
+	}
 	if receipt.IdentityFingerprint != identityFingerprint {
 		eval.State = TrustChanged
 		eval.IdentityChanged = true
@@ -586,7 +625,14 @@ func (m *Manager) Evaluate(server, configSource, identityFingerprint string, cap
 			eval.ToolChanges = append(eval.ToolChanges, ToolChange{Name: saved.RawName, Kind: toolChangeKind(saved, cap)})
 			continue
 		}
-		if saved.TrustedReader && cap.ReadOnly && !cap.Destructive {
+		trustedReader := saved.TrustedReader
+		if officialReaders != nil {
+			// The live signed allowlist is the sole reader authority for
+			// unchanged official capabilities; the receipt's historical flag is
+			// only a drift snapshot.
+			trustedReader = officialReaders[saved.RawName]
+		}
+		if trustedReader && cap.ReadOnly && !cap.Destructive {
 			eval.TrustedReaders[saved.RawName] = true
 		}
 	}
@@ -608,6 +654,91 @@ func (m *Manager) Evaluate(server, configSource, identityFingerprint string, cap
 		eval.State = TrustChanged
 	}
 	return eval, nil
+}
+
+// MigrateIdentityFingerprint atomically rewrites receipts whose identity is
+// exactly legacyFingerprint to currentFingerprint, for one server and config
+// source. It refuses when any live capability drifted from the receipt
+// snapshot, so a migration can never widen trust, and it compares digests
+// only — URLs and credential values are never read or persisted here. This
+// keeps credential rotation and the credential-aware URL normalization rollout
+// from demanding a redundant re-trust. Remove together with the legacy URL
+// fingerprint calculator (see docs/MIGRATING.md).
+func (m *Manager) MigrateIdentityFingerprint(server, configSource, legacyFingerprint, currentFingerprint string, capabilities []Capability) (bool, error) {
+	server = strings.TrimSpace(server)
+	configSource = strings.TrimSpace(configSource)
+	legacyFingerprint = strings.TrimSpace(legacyFingerprint)
+	currentFingerprint = strings.TrimSpace(currentFingerprint)
+	if server == "" || legacyFingerprint == "" || currentFingerprint == "" || legacyFingerprint == currentFingerprint {
+		return false, nil
+	}
+	upgrade := func(receipts []Receipt) bool {
+		changed := false
+		for i := range receipts {
+			r := &receipts[i]
+			if r.Server != server || r.ConfigSource != configSource {
+				continue
+			}
+			if r.Scope != ScopeGlobal && r.WorkspaceFingerprint != m.workspaceFingerprint {
+				continue
+			}
+			if r.IdentityFingerprint != legacyFingerprint || receiptCapabilitiesChanged(*r, capabilities) {
+				continue
+			}
+			r.IdentityFingerprint = currentFingerprint
+			r.LastVerifiedAt = time.Now().UTC()
+			changed = true
+		}
+		return changed
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	migrated := upgrade(m.session)
+	if strings.TrimSpace(m.path) != "" {
+		state, err := m.Load()
+		if err != nil {
+			return migrated, err
+		}
+		if upgrade(state.Receipts) {
+			persisted := false
+			if err := m.updatePersistent(func(state *State) {
+				persisted = upgrade(state.Receipts)
+			}); err != nil {
+				return migrated, err
+			}
+			migrated = migrated || persisted
+		}
+	}
+	return migrated, nil
+}
+
+// receiptCapabilitiesChanged is the boolean twin of Evaluate's drift
+// comparison: any fingerprint/safety change or newly added tool counts as
+// drift, while a removed tool does not.
+func receiptCapabilitiesChanged(receipt Receipt, capabilities []Capability) bool {
+	live := make(map[string]Capability, len(capabilities))
+	for _, cap := range capabilities {
+		live[cap.RawName] = cap
+	}
+	for _, saved := range receipt.Tools {
+		cap, exists := live[saved.RawName]
+		if !exists {
+			continue
+		}
+		fp, err := CapabilityFingerprint(cap)
+		if err != nil {
+			return true
+		}
+		if saved.Fingerprint != fp || saved.ReadOnly != cap.ReadOnly || saved.Destructive != cap.Destructive {
+			return true
+		}
+	}
+	for _, cap := range capabilities {
+		if _, ok := findToolReceipt(receipt.Tools, cap.RawName); !ok {
+			return true
+		}
+	}
+	return false
 }
 
 func toolChangeKind(saved ToolReceipt, live Capability) string {
@@ -703,8 +834,12 @@ func stripDisplayFields(value any) {
 			// names. Recurse into their values, not the container itself: deleting
 			// a key named "title" from properties would erase a real argument from
 			// the security fingerprint rather than a display-only annotation.
+			// dependentRequired maps property names to name arrays and the legacy
+			// dependencies keyword maps them to either a schema or a name array;
+			// both forms keep their keys and constraint lists verbatim while
+			// schema-form values still shed their display-only annotations.
 			switch key {
-			case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas":
+			case "properties", "patternProperties", "$defs", "definitions", "dependentSchemas", "dependentRequired", "dependencies":
 				if named, ok := child.(map[string]any); ok {
 					for _, schema := range named {
 						stripDisplayFields(schema)
@@ -725,6 +860,7 @@ func normalizeState(state *State) {
 	if state.Version == 0 {
 		state.Version = StoreVersion
 	}
+	state.Receipts = dedupeReceipts(state.Receipts)
 	for i := range state.Receipts {
 		r := &state.Receipts[i]
 		sort.Slice(r.Tools, func(i, j int) bool { return r.Tools[i].RawName < r.Tools[j].RawName })
@@ -753,12 +889,49 @@ func normalizeState(state *State) {
 func upsertReceipt(receipts []Receipt, receipt Receipt) []Receipt {
 	for i := range receipts {
 		if sameReceiptKey(receipts[i], receipt) {
+			// A legacy import must never overwrite an explicit user decision;
+			// the reverse replacement is deliberate.
+			if receiptSourceRank(receipt.Source) < receiptSourceRank(receipts[i].Source) {
+				return receipts
+			}
 			receipt.CreatedAt = receipts[i].CreatedAt
 			receipts[i] = receipt
 			return receipts
 		}
 	}
 	return append(receipts, receipt)
+}
+
+// dedupeReceipts collapses states written before Source left the receipt key:
+// one decision slot keeps the explicit user receipt over a legacy import, and
+// within one source the most recently verified receipt. It runs on every load
+// so old duplicated states normalize without a store-version bump.
+func dedupeReceipts(receipts []Receipt) []Receipt {
+	out := receipts[:0]
+	for _, receipt := range receipts {
+		merged := false
+		for i := range out {
+			if !sameReceiptKey(out[i], receipt) {
+				continue
+			}
+			if betterReceipt(receipt, out[i]) {
+				out[i] = receipt
+			}
+			merged = true
+			break
+		}
+		if !merged {
+			out = append(out, receipt)
+		}
+	}
+	return out
+}
+
+func betterReceipt(a, b Receipt) bool {
+	if ra, rb := receiptSourceRank(a.Source), receiptSourceRank(b.Source); ra != rb {
+		return ra > rb
+	}
+	return a.LastVerifiedAt.After(b.LastVerifiedAt)
 }
 
 func removeReceipts(receipts []Receipt, server, workspaceFP string) []Receipt {
@@ -827,8 +1000,21 @@ func findToolReceipt(tools []ToolReceipt, rawName string) (ToolReceipt, bool) {
 	return ToolReceipt{}, false
 }
 
+// sameReceiptKey identifies one workspace trust decision. Source is
+// deliberately not part of the key: an explicit user receipt and a legacy
+// import for the same scope/workspace/server/config source describe the same
+// decision and must not coexist.
 func sameReceiptKey(a, b Receipt) bool {
-	return a.Scope == b.Scope && a.WorkspaceFingerprint == b.WorkspaceFingerprint && a.Server == b.Server && a.ConfigSource == b.ConfigSource && a.Source == b.Source
+	return a.Scope == b.Scope && a.WorkspaceFingerprint == b.WorkspaceFingerprint && a.Server == b.Server && a.ConfigSource == b.ConfigSource
+}
+
+// receiptSourceRank orders receipt sources for one decision slot: an explicit
+// user (or signed catalog) receipt always outranks a legacy import.
+func receiptSourceRank(source Source) int {
+	if source == SourceLegacyImport {
+		return 1
+	}
+	return 2
 }
 
 func validScope(scope Scope) bool {
