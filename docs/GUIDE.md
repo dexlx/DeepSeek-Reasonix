@@ -905,6 +905,34 @@ with `connect_tool_source(source="read_only_skill")` when that isolation is
 required; loading the full `skills` source in Plan is allowed, and subsequent
 writer calls still pass through Permissions/Sandbox.
 
+Every strict read-only child is built through one construction boundary
+(`RunReadOnlySubAgentWithSession`): it marks the child permanently read-only
+and applies a final registry filter that removes writers, destructive MCP
+targets, externally self-reported but untrusted readers, and anything that
+would start or mutate a host capability. These are the strict read-only
+entrances:
+
+| Entrance | Purpose |
+| --- | --- |
+| `read_only_task` | Isolated read-only research child from the main session |
+| `parallel_tasks` (read-only) | Concurrent read-only research children |
+| `read_only_skill` | The same isolation driving an existing skill |
+| `reasonix review` (CLI) | Read-only review of a diff or branch |
+| Desktop preview/review subagents | Read-only desktop analysis surfaces |
+| Two-model planner | The dedicated planner's read-only registry |
+
+Inside a strict child, `use_capability` re-checks the resolved target before
+commit/permission/hooks/execution, an unconnected trusted MCP reader may start
+on demand only while its receipt, identity, and cached capability fingerprint
+all match (the child can never create, upgrade, or re-verify trust), and any
+live drift detected after initialize/tools-list means zero executions with a
+hand-back to the parent for re-verification. `auto_review` cannot raise
+privileges there; a reader that would need a local prompt fails closed. This
+is a stricter layer than the main Plan workflow: Plan blocks MCP
+writer/destructive targets until approval while built-in writers keep
+Permissions/Sandbox, whereas a strict read-only child never exposes writers at
+all.
+
 Choose the startup runtime profile with
 `--profile economy|balanced|delivery` (for example, `reasonix run --profile
 delivery "fix and verify this bug"`). Economy starts with nine tools: direct
