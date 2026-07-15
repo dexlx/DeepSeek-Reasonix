@@ -701,7 +701,7 @@ func TestCompleteStepPendingHintNamesActiveSubStep(t *testing.T) {
 		ToolName: "todo_write",
 		Success:  true,
 		Todos: []evidence.TodoItem{
-			{Content: "Port the parser", Status: "in_progress"},
+			{Content: "Port the parser", Status: "pending"},
 			{Content: "move files", Status: "in_progress", Level: 1},
 			{Content: "fix imports", Status: "pending", Level: 1},
 		},

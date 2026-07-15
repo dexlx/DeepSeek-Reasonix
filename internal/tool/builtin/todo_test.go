@@ -11,8 +11,8 @@ import (
 
 func TestTodoWriteAcceptsLevels(t *testing.T) {
 	args := json.RawMessage(`{"todos":[` +
-		`{"content":"Phase","status":"in_progress","level":0},` +
-		`{"content":"sub","status":"pending","level":1}]}`)
+		`{"content":"Phase","status":"pending","level":0},` +
+		`{"content":"sub","status":"in_progress","level":1}]}`)
 	if _, err := (todoWrite{}).Execute(context.Background(), args); err != nil {
 		t.Fatalf("levels 0/1 should be accepted: %v", err)
 	}
@@ -342,21 +342,22 @@ func TestTodoWriteAcceptsPhaseChainProgress(t *testing.T) {
 		ToolName: "todo_write",
 		Success:  true,
 		Todos: []evidence.TodoItem{
-			{Content: "Port the parser", Status: "in_progress"},
-			{Content: "move files", Status: "pending", Level: 1},
+			{Content: "Port the parser", Status: "pending"},
+			{Content: "move files", Status: "in_progress", Level: 1},
 			{Content: "fix imports", Status: "pending", Level: 1},
 		},
 	})
 	ctx := evidence.WithLedger(context.Background(), ledger)
 
 	out, err := (todoWrite{}).Execute(ctx, json.RawMessage(`{"todos":[
-		{"content":"Port the parser","status":"in_progress"},
+		{"content":"Port the parser","status":"pending"},
 		{"content":"move files","status":"in_progress","level":1},
-		{"content":"fix imports","status":"pending","level":1}]}`))
+		{"content":"fix imports","status":"pending","level":1},
+		{"content":"update docs","status":"pending","level":1}]}`))
 	if err != nil {
-		t.Fatalf("starting a sub-step under the current phase should be accepted: %v", err)
+		t.Fatalf("narrowing work under the current phase should be accepted: %v", err)
 	}
-	if !strings.Contains(out, "1 in progress") && !strings.Contains(out, "in progress") {
+	if !strings.Contains(out, "in progress") {
 		t.Fatalf("unexpected todo_write output: %q", out)
 	}
 }
@@ -370,13 +371,31 @@ func TestTodoWriteRejectsPhaseCompletedBeforeSubSteps(t *testing.T) {
 	}
 }
 
+func TestTodoWriteRejectsPhaseInProgressBeforeSubSteps(t *testing.T) {
+	_, err := (todoWrite{}).Execute(context.Background(), json.RawMessage(`{"todos":[
+		{"content":"Port the parser","status":"in_progress"},
+		{"content":"move files","status":"pending","level":1}]}`))
+	if err == nil || !strings.Contains(err.Error(), "cannot be in_progress while sub-step") {
+		t.Fatalf("phase in_progress before its sub-steps finish should be rejected: %v", err)
+	}
+}
+
+func TestTodoWriteRejectsOrphanSubStep(t *testing.T) {
+	_, err := (todoWrite{}).Execute(context.Background(), json.RawMessage(`{"todos":[
+		{"content":"move files","status":"in_progress","level":1},
+		{"content":"Port the parser","status":"pending"}]}`))
+	if err == nil || !strings.Contains(err.Error(), "no phase above it") {
+		t.Fatalf("a level-1 sub-step with no phase should be rejected: %v", err)
+	}
+}
+
 func TestTodoWriteRejectsDroppingActiveSubStep(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.Receipt{
 		ToolName: "todo_write",
 		Success:  true,
 		Todos: []evidence.TodoItem{
-			{Content: "Port the parser", Status: "in_progress"},
+			{Content: "Port the parser", Status: "pending"},
 			{Content: "move files", Status: "in_progress", Level: 1},
 			{Content: "fix imports", Status: "pending", Level: 1},
 		},
@@ -384,7 +403,7 @@ func TestTodoWriteRejectsDroppingActiveSubStep(t *testing.T) {
 	ctx := evidence.WithLedger(context.Background(), ledger)
 
 	_, err := (todoWrite{}).Execute(ctx, json.RawMessage(`{"todos":[
-		{"content":"Port the parser","status":"in_progress"},
+		{"content":"Port the parser","status":"pending"},
 		{"content":"rewrite everything","status":"in_progress","level":1}]}`))
 	if err == nil || !strings.Contains(err.Error(), "cannot be removed or replaced") {
 		t.Fatalf("dropping the active sub-step should be rejected: %v", err)
