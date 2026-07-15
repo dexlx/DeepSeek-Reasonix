@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -130,7 +131,49 @@ func bwrapArgsForArgs(spec Spec, args []string) []string {
 	for _, root := range spec.ForbidReadRoots {
 		out = append(out, "--tmpfs", root)
 	}
+	// /tmp is intentionally replaced with an empty filesystem above so MCP
+	// servers cannot inspect unrelated host temporary files. A configured
+	// executable may itself live below /tmp, though (for example a downloaded
+	// one-shot launcher or a Go test helper). Re-expose only that exact file,
+	// read-only, after every masking mount so the process can start without
+	// revealing its siblings.
+	out = append(out, bwrapExecutableMountArgs(args)...)
 	return append(out, args...)
+}
+
+func bwrapExecutableMountArgs(args []string) []string {
+	if len(args) == 0 {
+		return nil
+	}
+	destination := filepath.Clean(args[0])
+	if !filepath.IsAbs(destination) || !pathWithin(destination, "/tmp") {
+		return nil
+	}
+	source := destination
+	if resolved, err := filepath.EvalSymlinks(destination); err == nil {
+		source = resolved
+	}
+
+	parent := filepath.Dir(destination)
+	rel, err := filepath.Rel("/tmp", parent)
+	if err != nil {
+		return nil
+	}
+	out := make([]string, 0, 2*strings.Count(rel, string(filepath.Separator))+4)
+	current := "/tmp"
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		out = append(out, "--dir", current)
+	}
+	return append(out, "--ro-bind", source, destination)
+}
+
+func pathWithin(path, root string) bool {
+	rel, err := filepath.Rel(root, path)
+	return err == nil && rel != "." && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 func linuxWriteDirs() []string {
