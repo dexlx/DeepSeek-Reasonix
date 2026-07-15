@@ -322,7 +322,8 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
   host enforces explicit phase opt-outs (`complete_step` is read-only but
   belongs to the post-approval execution phase, so it self-reports plan-unsafe
   and is refused) and hard-blocks installed MCP and proxy-resolved MCP
-  writer/destructive targets plus untrusted readers until the plan is approved.
+  writer/destructive targets plus untrusted readers for the entire planning
+  phase — no approval releases them while Plan is active.
   Ordinary built-in and Bash calls then use the same Ask/Auto/YOLO, explicit
   `ask`/`deny`, and Sandbox path as Standard mode; blocked MCP writers regain
   their normal approval flow after Plan exits. A third-party MCP `readOnlyHint` affects ordinary permission and dispatch

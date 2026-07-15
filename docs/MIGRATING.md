@@ -109,8 +109,8 @@ and DeepSeek prefix-cache–oriented design.
 - **Plan mode and permission policy are now independent**: Plan directs the
   model to plan first. Ordinary built-in and Bash calls still use the active
   Ask/Auto/YOLO rules and Sandbox, while installed MCP and proxy-resolved MCP
-  writer/destructive targets plus untrusted readers stay blocked until the plan
-  is approved. Explicit execution-phase tools such as `complete_step` also
+  writer/destructive targets plus untrusted readers stay hard-blocked for the
+  whole planning phase. Explicit execution-phase tools such as `complete_step` also
   remain unavailable until plan approval. `[agent].plan_mode_allowed_tools` and
   `plan_mode_read_only_commands` are still parsed and round-tripped so old
   configs do not break, but they no longer control main Plan availability.

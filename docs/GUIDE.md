@@ -393,7 +393,7 @@ Composer shortcuts:
 | --- | --- | --- |
 | `Enter` | Sends the current message | IME composition confirmation is left alone. |
 | `Shift+Enter` | Inserts a newline | The composer keeps focus. |
-| `Shift+Tab` | Toggles Plan on/off | Plan changes the workflow instruction; built-in writers keep the active Ask/Auto/YOLO and Sandbox boundary, while MCP writer/destructive targets stay blocked until the plan is approved. |
+| `Shift+Tab` | Toggles Plan on/off | Plan changes the workflow instruction; built-in writers keep the active Ask/Auto/YOLO and Sandbox boundary, while MCP writer/destructive targets stay hard-blocked for the whole planning phase. |
 | `Cmd+Y` / `Ctrl+Y` | Toggles YOLO on/off | Turning YOLO off restores the previous Ask/Auto base when known. |
 | `Cmd+V` on macOS, `Ctrl+V` on Windows/Linux | Pastes clipboard content | Clipboard images are attached; images can also be dropped into the composer. |
 | Plain `Up` / `Down` at the prompt boundary | Recalls older or newer submitted prompts | Modified arrows and native text navigation stay with the textarea. |
@@ -467,7 +467,7 @@ Mode meanings:
 | Ask | Prompts for fallback writer approvals. |
 | Auto | Auto-allows fallback approvals; explicit `ask` / `deny` rules still apply. |
 | YOLO | Skips ordinary tool approval prompts; `deny`, user `ask` questions, and plan approval prompts still wait. |
-| Plan | Directs the model to plan first — a plan-first workflow, not an all-tools read-only mode. Built-in writers still follow the active Ask/Auto/YOLO rules and Sandbox; installed MCP writers, destructive targets, and untrusted readers are blocked before approval, and explicit phase-only tools such as `complete_step` wait until approval. |
+| Plan | Directs the model to plan first — a plan-first workflow, not an all-tools read-only mode. Built-in writers still follow the active Ask/Auto/YOLO rules and Sandbox; installed MCP writers, destructive targets, and untrusted readers are hard-blocked for the whole planning phase (approval cannot release them; they return once Plan exits), and explicit phase-only tools such as `complete_step` wait until approval. |
 | Goal | Pursues a saved objective until complete, blocked, or cleared. |
 
 ## Permissions & sandbox
@@ -905,12 +905,16 @@ with `connect_tool_source(source="read_only_skill")` when that isolation is
 required; loading the full `skills` source in Plan is allowed, and subsequent
 writer calls still pass through Permissions/Sandbox.
 
-Every strict read-only child is built through one construction boundary
-(`RunReadOnlySubAgentWithSession`): it marks the child permanently read-only
-and applies a final registry filter that removes writers, destructive MCP
-targets, externally self-reported but untrusted readers, and anything that
-would start or mutate a host capability. These are the strict read-only
-entrances:
+Every strict read-only child is built through one shared construction
+pairing — `RunReadOnlySubAgentWithSession` for batch children and
+`NewReadOnlyAgent` for the interactive two-model planner — which marks the
+child permanently read-only and applies a final registry filter. The filter
+removes writers, destructive MCP targets, externally self-reported but
+untrusted readers, MCP readers with no positive trust authority (a receipt
+store must stand behind the classification, never a server hint), and every
+host-mutating tool. Host-starting targets are removed too unless they are
+receipt-matched trusted readers, which may still start on demand. These are
+the strict read-only entrances:
 
 | Entrance | Purpose |
 | --- | --- |
@@ -928,8 +932,9 @@ all match (the child can never create, upgrade, or re-verify trust), and any
 live drift detected after initialize/tools-list means zero executions with a
 hand-back to the parent for re-verification. `auto_review` cannot raise
 privileges there; a reader that would need a local prompt fails closed. This
-is a stricter layer than the main Plan workflow: Plan blocks MCP
-writer/destructive targets until approval while built-in writers keep
+is a stricter layer than the main Plan workflow: Plan hard-blocks MCP
+writer/destructive targets for the entire planning phase — no approval can
+release them until Plan exits — while built-in writers keep
 Permissions/Sandbox, whereas a strict read-only child never exposes writers at
 all.
 
