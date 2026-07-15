@@ -2526,23 +2526,12 @@ func (a *Agent) systemPrompt() string {
 // parallelised. The second return carries each call's tool-result images (nil
 // for most calls), aligned by index with the first.
 func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]string, [][]string) {
+	// The assistant message already stored this slice in Session. Keep execution
+	// state separate so refreshing a dependent preview never mutates shared
+	// session memory outside Session's lock.
+	calls = append([]provider.ToolCall(nil), calls...)
 	for _, c := range calls {
-		t, ok := a.tools.Get(c.Name)
-		ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly()}
-		ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
-		if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
-			if ch, ok := tool.PreviewChange(t, json.RawMessage(c.Arguments)); ok {
-				ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
-			}
-		}
-		if ok {
-			if pr, ok := t.(interface {
-				ResolveProfile(json.RawMessage) *event.Profile
-			}); ok {
-				ev.Profile = pr.ResolveProfile(json.RawMessage(c.Arguments))
-			}
-		}
-		a.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: ev})
+		a.emitFullToolDispatch(c, false)
 	}
 
 	results := make([]string, len(calls))
@@ -2556,7 +2545,22 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 	if a.evidence != nil {
 		receiptMark = a.evidence.Len()
 	}
+	// Full dispatches are prepared against the batch's initial file state. After
+	// one writer runs, a dependent later writer may only become previewable (or
+	// its original preview may become stale). Refresh even after a failed writer:
+	// commands and filesystem calls can mutate disk before reporting an error.
+	// The first writer stays on the single-preview fast path.
+	earlierWriterRan := false
 	run := func(i int) {
+		t, known := a.tools.Get(calls[i].Name)
+		writer := known && !t.ReadOnly()
+		if earlierWriterRan && writer {
+			if refreshed, changed := refreshCurrentFileDiff(t, calls[i]); changed {
+				calls[i] = refreshed
+				a.session.UpdateToolCallPreview(refreshed)
+				a.emitFullToolDispatch(refreshed, true)
+			}
+		}
 		start := time.Now()
 		if calls[i].Name == "complete_step" && completedStepInBatch {
 			output := "blocked: only one successful complete_step is allowed per tool-call round. Continue from the newly promoted in_progress todo in the next round instead of batching sign-offs."
@@ -2574,6 +2578,9 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 		}
 		durations[i] = time.Since(start).Milliseconds()
 		results[i] = outcomes[i].output
+		if writer {
+			earlierWriterRan = true
+		}
 	}
 	cancelled := false
 	markCancelled := func(start int) {
@@ -2671,6 +2678,47 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 		images[i] = outcomes[i].images
 	}
 	return results, images
+}
+
+func (a *Agent) emitFullToolDispatch(c provider.ToolCall, refreshed bool) {
+	t, ok := a.tools.Get(c.Name)
+	ev := event.Tool{ID: c.ID, Name: c.Name, Args: c.Arguments, ReadOnly: ok && t.ReadOnly(), Refreshed: refreshed}
+	ev.FileDiff = event.FileDiff{Diff: c.Diff, Added: c.Added, Removed: c.Removed}
+	if ok && ev.Diff == "" && ev.Added == 0 && ev.Removed == 0 {
+		if ch, ok := tool.PreviewChange(t, json.RawMessage(c.Arguments)); ok {
+			ev.FileDiff = event.FileDiff{Diff: ch.Diff, Added: ch.Added, Removed: ch.Removed}
+		}
+	}
+	if ok {
+		if pr, ok := t.(interface {
+			ResolveProfile(json.RawMessage) *event.Profile
+		}); ok {
+			ev.Profile = pr.ResolveProfile(json.RawMessage(c.Arguments))
+		}
+	}
+	a.sink.Emit(event.Event{Kind: event.ToolDispatch, Tool: ev})
+}
+
+// refreshCurrentFileDiff recomputes a writer preview against the state left by
+// earlier successful writers in the same provider batch. Preview failures clear
+// any stale initial diff; a later Execute will then fail or ask for recovery
+// without presenting the user with a preview that no longer describes disk.
+func refreshCurrentFileDiff(t tool.Tool, call provider.ToolCall) (provider.ToolCall, bool) {
+	pv, ok := t.(tool.Previewer)
+	if !ok {
+		return call, false
+	}
+	refreshed := call
+	refreshed.Diff = ""
+	refreshed.Added = 0
+	refreshed.Removed = 0
+	if change, err := pv.Preview(json.RawMessage(call.Arguments)); err == nil {
+		refreshed.Diff = change.Diff
+		refreshed.Added = change.Added
+		refreshed.Removed = change.Removed
+	}
+	changed := refreshed.Diff != call.Diff || refreshed.Added != call.Added || refreshed.Removed != call.Removed
+	return refreshed, changed
 }
 
 func (a *Agent) withPreviewFileDiffs(calls []provider.ToolCall) []provider.ToolCall {
@@ -3402,13 +3450,18 @@ func (a *Agent) staleAnchorEditBlock(call provider.ToolCall) (string, bool) {
 		return "", false
 	}
 	return fmt.Sprintf(
-		"blocked: [fresh read required] %q targets %s, which was already modified earlier this turn. Re-read the current file with read_file without offset/limit before another anchor-based edit, or combine the final same-file changes in one multi_edit call. This prevents stale old_string anchors and half-deleted ranges.",
+		"blocked: [fresh read required] %q targets %s, which was already modified earlier this turn. Re-read the current file with read_file without offset/limit before another range deletion, or use multi_edit with exact replacements when possible. This prevents stale start/end anchors from selecting an unintended destructive span.",
 		call.Name, strings.Join(rec.Paths, ", ")), true
 }
 
 func anchorBasedEditTool(name string) bool {
 	switch name {
-	case "edit_file", "delete_range":
+	// edit_file synchronously reads the current file, requires a unique exact
+	// or narrowly fuzzy match, and returns the actual applied diff. Let it try
+	// optimistically; a stale old_string fails without writing and tells the
+	// model to re-read. delete_range remains guarded because two independently
+	// resolved anchors can otherwise select an unintended destructive span.
+	case "delete_range":
 		return true
 	default:
 		return false

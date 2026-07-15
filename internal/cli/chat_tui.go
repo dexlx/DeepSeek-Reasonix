@@ -3579,8 +3579,9 @@ func (m *chatTUI) ingestEvent(e event.Event) {
 
 	case event.ToolDispatch:
 		// The early (partial) dispatch only carries the name — the full dispatch
-		// with args prints the line. The running spinner covers the gap meanwhile.
-		if e.Tool.Partial {
+		// with args prints the line. Same-ID preview refreshes are ignored because
+		// native scrollback cannot replace an already-printed diff card.
+		if e.Tool.Partial || e.Tool.Refreshed {
 			break
 		}
 		m.finalizeStreamed()
