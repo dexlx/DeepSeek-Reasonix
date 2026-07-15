@@ -421,7 +421,7 @@ func (r *ReadOnlyTaskTool) Execute(ctx context.Context, args json.RawMessage) (s
 	if err != nil {
 		return "", fmt.Errorf("read-only sub-agent profile: %w", err)
 	}
-	answer, err := r.task.runSubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth)
+	answer, err := r.task.runReadOnlySubSession(ctx, p.Prompt, subReg, subSink(ctx), maxSteps, prov, pricing, ctxWin, NewSession(DefaultReadOnlyTaskSystemPrompt), childDepth)
 	if err != nil {
 		return "", err
 	}
@@ -843,7 +843,16 @@ func (t *TaskTool) resolveSubSessionRuntime(modelRef, effort string) (provider.P
 }
 
 func (t *TaskTool) runSubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int) (string, error) {
+	return t.runSubSessionWithReadOnly(ctx, prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, sess, childDepth, false)
+}
+
+func (t *TaskTool) runReadOnlySubSession(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int) (string, error) {
+	return t.runSubSessionWithReadOnly(ctx, prompt, subReg, sink, maxSteps, prov, pricing, ctxWin, sess, childDepth, true)
+}
+
+func (t *TaskTool) runSubSessionWithReadOnly(ctx context.Context, prompt string, subReg *tool.Registry, sink event.Sink, maxSteps int, prov provider.Provider, pricing *provider.Pricing, ctxWin int, sess *Session, childDepth int, readOnly bool) (string, error) {
 	opts := t.subagentOptions(ctx, maxSteps, pricing, ctxWin, childDepth)
+	opts.ReadOnlyExecution = readOnly
 	// Capture the pristine task before host framing is prepended: delivery
 	// intent classification must judge the task, not the wrapper.
 	opts.ClassifierTaskText = prompt

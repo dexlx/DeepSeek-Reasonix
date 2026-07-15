@@ -1373,8 +1373,11 @@ func (a *App) SetPlanMode(on bool) {
 }
 
 func (a *App) setPlanModeForTab(tabID string, on bool) {
-	current := a.currentModeForTab(tabID)
-	a.SetModeForTab(tabID, tabModeFromAxes(on, tabModeHasAutoApproveTools(current)))
+	if on {
+		a.SetCollaborationModeForTab(tabID, "plan")
+		return
+	}
+	a.SetCollaborationModeForTab(tabID, "normal")
 }
 
 // SetMode applies a composer gating mode ("plan" | "yolo" | "plan-yolo" |
@@ -1467,14 +1470,11 @@ func applyTabToolApprovalModeToController(ctrl control.SessionAPI, mode string) 
 }
 
 func (a *App) currentModeForTab(tabID string) string {
-	a.mu.RLock()
-	tab := a.tabByIDLocked(tabID)
-	mode := "normal"
-	if tab != nil {
-		mode = currentTabMode(tab)
+	tab := a.tabByID(tabID)
+	if tab == nil {
+		return "normal"
 	}
-	a.mu.RUnlock()
-	return mode
+	return a.tabRuntimeSnapshot(tab).currentMode()
 }
 
 func normalizeCollaborationMode(mode string) string {
@@ -1500,12 +1500,12 @@ func (a *App) SetCollaborationModeForTab(tabID, mode string) {
 	tab.turnStartMu.Lock()
 	defer tab.turnStartMu.Unlock()
 	mode = normalizeCollaborationMode(mode)
+	approvalMode := a.tabRuntimeSnapshot(tab).currentToolApprovalMode()
 	a.mu.Lock()
 	if a.tabs[tab.ID] != tab {
 		a.mu.Unlock()
 		return
 	}
-	approvalMode := currentTabToolApprovalMode(tab)
 	switch mode {
 	case "plan":
 		tab.mode = tabModeFromAxes(true, approvalMode == control.ToolApprovalYolo)
@@ -5610,6 +5610,7 @@ func (a *App) SetGoalForTab(tabID, goal string) {
 	tab.turnStartMu.Lock()
 	defer tab.turnStartMu.Unlock()
 	goal = strings.TrimSpace(goal)
+	approvalMode := a.tabRuntimeSnapshot(tab).currentToolApprovalMode()
 	a.mu.Lock()
 	if a.tabs[tab.ID] != tab {
 		a.mu.Unlock()
@@ -5617,7 +5618,7 @@ func (a *App) SetGoalForTab(tabID, goal string) {
 	}
 	tab.goal = goal
 	if goal != "" {
-		tab.mode = tabModeFromAxes(false, currentTabToolApprovalMode(tab) == control.ToolApprovalYolo)
+		tab.mode = tabModeFromAxes(false, approvalMode == control.ToolApprovalYolo)
 	}
 	ctrl := tab.Ctrl
 	plan := tabModeHasPlan(tab.mode)
@@ -5709,13 +5710,14 @@ func (a *App) SetToolApprovalModeForTab(tabID, mode string) []string {
 	tab.turnStartMu.Lock()
 	defer tab.turnStartMu.Unlock()
 	mode = normalizeToolApprovalMode(mode)
+	plan := tabModeHasPlan(a.tabRuntimeSnapshot(tab).currentMode())
 	a.mu.Lock()
 	if a.tabs[tab.ID] != tab {
 		a.mu.Unlock()
 		return nil
 	}
 	tab.toolApprovalMode = mode
-	tab.mode = tabModeFromAxes(tabModeHasPlan(currentTabMode(tab)), mode == control.ToolApprovalYolo)
+	tab.mode = tabModeFromAxes(plan, mode == control.ToolApprovalYolo)
 	ctrl := tab.Ctrl
 	tabIDForSave := tab.ID
 	a.mu.Unlock()
@@ -7611,6 +7613,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	// event sink write these fields under the lock while this rebuild runs
 	// off-lock.
 	snap := a.tabRuntimeSnapshot(tab)
+	runtime := snap.normalizedRuntime()
 	cfg, err := config.LoadForRoot(snap.workspaceRoot)
 	if err != nil {
 		return err
@@ -7660,7 +7663,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           cloneStringPtr(effortOverride),
-		TokenMode:                snap.currentTokenMode(),
+		TokenMode:                runtime.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -7670,22 +7673,18 @@ func (a *App) SetModelForTab(tabID, name string) error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, snap.mode)
-	applyTabToolApprovalModeToController(newCtrl, snap.toolApprovalMode)
-	// A rebuild must not force the user to re-approve tools already granted
-	// this session, or re-trust Plan-mode read-only commands already trusted
-	// this session.
-	if prev, ok := oldCtrl.(*control.Controller); ok {
-		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-	}
+	configureControllerRuntime(newCtrl, oldCtrl, runtime)
 
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
 	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "model"); err != nil {
 		newCtrl.Close()
 		return err
 	}
-	resumeWithFreshSystemPromptAndGoal(newCtrl, carried, path, snap.goal)
+	restoredRuntime, err := resumeControllerRuntimeWithMessages(newCtrl, carried, path, runtime)
+	if err != nil {
+		newCtrl.Close()
+		return err
+	}
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current != tab {
 		// The tab was closed/replaced while we built the new controller off-lock;
@@ -7700,6 +7699,7 @@ func (a *App) SetModelForTab(tabID, name string) error {
 	tab.model = name
 	tab.effort = cloneStringPtr(effortOverride)
 	tab.Label = newCtrl.Label()
+	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)
 	// Supersede any in-flight startup build: it would otherwise finish later,
 	// overwrite this controller, and release/steal the tab's session lease.
 	a.supersedeTabBuildLocked(tab)
@@ -7791,6 +7791,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		}
 	}
 	snap := a.tabRuntimeSnapshot(tab)
+	runtime := snap.normalizedRuntime()
 	entry, err := a.currentProviderEntryForTab(tabID)
 	if err != nil {
 		return err
@@ -7823,7 +7824,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		WorkspaceRoot:            snap.workspaceRoot,
 		SessionDir:               sessionDirForSnapshot(snap),
 		EffortOverride:           &effort,
-		TokenMode:                snap.currentTokenMode(),
+		TokenMode:                runtime.tokenMode,
 		SharedHost:               sharedHost,
 		CleanupPendingReconciler: reconcileDesktopCleanupPending,
 		SessionRecoveryMeta:      a.tabSessionRecoveryMeta(tab),
@@ -7833,21 +7834,17 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, snap.mode)
-	applyTabToolApprovalModeToController(newCtrl, snap.toolApprovalMode)
-	// A rebuild must not force the user to re-approve tools already granted
-	// this session, or re-trust Plan-mode read-only commands already trusted
-	// this session.
-	if prev, ok := oldCtrl.(*control.Controller); ok {
-		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-	}
+	configureControllerRuntime(newCtrl, oldCtrl, runtime)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
 	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "effort"); err != nil {
 		newCtrl.Close()
 		return err
 	}
-	resumeWithFreshSystemPromptAndGoal(newCtrl, carried, path, snap.goal)
+	restoredRuntime, err := resumeControllerRuntimeWithMessages(newCtrl, carried, path, runtime)
+	if err != nil {
+		newCtrl.Close()
+		return err
+	}
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current != tab {
 		a.mu.Unlock()
@@ -7859,6 +7856,7 @@ func (a *App) SetEffortForTab(tabID, level string) error {
 	tab.model = modelRef
 	tab.effort = &effort
 	tab.Label = newCtrl.Label()
+	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)
 	clearTabStartupError(tab)
 	tab.Ready = true
 	a.supersedeTabBuildLocked(tab)
@@ -7931,6 +7929,8 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		return err
 	}
 	snap := a.tabRuntimeSnapshot(tab)
+	runtime := snap.normalizedRuntime()
+	runtime.tokenMode = mode
 	if fallback && strings.TrimSpace(snap.model) != "" {
 		a.noticeForTab(tab.ID, fmt.Sprintf("model %q is no longer available; switched to %s", snap.model, modelRef))
 	}
@@ -7968,21 +7968,17 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 		return err
 	}
 	a.bindControllerDisplayRecorder(newCtrl)
-	newCtrl.EnableInteractiveApproval()
-	applyTabModeToController(newCtrl, snap.mode)
-	applyTabToolApprovalModeToController(newCtrl, snap.toolApprovalMode)
-	// A rebuild must not force the user to re-approve tools already granted
-	// this session, or re-trust Plan-mode read-only commands already trusted
-	// this session.
-	if prev, ok := oldCtrl.(*control.Controller); ok {
-		newCtrl.RestoreSessionAuthorizations(prev.SessionAuthorizations())
-	}
+	configureControllerRuntime(newCtrl, oldCtrl, runtime)
 	path := agent.ContinueSessionPath(prevPath, newCtrl.SessionDir(), newCtrl.Label())
 	if err := a.ensureTabSessionLeaseForRebuild(tab, path, "token mode"); err != nil {
 		newCtrl.Close()
 		return err
 	}
-	resumeWithFreshSystemPromptAndGoal(newCtrl, carried, path, snap.goal)
+	restoredRuntime, err := resumeControllerRuntimeWithMessages(newCtrl, carried, path, runtime)
+	if err != nil {
+		newCtrl.Close()
+		return err
+	}
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current != tab {
 		a.mu.Unlock()
@@ -7992,8 +7988,8 @@ func (a *App) SetTokenModeForTab(tabID, mode string) error {
 	}
 	tab.Ctrl = newCtrl
 	tab.model = modelRef
-	tab.tokenMode = mode
 	tab.Label = newCtrl.Label()
+	applyNormalizedRuntimeToTabLocked(tab, restoredRuntime)
 	clearTabStartupError(tab)
 	tab.Ready = true
 	a.supersedeTabBuildLocked(tab)

@@ -807,6 +807,107 @@ func TestSetModeAppliesBothGates(t *testing.T) {
 	}
 }
 
+type planModeCountingRunner struct {
+	calls int
+	last  bool
+}
+
+func (*planModeCountingRunner) Run(context.Context, string) error { return nil }
+func (r *planModeCountingRunner) SetPlanMode(v bool) {
+	r.calls++
+	r.last = v
+}
+
+func TestApplyModeUsesRunnerPlanPropagationOnce(t *testing.T) {
+	runner := &planModeCountingRunner{}
+	c := New(Options{Runner: runner})
+	c.ApplyMode(true, true)
+	if runner.calls != 1 || !runner.last {
+		t.Fatalf("runner SetPlanMode calls=%d last=%v, want 1/true", runner.calls, runner.last)
+	}
+	if !c.PlanMode() || c.ToolApprovalMode() != ToolApprovalYolo {
+		t.Fatalf("controller plan=%v approval=%q, want true/yolo", c.PlanMode(), c.ToolApprovalMode())
+	}
+	c.SetPlanMode(false)
+	if runner.calls != 2 || runner.last {
+		t.Fatalf("SetPlanMode runner calls=%d last=%v, want 2/false", runner.calls, runner.last)
+	}
+}
+
+func TestApplyModePlanPropagationRunnerFallbacks(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		runner func(*agent.Agent) agent.Runner
+	}{
+		{name: "single agent", runner: func(executor *agent.Agent) agent.Runner { return executor }},
+		{name: "runner without setter", runner: func(*agent.Agent) agent.Runner {
+			return appendingRunner{session: agent.NewSession("runner")}
+		}},
+		{name: "nil runner", runner: func(*agent.Agent) agent.Runner { return nil }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			writer := &recordingWriter{}
+			reg := tool.NewRegistry()
+			reg.Add(writer)
+			prov := &scriptedTurns{turns: [][]provider.Chunk{
+				toolCallTurn("write-1", "write_file", `{"path":"blocked.txt"}`),
+				textTurn("done"),
+			}}
+			executor := agent.New(prov, reg, agent.NewSession("executor"), agent.Options{}, event.Discard)
+			c := New(Options{Runner: tc.runner(executor), Executor: executor})
+			c.ApplyMode(true, true)
+			if err := executor.Run(context.Background(), "try writing"); err != nil {
+				t.Fatalf("executor Run: %v", err)
+			}
+			writer.mu.Lock()
+			writes := len(writer.paths)
+			writer.mu.Unlock()
+			if writes != 0 {
+				t.Fatalf("writer executed %d times, want 0", writes)
+			}
+		})
+	}
+}
+
+type plannerUnsafeReadTool struct {
+	calls *int
+}
+
+func (plannerUnsafeReadTool) Name() string            { return "planner_phase_only" }
+func (plannerUnsafeReadTool) Description() string     { return "planner phase test tool" }
+func (plannerUnsafeReadTool) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (plannerUnsafeReadTool) ReadOnly() bool          { return true }
+func (plannerUnsafeReadTool) PlanModeSafe() bool      { return false }
+func (t plannerUnsafeReadTool) Execute(context.Context, json.RawMessage) (string, error) {
+	(*t.calls)++
+	return "executed", nil
+}
+
+func TestApplyModePropagatesPlanToCoordinatorPlannerAndKeepsYolo(t *testing.T) {
+	plannerCalls := 0
+	plannerTools := tool.NewRegistry()
+	plannerTools.Add(plannerUnsafeReadTool{calls: &plannerCalls})
+	planner := &scriptedTurns{turns: [][]provider.Chunk{
+		toolCallTurn("planner-tool", "planner_phase_only", `{}`),
+		textTurn("1. inspect the current behavior\n2. implement the fix"),
+	}}
+	execProvider := &scriptedTurns{turns: [][]provider.Chunk{textTurn("executor done")}}
+	executor := agent.New(execProvider, tool.NewRegistry(), agent.NewSession("exec"), agent.Options{}, event.Discard)
+	coordinator := agent.NewCoordinator(planner, agent.NewSession("planner"), nil, plannerTools, agent.Options{}, executor, 0, event.Discard, nil)
+	c := New(Options{Runner: coordinator, Executor: executor})
+
+	c.ApplyMode(true, true)
+	if err := c.Run(context.Background(), "prepare the change"); err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if plannerCalls != 0 {
+		t.Fatalf("planner phase-only tool executed %d times, want 0 while Plan is active", plannerCalls)
+	}
+	if !c.PlanMode() || c.ToolApprovalMode() != ToolApprovalYolo {
+		t.Fatalf("after run plan=%v approval=%q, want true/yolo", c.PlanMode(), c.ToolApprovalMode())
+	}
+}
+
 type askCallResult struct {
 	answers []event.AskAnswer
 	err     error

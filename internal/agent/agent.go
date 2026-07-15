@@ -309,6 +309,11 @@ type Agent struct {
 	// the outside via SetPlanMode.
 	planMode atomic.Bool
 
+	// readOnlyExecution is a construction-time defense for planner/research
+	// agents. Unlike planMode it is not a collaboration toggle: it remains on
+	// for the agent's lifetime and validates proxy calls after resolution.
+	readOnlyExecution bool
+
 	// gate, when non-nil, is the per-call permission gate consulted after the
 	// plan-mode check. nil disables gating entirely.
 	gate Gate
@@ -984,6 +989,11 @@ type Options struct {
 	// Gate is the per-call permission gate. nil disables gating.
 	Gate Gate
 
+	// ReadOnlyExecution enables a permanent host-side read-only boundary for
+	// planner and research agents. It is intentionally independent of Plan mode
+	// so a stale collaboration flag cannot authorize a dynamic writer target.
+	ReadOnlyExecution bool
+
 	// PlanModeReadOnlyTrustGate confirms untrusted external read-only hints when
 	// plan mode would otherwise block them. nil keeps fail-closed behavior.
 	PlanModeReadOnlyTrustGate PlanModeReadOnlyTrustGate
@@ -1144,6 +1154,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		usageSource:              usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		sink:                     sink,
 		gate:                     gate,
+		readOnlyExecution:        opts.ReadOnlyExecution,
 		planModeReadOnlyTrust:    planModeReadOnlyTrust,
 		sandboxEscapeApprover:    sandboxEscapeApprover,
 		configWriteApprover:      configWriteApprover,
@@ -2946,6 +2957,17 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		if rc.TargetName != "" && rc.TargetName != call.Name {
 			EmitProxyAudit(a.sink, rc)
 		}
+		if outcome, blocked := a.readOnlyExecutionBlock(t, &rc); blocked {
+			return outcome
+		}
+		if rc.Commit != nil {
+			if err := rc.Commit(); err != nil {
+				return toolOutcome{
+					output: fmt.Sprintf("error: %v", err),
+					errMsg: firstLine(err.Error()),
+				}
+			}
+		}
 		if rc.SkipExecute {
 			// Resolution completed without target execution; still record a meta receipt.
 			// A connected mcp-server call completes during resolution by listing
@@ -2966,6 +2988,8 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			body, truncMsg := truncateToolOutput(result)
 			return toolOutcome{output: body, truncated: truncMsg != "", truncMsg: truncMsg}
 		}
+	} else if outcome, blocked := a.readOnlyExecutionBlock(t, nil); blocked {
+		return outcome
 	}
 
 	// A proxy resolution can point at a write-capable target even though the
@@ -3174,6 +3198,57 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	body, truncMsg := truncateToolOutput(result)
 	return toolOutcome{output: body, images: images, truncated: truncMsg != "", truncMsg: truncMsg}
+}
+
+func (a *Agent) readOnlyExecutionBlock(visible tool.Tool, resolved *tool.ResolvedCall) (toolOutcome, bool) {
+	if a == nil || !a.readOnlyExecution {
+		return toolOutcome{}, false
+	}
+	block := func(reason string) (toolOutcome, bool) {
+		return toolOutcome{
+			output:  "blocked: read-only agent cannot " + reason,
+			blocked: true,
+			errMsg:  "blocked by read-only execution boundary",
+		}, true
+	}
+	if resolved == nil {
+		if visible == nil || !visible.ReadOnly() {
+			return block("execute a state-changing tool")
+		}
+		if u, ok := visible.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
+			return block("trust an externally asserted read-only target")
+		}
+		if h, ok := visible.(tool.ReadOnlyExecutionHostMutation); ok && h.ReadOnlyExecutionHostMutation() {
+			return block("start or mutate a host capability")
+		}
+		return toolOutcome{}, false
+	}
+
+	switch resolved.ProxyAction {
+	case "inspect":
+		if !resolved.SkipExecute || resolved.Target != nil || !resolved.ReadOnly {
+			return block("execute a malformed dynamic inspection")
+		}
+		return toolOutcome{}, false
+	case "decline":
+		return block("decline a capability decision")
+	case "call":
+		if resolved.Target == nil {
+			return block("execute an unresolved dynamic capability")
+		}
+		if !resolved.ReadOnly {
+			return block("execute a state-changing dynamic capability")
+		}
+		if u, ok := resolved.Target.(tool.PlanModeUntrustedReadOnly); ok && u.PlanModeUntrustedReadOnly() {
+			return block("trust an externally asserted read-only dynamic capability")
+		}
+		if h, ok := resolved.Target.(tool.ReadOnlyExecutionHostMutation); ok && h.ReadOnlyExecutionHostMutation() {
+			return block("start or mutate a host capability")
+		}
+		return toolOutcome{}, false
+	default:
+		return block("execute an unknown dynamic capability action")
+	}
 }
 
 func (a *Agent) checkPlanModeMCPReadOnlyTrust(ctx context.Context, call provider.ToolCall, t tool.Tool) (bool, toolOutcome, bool) {

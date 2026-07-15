@@ -33,6 +33,175 @@ func (completedProxyCallTool) ReadOnly() bool          { return true }
 func (completedProxyCallTool) Execute(context.Context, json.RawMessage) (string, error) {
 	return "", nil
 }
+
+type readOnlyBoundaryTarget struct {
+	name      string
+	readOnly  bool
+	untrusted bool
+	hostStart bool
+	calls     *int
+}
+
+func (t readOnlyBoundaryTarget) Name() string                        { return t.name }
+func (readOnlyBoundaryTarget) Description() string                   { return "" }
+func (readOnlyBoundaryTarget) Schema() json.RawMessage               { return json.RawMessage(`{"type":"object"}`) }
+func (t readOnlyBoundaryTarget) ReadOnly() bool                      { return t.readOnly }
+func (t readOnlyBoundaryTarget) PlanModeUntrustedReadOnly() bool     { return t.untrusted }
+func (t readOnlyBoundaryTarget) ReadOnlyExecutionHostMutation() bool { return t.hostStart }
+func (t readOnlyBoundaryTarget) Execute(context.Context, json.RawMessage) (string, error) {
+	if t.calls != nil {
+		(*t.calls)++
+	}
+	return "target executed", nil
+}
+
+type readOnlyBoundaryProxy struct {
+	resolved tool.ResolvedCall
+}
+
+func (readOnlyBoundaryProxy) Name() string            { return "use_capability" }
+func (readOnlyBoundaryProxy) Description() string     { return "" }
+func (readOnlyBoundaryProxy) Schema() json.RawMessage { return json.RawMessage(`{"type":"object"}`) }
+func (readOnlyBoundaryProxy) ReadOnly() bool          { return true }
+func (readOnlyBoundaryProxy) Execute(context.Context, json.RawMessage) (string, error) {
+	return "proxy executed", nil
+}
+func (p readOnlyBoundaryProxy) ResolveCall(context.Context, json.RawMessage) (tool.ResolvedCall, error) {
+	return p.resolved, nil
+}
+
+func executeReadOnlyBoundaryCall(t *testing.T, resolved tool.ResolvedCall) toolOutcome {
+	t.Helper()
+	reg := tool.NewRegistry()
+	reg.Add(readOnlyBoundaryProxy{resolved: resolved})
+	a := New(nil, reg, NewSession("sys"), Options{ReadOnlyExecution: true}, event.Discard)
+	return a.executeOne(context.Background(), provider.ToolCall{
+		ID: "ro-1", Name: "use_capability", Arguments: `{"action":"call","capability_id":"mcp-tool:test/tool"}`,
+	})
+}
+
+func TestReadOnlyExecutionBlocksResolvedWriterAndHostStartup(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		readOnly  bool
+		hostStart bool
+	}{
+		{name: "writer"},
+		{name: "host startup", readOnly: true, hostStart: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			calls := 0
+			target := readOnlyBoundaryTarget{name: "mcp__test__tool", readOnly: tc.readOnly, hostStart: tc.hostStart, calls: &calls}
+			out := executeReadOnlyBoundaryCall(t, tool.ResolvedCall{
+				ProxyAction: "call", TargetName: target.Name(), Target: target, ReadOnly: tc.readOnly, Args: json.RawMessage(`{}`),
+			})
+			if !out.blocked || !strings.Contains(out.output, "read-only agent") {
+				t.Fatalf("resolved call outcome = %+v, want host block", out)
+			}
+			if calls != 0 {
+				t.Fatalf("target Execute calls = %d, want 0", calls)
+			}
+		})
+	}
+}
+
+func TestReadOnlyExecutionAllowsInspectAndTrustedReadOnlyCall(t *testing.T) {
+	inspect := executeReadOnlyBoundaryCall(t, tool.ResolvedCall{
+		ProxyAction: "inspect", SkipExecute: true, ReadOnly: true, Result: "metadata",
+	})
+	if inspect.blocked || inspect.errMsg != "" || inspect.output != "metadata" {
+		t.Fatalf("inspect outcome = %+v", inspect)
+	}
+
+	calls := 0
+	target := readOnlyBoundaryTarget{name: "mcp__test__read", readOnly: true, calls: &calls}
+	call := executeReadOnlyBoundaryCall(t, tool.ResolvedCall{
+		ProxyAction: "call", TargetName: target.Name(), Target: target, ReadOnly: true, Args: json.RawMessage(`{}`),
+	})
+	if call.blocked || call.errMsg != "" || !strings.Contains(call.output, "target executed") {
+		t.Fatalf("trusted read-only call outcome = %+v", call)
+	}
+	if calls != 1 {
+		t.Fatalf("target Execute calls = %d, want 1", calls)
+	}
+}
+
+func TestReadOnlyExecutionBlocksUntrustedHintAndDecline(t *testing.T) {
+	calls := 0
+	target := readOnlyBoundaryTarget{name: "mcp__test__hint", readOnly: true, untrusted: true, calls: &calls}
+	out := executeReadOnlyBoundaryCall(t, tool.ResolvedCall{
+		ProxyAction: "call", TargetName: target.Name(), Target: target, ReadOnly: true, Args: json.RawMessage(`{}`),
+	})
+	if !out.blocked || calls != 0 {
+		t.Fatalf("untrusted read-only outcome = %+v calls=%d", out, calls)
+	}
+
+	ledger := capability.NewLedger()
+	ledger.SeedCandidates(capability.RouteDecision{Candidates: []capability.RouteCandidate{
+		{Entry: capability.Entry{ID: "skill:review"}, Policy: capability.AutoUsePrefer},
+	}})
+	proxy := NewUseCapabilityTool(context.Background(), nil, nil, tool.NewRegistry(), ledger, nil, nil)
+	reg := tool.NewRegistry()
+	reg.Add(proxy)
+	readOnlyAgent := New(nil, reg, NewSession("sys"), Options{ReadOnlyExecution: true}, event.Discard)
+	declineArgs := `{"action":"decline","capability_id":"skill:review","reason":"not needed"}`
+	decline := readOnlyAgent.executeOne(context.Background(), provider.ToolCall{ID: "decline-1", Name: "use_capability", Arguments: declineArgs})
+	if !decline.blocked {
+		t.Fatalf("decline outcome = %+v, want block", decline)
+	}
+	if gate := ledger.CheckFinalGate(); gate.Reason == "" {
+		t.Fatal("read-only decline mutated the capability ledger")
+	}
+
+	ordinary := New(nil, reg, NewSession("sys"), Options{}, event.Discard)
+	allowed := ordinary.executeOne(context.Background(), provider.ToolCall{ID: "decline-2", Name: "use_capability", Arguments: declineArgs})
+	if allowed.blocked || allowed.errMsg != "" {
+		t.Fatalf("ordinary executor decline outcome = %+v", allowed)
+	}
+	if gate := ledger.CheckFinalGate(); gate.Reason != "" {
+		t.Fatalf("ordinary decline did not update ledger: %+v", gate)
+	}
+}
+
+func TestReadOnlyExecutionDoesNotStartUnconnectedMCP(t *testing.T) {
+	host := plugin.NewHost()
+	defer host.Close()
+	proxy := NewUseCapabilityTool(context.Background(), host, []plugin.Spec{{
+		Name: "lazy", Type: "stdio", Command: "reasonix-test-definitely-missing-binary",
+		ReadOnlyToolNames: map[string]bool{"read_thing": true},
+	}}, tool.NewRegistry(), capability.NewLedger(), nil, nil)
+	reg := tool.NewRegistry()
+	reg.Add(proxy)
+	a := New(nil, reg, NewSession("sys"), Options{ReadOnlyExecution: true}, event.Discard)
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "lazy-1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:lazy/read_thing","arguments":{}}`,
+	})
+	if !out.blocked {
+		t.Fatalf("lazy MCP outcome = %+v, want block", out)
+	}
+	if host.HasClient("lazy") {
+		t.Fatal("read-only Agent started an unconnected MCP server")
+	}
+}
+
+func TestReadOnlyExecutionDoesNotMarkUnknownCapabilityUnavailable(t *testing.T) {
+	ledger := capability.NewLedger()
+	proxy := NewUseCapabilityTool(context.Background(), nil, nil, tool.NewRegistry(), ledger, nil, nil)
+	reg := tool.NewRegistry()
+	reg.Add(proxy)
+	a := New(nil, reg, NewSession("sys"), Options{ReadOnlyExecution: true}, event.Discard)
+	out := a.executeOne(context.Background(), provider.ToolCall{
+		ID: "missing-1", Name: "use_capability",
+		Arguments: `{"action":"call","capability_id":"mcp-tool:missing/read","arguments":{}}`,
+	})
+	if !out.blocked {
+		t.Fatalf("unknown capability outcome = %+v, want block", out)
+	}
+	if _, ok := ledger.Get("mcp-tool:missing/read"); ok {
+		t.Fatal("read-only Agent mutated the ledger for an unknown capability")
+	}
+}
 func (completedProxyCallTool) ResolveCall(context.Context, json.RawMessage) (tool.ResolvedCall, error) {
 	return tool.ResolvedCall{
 		DisplayName:  "use_capability",

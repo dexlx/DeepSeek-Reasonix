@@ -101,6 +101,14 @@ type PlanModeUntrustedReadOnly interface {
 	PlanModeUntrustedReadOnly() bool
 }
 
+// ReadOnlyExecutionHostMutation marks a target that is logically read-only but
+// must first mutate host state to become executable, such as starting an
+// on-demand MCP process. Strict read-only agents reject these targets even when
+// their eventual remote operation is trusted read-only.
+type ReadOnlyExecutionHostMutation interface {
+	ReadOnlyExecutionHostMutation() bool
+}
+
 // MCPMetadata exposes the original MCP identity behind a model-visible
 // "mcp__<server>__<tool>" adapter. The model name may be normalized for provider
 // function-name rules; config such as trusted_read_only_tools must use the raw

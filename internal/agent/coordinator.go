@@ -128,6 +128,7 @@ func NewCoordinator(planner provider.Provider, plannerSession *Session, plannerP
 		plannerOptions.Temperature = temperature
 		plannerOptions.Pricing = plannerPricing
 		plannerOptions.UsageSource = event.UsageSourcePlanner
+		plannerOptions.ReadOnlyExecution = true
 		plannerAgent = New(planner, plannerTools, plannerSession, plannerOptions, plannerSink(sink))
 	}
 	if executor != nil {
