@@ -27,7 +27,7 @@ Running `reasonix` without a subcommand starts the interactive terminal UI. Use
 | `--model NAME` | Select a configured provider or `provider/model` reference. |
 | `--profile economy\|balanced\|delivery` | Select the runtime work profile. |
 | `--effort LEVEL` | Override reasoning effort for this session. |
-| `--max-steps N` | Override the maximum tool-call rounds; `0` uses the configured default. |
+| `--max-steps N` | Set a one-off maximum tool-call round budget; `0` uses automatic execution. |
 | `--dir PATH` | Change the workspace root before loading config and tools. |
 | `--add-dir PATH` | Add another writable tool directory; repeat for multiple directories. |
 | `-c`, `--continue` | Resume the most recent session. |

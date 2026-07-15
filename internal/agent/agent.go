@@ -975,8 +975,8 @@ func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
 // Options configures an Agent.
 type Options struct {
 	MaxSteps int
-	// MaxStepsKey names the configuration knob shown when the MaxSteps guard is
-	// hit. Empty defaults to agent.max_steps.
+	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
+	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
 	Temperature float64
 	Pricing     *provider.Pricing // optional, for per-turn cost display
@@ -1122,7 +1122,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	maxStepsKey := opts.MaxStepsKey
 	if strings.TrimSpace(maxStepsKey) == "" {
-		maxStepsKey = "agent.max_steps"
+		maxStepsKey = "max_steps"
 	}
 	maxSubagentDepth := opts.MaxSubagentDepth
 	if maxSubagentDepth == 0 {

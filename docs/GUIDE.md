@@ -35,8 +35,7 @@ built-in defaults**. Starting with **Reasonix v1.8.1**, the user config lives at
 `~/.reasonix/config.toml` on macOS/Linux and
 `%AppData%\reasonix\config.toml` on Windows; see
 [Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
-Fields marked user/global only, including agent step limits, are not overridden
-by `./reasonix.toml`.
+Fields marked user/global only are not overridden by `./reasonix.toml`.
 Provider entries name secrets with `api_key_env`, while the secret values live in
 Reasonix's global `<Reasonix home>/.env`, shared by CLI and desktop. Project
 `.env`, home `.env`, inherited shell environment variables, legacy credentials,
@@ -884,9 +883,11 @@ executor to reassess. After 16 no-progress rounds it pauses with saved work that
 can be resumed in the next user turn. Exact repeats do not count as progress;
 new host-observed work renews the lease.
 
-Existing `max_steps` and `planner_max_steps` keys remain accepted as advanced
-user-level compatibility overrides, but are intentionally omitted from the UI
-and normal examples. Project `./reasonix.toml` files do not override them.
+Existing `[agent].max_steps` and `planner_max_steps` keys remain syntactically
+accepted during upgrades, but their values are ignored and removed with a
+one-time notice. This prevents a stale hidden limit from truncating automatic
+progress or inherited subagent work. Use the one-off CLI `--max-steps` flag when
+an explicit run budget is needed; unattended bots retain `[bot].max_steps`.
 
 Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only

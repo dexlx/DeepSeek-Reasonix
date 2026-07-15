@@ -31,9 +31,10 @@ branch.
   stalled current item receives a recovery nudge after 8 tool-call rounds with
   no new completion, unique read, command, or mutation, and pauses with saved
   work after 16. Exact repeats do not renew the progress lease; real work does.
-  Executor and planner rounds remain unlimited by default, and their settings
-  are hidden from normal configuration while existing user-level overrides
-  remain compatible.
+  Executor and planner rounds now use automatic progress management. Retired
+  `[agent].max_steps` and `planner_max_steps` keys remain parseable for upgrades,
+  but are ignored and removed by a one-time migration so stale hidden limits
+  cannot truncate new behavior. One-off CLI and unattended bot limits remain.
 
 ## [1.0.0] — 2026-06-03
 
