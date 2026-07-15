@@ -4784,15 +4784,31 @@ func (g gateApprover) ApproveMCP(ctx context.Context, toolName, subject string, 
 	}
 	if reviewer == tool.MCPApprovalReviewerAutoReview {
 		if g.c.guardianSess != nil && g.c.executor != nil {
-			allow, reason, err := g.c.guardianSess.Review(ctx, toolName, args, g.c.executor.Session())
+			allow, reason, err := g.c.guardianSess.ReviewVerdict(ctx, toolName, args, g.c.executor.Session())
 			if err == nil {
-				// A successful negative verdict is explicit and never falls back.
+				// A successful verdict — allow or deny — is final for auto_review
+				// and never falls back.
 				return allow, reason, nil
 			}
-			slog.Warn("automatic MCP approval review unavailable; falling back to global approval mode", "tool", toolName, "err", err)
+			slog.Warn("automatic MCP approval review unavailable; falling back to fresh human approval", "tool", toolName, "err", err)
 		}
 		// Missing reviewer/parent, timeout, transport failure, or indeterminate
-		// review follows the same global posture as an ordinary MCP Ask below.
+		// review degrades to a decision only a present human can make: Auto/YOLO,
+		// the approved-plan window, and session grants must not answer it.
+		// Non-interactive sessions never reach here — their gates fail closed
+		// before an approver is consulted.
+		target := strings.TrimSpace(subject)
+		if target == "" {
+			target = toolName
+		}
+		reply, err := g.c.requestStrictFreshApprovalDecision(ctx, toolName, target, args, i18n.M.MCPReviewerUnavailableReason)
+		if err != nil {
+			return false, "approval aborted", err
+		}
+		if !reply.allow {
+			return false, i18n.M.MCPReviewerUnavailableDeclined, nil
+		}
+		return true, "", nil
 	}
 
 	// An explicit MCP prompt/write policy outranks global Auto/YOLO. The legacy

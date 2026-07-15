@@ -3025,7 +3025,10 @@ func TestMCPAutoReviewerIsFinalAndDoesNotPromptHuman(t *testing.T) {
 	}
 }
 
-func TestMCPAutoReviewerUnavailableFallsBackToGlobalAuto(t *testing.T) {
+// TestMCPAutoModeGlobalAllowSkipsMissingReviewer: approval_mode=auto inherits
+// the global posture. When the global policy already allows the call, no
+// reviewer runs at all — this is mode inheritance, not a reviewer fallback.
+func TestMCPAutoModeGlobalAllowSkipsMissingReviewer(t *testing.T) {
 	prompts := 0
 	c := New(Options{Sink: event.FuncSink(func(e event.Event) {
 		if e.Kind == event.ApprovalRequest {
@@ -3036,7 +3039,87 @@ func TestMCPAutoReviewerUnavailableFallsBackToGlobalAuto(t *testing.T) {
 	gate := permission.NewGate(permission.New("allow", nil, nil, nil), gateApprover{c})
 	allow, reason, err := gate.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", nil, false, false, "auto", "auto_review")
 	if err != nil || !allow || reason != "" || prompts != 0 {
-		t.Fatalf("missing auto reviewer = (%v,%q,%v), prompts=%d", allow, reason, err, prompts)
+		t.Fatalf("globally allowed auto call = (%v,%q,%v), prompts=%d", allow, reason, err, prompts)
+	}
+}
+
+type erroringProvider struct{ requests int }
+
+func (p *erroringProvider) Name() string { return "guardian-down" }
+
+func (p *erroringProvider) Stream(context.Context, provider.Request) (<-chan provider.Chunk, error) {
+	p.requests++
+	return nil, fmt.Errorf("guardian transport down")
+}
+
+// TestMCPAutoReviewerUnavailableDegradesToStrictFreshHuman: when auto_review is
+// configured but the reviewer errors out, the call degrades to a fresh human
+// decision. Session grants must neither answer it nor be minted by it, so a
+// second identical call prompts again.
+func TestMCPAutoReviewerUnavailableDegradesToStrictFreshHuman(t *testing.T) {
+	guardianProv := &erroringProvider{}
+	guardianSess := guardian.NewSession(guardianProv, tool.NewRegistry(), guardian.PolicyPrompt(), "guardian-test", 0, nil, event.Discard)
+	exec := agent.New(&recordingProvider{name: "executor"}, tool.NewRegistry(), agent.NewSession("sys"), agent.Options{}, event.Discard)
+	approvals := make(chan event.Approval, 2)
+	c := New(Options{
+		Executor: exec,
+		Guardian: guardianSess,
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.ApprovalRequest {
+				approvals <- e.Approval
+			}
+		}),
+	})
+	gate := permission.NewGate(permission.New("ask", nil, nil, nil), gateApprover{c})
+	type result struct {
+		allow  bool
+		reason string
+		err    error
+	}
+	run := func() chan result {
+		done := make(chan result, 1)
+		go func() {
+			allow, reason, err := gate.CheckMCP(context.Background(), "mcp__srv__write", "srv/write", json.RawMessage(`{"target":"one"}`), false, false, "auto", "auto_review")
+			done <- result{allow: allow, reason: reason, err: err}
+		}()
+		return done
+	}
+
+	done := run()
+	var approval event.Approval
+	select {
+	case approval = <-approvals:
+	case <-time.After(30 * time.Second):
+		t.Fatal("reviewer failure did not degrade to a human prompt")
+	}
+	// Answer with a session grant: the strict decision must not persist it.
+	c.Approve(approval.ID, true, true, false)
+	select {
+	case got := <-done:
+		if got.err != nil || !got.allow {
+			t.Fatalf("approved degraded call = %+v", got)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("degraded approval never completed")
+	}
+
+	done = run()
+	select {
+	case approval = <-approvals:
+	case <-time.After(30 * time.Second):
+		t.Fatal("second call reused a grant; strict fresh approval must prompt every time")
+	}
+	c.Approve(approval.ID, false, false, false)
+	select {
+	case got := <-done:
+		if got.err != nil || got.allow || !strings.Contains(got.reason, "reviewer was unavailable") {
+			t.Fatalf("declined degraded call = %+v", got)
+		}
+	case <-time.After(30 * time.Second):
+		t.Fatal("degraded decline never completed")
+	}
+	if guardianProv.requests != 2 {
+		t.Fatalf("guardian consulted %d times, want 2", guardianProv.requests)
 	}
 }
 
