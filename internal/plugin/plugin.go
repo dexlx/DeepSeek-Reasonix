@@ -1352,7 +1352,11 @@ func start(lifeCtx, callCtx context.Context, s Spec) (*Client, error) {
 	if s.TrustManager != nil && !s.AllowIdentityDriftPreflight {
 		if _, changed, checkErr := s.TrustManager.IdentityChanged(s.Name, trustConfigSource(s), identity); checkErr != nil {
 			return nil, checkErr
-		} else if changed {
+		} else if changed && !migrateLegacyIdentity(s, identity) {
+			// A receipt that exactly matches this spec's legacy URL fingerprint
+			// migrated above instead of blocking: eager and cache-miss servers
+			// must reach the credential-aware rollout too, not only paths that
+			// get as far as a post-handshake evaluation.
 			return nil, fmt.Errorf("MCP server %q identity changed; blocked before process or network startup and requires explicit re-verification", s.Name)
 		}
 	}

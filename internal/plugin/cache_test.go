@@ -565,3 +565,31 @@ func TestManagerEvaluateMigratesLegacyURLIdentityWithoutRetrust(t *testing.T) {
 		t.Fatalf("workspace scope change was not flagged: %+v", eval)
 	}
 }
+
+func TestCredentialURLQueryKeyMatrix(t *testing.T) {
+	credentials := []string{
+		"token", "access_token", "auth_token", "refresh_token", "id_token",
+		"api_token", "session_token", "bearer_token", "sas_token", "csrf-token",
+		"api_key", "x-api-key", "apikey", "API-KEY", "key", "access_key",
+		"secret_key", "private_key", "auth_key", "app_key", "client_key",
+		"subscription-key", "shared_key",
+		"secret", "client_secret", "app_secret", "api_secret",
+		"password", "passwd", "user_password",
+		"signature", "sas_signature", "sig",
+		"auth", "authorization", "bearer", "credential", "credentials",
+	}
+	for _, key := range credentials {
+		if !credentialURLQueryKey(key) {
+			t.Errorf("credential key %q was not classified as sensitive", key)
+		}
+	}
+	resources := []string{
+		"workspace", "tenant", "region", "resource", "project", "org",
+		"scope", "version", "monkey", "keyboard", "market", "environment",
+	}
+	for _, key := range resources {
+		if credentialURLQueryKey(key) {
+			t.Errorf("resource key %q was misclassified as a credential", key)
+		}
+	}
+}

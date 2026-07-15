@@ -167,18 +167,39 @@ const identityURLRedacted = "__redacted__"
 
 // credentialURLQueryKeys lists query parameters whose values are credentials.
 // Keys are compared case-insensitively after removing "-" and "_", so
-// api_key, api-key, and APIKEY are the same key. Non-sensitive parameters
-// (workspace, tenant, region, resource, ...) keep their values so a resource
-// scope change still re-triggers verification.
+// api_key, api-key, x-api-key, and APIKEY normalize consistently, and any
+// normalized key ending in a credentialURLQuerySuffixes entry (auth_token,
+// refresh_token, id_token, client_secret, sas_signature, ...) is a credential
+// too. Non-sensitive parameters (workspace, tenant, region, resource, ...)
+// keep their values so a resource scope change still re-triggers verification.
 var credentialURLQueryKeys = map[string]bool{
-	"token": true, "accesstoken": true, "apikey": true, "authorization": true,
-	"auth": true, "password": true, "passwd": true, "secret": true,
-	"clientsecret": true, "credential": true, "signature": true, "sig": true,
+	"auth": true, "authorization": true, "bearer": true, "credential": true,
+	"credentials": true, "sig": true,
+	// The key family stays an exact list: a bare "*key" suffix would also
+	// swallow unrelated words (monkey, sortkey-like resource names).
+	"key": true, "accesskey": true, "secretkey": true, "privatekey": true,
+	"authkey": true, "appkey": true, "clientkey": true, "subscriptionkey": true,
+	"sharedkey": true,
+}
+
+// credentialURLQuerySuffixes classifies whole credential families by suffix:
+// every *token, *secret, *password/*passwd, *apikey, and *signature parameter
+// carries a credential value regardless of its prefix.
+var credentialURLQuerySuffixes = []string{
+	"token", "secret", "password", "passwd", "apikey", "signature",
 }
 
 func credentialURLQueryKey(key string) bool {
 	normalized := strings.NewReplacer("-", "", "_", "").Replace(strings.ToLower(strings.TrimSpace(key)))
-	return credentialURLQueryKeys[normalized]
+	if credentialURLQueryKeys[normalized] {
+		return true
+	}
+	for _, suffix := range credentialURLQuerySuffixes {
+		if strings.HasSuffix(normalized, suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 // normalizeIdentityURL canonicalizes an MCP endpoint for host-local identity
@@ -313,6 +334,24 @@ func managerEvaluate(manager *mcptrust.Manager, s Spec, identity string, capabil
 		return eval, nil
 	}
 	return managerEvaluateOnce(manager, s, identity, capabilities)
+}
+
+// migrateLegacyIdentity upgrades a receipt still carrying the legacy URL
+// fingerprint of this exact spec to the current credential-aware fingerprint.
+// It runs before the pre-start identity block, where no live capabilities
+// exist yet, so the drift comparison is deliberately skipped (nil): the
+// receipt's tool snapshot is untouched and the post-handshake evaluation
+// still performs the full capability drift check against it.
+func migrateLegacyIdentity(s Spec, identity string) bool {
+	if s.TrustManager == nil {
+		return false
+	}
+	legacy, ok := legacySpecIdentityFingerprint(s)
+	if !ok {
+		return false
+	}
+	migrated, err := s.TrustManager.MigrateIdentityFingerprint(s.Name, trustConfigSource(s), legacy, identity, nil)
+	return err == nil && migrated
 }
 
 func managerEvaluateOnce(manager *mcptrust.Manager, s Spec, identity string, capabilities []mcptrust.Capability) (mcptrust.Evaluation, error) {

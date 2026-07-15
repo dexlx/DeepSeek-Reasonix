@@ -658,8 +658,11 @@ func (m *Manager) evaluate(server, configSource, identityFingerprint string, cap
 
 // MigrateIdentityFingerprint atomically rewrites receipts whose identity is
 // exactly legacyFingerprint to currentFingerprint, for one server and config
-// source. It refuses when any live capability drifted from the receipt
-// snapshot, so a migration can never widen trust, and it compares digests
+// source. With live capabilities it refuses when any of them drifted from the
+// receipt snapshot; nil capabilities (the pre-start gate, where nothing has
+// listed tools yet) skip that comparison — the tool snapshot itself is never
+// modified, so the post-handshake evaluation still performs the full drift
+// check. A migration therefore can never widen trust, and it compares digests
 // only — URLs and credential values are never read or persisted here. This
 // keeps credential rotation and the credential-aware URL normalization rollout
 // from demanding a redundant re-trust. Remove together with the legacy URL
