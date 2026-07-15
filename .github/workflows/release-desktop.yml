@@ -110,9 +110,7 @@ jobs:
       # Windows: NSIS provides makensis for `wails build -nsis`.
       - name: Install NSIS
         if: runner.os == 'Windows'
-        run: |
-          choco install nsis -y --no-progress
-          echo "C:\Program Files (x86)\NSIS" >> "$GITHUB_PATH"
+        run: pwsh -NoProfile -File scripts/install-nsis.ps1
 
       # macOS: create-dmg packages the .app into a drag-to-Applications .dmg.
       - name: Install create-dmg
