@@ -86,7 +86,6 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if err != nil {
 		return "", fmt.Errorf("read %s: %w", p.Path, err)
 	}
-	originalContent := content
 
 	// Apply edits in order against the running in-memory buffer. Any failure
 	// returns before the write, leaving the file untouched — that's the
@@ -94,6 +93,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	// edit_file calls.
 	applied := 0
 	usedFuzzy := false
+	receipts := make([]editReplacementReceipt, 0, len(p.Edits))
 	for i, step := range p.Edits {
 		if step.OldString == "" {
 			return "", fmt.Errorf("edit %d: old_string is required", i+1)
@@ -104,6 +104,7 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 			content = result.updated
 			applied += result.applied
 			usedFuzzy = usedFuzzy || result.fuzzy
+			receipts = append(receipts, result.receipt)
 		case result.matches == 0:
 			return "", fmt.Errorf("edit %d: %w", i+1, oldStringNotFoundError(p.Path, step.OldString, content))
 		default:
@@ -118,5 +119,5 @@ func (m multiEdit) Execute(ctx context.Context, args json.RawMessage) (string, e
 	if usedFuzzy {
 		summary += " (fuzzy match)"
 	}
-	return withActualPostWriteDiff(summary, p.Path, originalContent, content), nil
+	return withActualPostWriteReceipts(summary, receipts), nil
 }

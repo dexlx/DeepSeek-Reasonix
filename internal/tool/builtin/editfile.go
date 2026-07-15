@@ -75,5 +75,5 @@ func (e editFile) Execute(ctx context.Context, args json.RawMessage) (string, er
 	if applied.fuzzy {
 		summary += " (fuzzy match)"
 	}
-	return withActualPostWriteDiff(summary, p.Path, content, applied.updated), nil
+	return withActualPostWriteReceipts(summary, []editReplacementReceipt{applied.receipt}), nil
 }

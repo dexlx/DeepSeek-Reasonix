@@ -183,10 +183,13 @@ func TestEditFile(t *testing.T) {
 	os.WriteFile(f, []byte("hello world\n"), 0o644)
 
 	out := runTool(t, editFile{}, map[string]any{"path": f, "old_string": "world", "new_string": "reasonix"})
-	for _, want := range []string{"Actual diff after write:", "-hello world", "+hello reasonix"} {
+	for _, want := range []string{"Actual replacement receipt after write:", "-world", "+reasonix"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("edit result should contain %q in actual post-write diff:\n%s", want, out)
+			t.Fatalf("edit result should contain %q in actual post-write receipt:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "hello") {
+		t.Fatalf("edit receipt should not include unchanged same-line content:\n%s", out)
 	}
 	if b, _ := os.ReadFile(f); string(b) != "hello reasonix\n" {
 		t.Fatalf("after edit = %q", b)
@@ -221,10 +224,13 @@ func TestMultiEdit(t *testing.T) {
 	if !strings.Contains(out, "multi_edit") || !strings.Contains(out, "2 edits applied") {
 		t.Errorf("summary unexpected: %q", out)
 	}
-	for _, want := range []string{"Actual diff after write:", "+package new", "+func reasonix()"} {
+	for _, want := range []string{"Actual replacement receipt after write:", "-package old", "+package new", "-old", "+reasonix"} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("multi_edit result should contain %q in actual post-write diff:\n%s", want, out)
+			t.Fatalf("multi_edit result should contain %q in actual post-write receipt:\n%s", want, out)
 		}
+	}
+	if strings.Contains(out, "func reasonix") {
+		t.Fatalf("multi_edit receipt should not include unchanged same-line content:\n%s", out)
 	}
 	got, _ := os.ReadFile(f)
 	want := "package new\n\nfunc reasonix() {\n\treasonix()\n}\n"
