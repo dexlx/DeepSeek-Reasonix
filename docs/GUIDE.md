@@ -100,7 +100,7 @@ allow = ["Bash(go test:*)"]                  # never prompted
 [sandbox]
 # workspace_root = ""          # file-writers confined here; empty = current dir
 # allow_write    = ["/tmp"]    # extra dirs write_file/edit_file/multi_edit/move_file may touch
-# forbid_read    = ["${HOME}/.ssh"]   # dirs the agent must not read or list
+# forbid_read    = ["${HOME}/.ssh"]   # paths the agent must not read or list
 
 [serve]
 auth_mode = "none"             # none|token|password; use auth before binding beyond localhost
@@ -488,7 +488,7 @@ Permissions are *policy* (which calls to allow / prompt). The **sandbox** is
 *enforcement*: the file-writers (`write_file` / `edit_file` / `multi_edit` / `move_file`)
 refuse any path outside `[sandbox] workspace_root` (default: the current dir, so
 edits stay in the project), resolving symlinks and `..` so a link can't tunnel
-out. `forbid_read` optionally hides sensitive directories from the agent's
+out. `forbid_read` optionally hides sensitive files or directories from the agent's
 read/list/search tools; use absolute paths or `${HOME}` / `${VAR}` references,
 not `~`, because config expansion is environment-variable based. `bash` is
 itself jailed by default when an OS sandbox is available (`[sandbox] bash`,
@@ -496,12 +496,18 @@ Seatbelt on macOS and bubblewrap on Linux):
 commands may write only those same roots plus platform-specific command
 temp/cache roots, cannot read configured `forbid_read` roots while the OS
 sandbox is active, and reach the network only when `[sandbox] network` is set.
+Reasonix always removes saved provider and bot credential variables from tool
+subprocess environments and automatically adds its global credential `.env` to
+the runtime read-deny boundary. Project `.env` files keep their existing
+workspace-scoped behavior.
 **Windows note:** Reasonix does not ship an OS-level Bash sandbox on Windows.
 The effective mode is fixed to `off`; even an older config containing
 `bash = "enforce"` resolves to `off`, `reasonix doctor` flags the ignored value,
 and the desktop selector is read-only. Bash commands therefore run unconfined,
 while the dedicated file tools still enforce `workspace_root`, `allow_write`,
-and `forbid_read` in process.
+and `forbid_read` in process. Saved credential variables are still removed from
+the child environment, but an approved unconfined shell runs as the user and is
+not a security boundary for other user-readable files.
 
 When no OS sandbox backend is available, `bash = "enforce"` refuses bash
 execution instead of running unconfined. Install the platform sandbox backend

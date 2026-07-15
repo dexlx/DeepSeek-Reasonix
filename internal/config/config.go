@@ -919,7 +919,7 @@ func (c *Config) IsSkillDisabled(name string) bool {
 // (write_file / edit_file / multi_edit / move_file) may modify; empty means the
 // current working directory, so writes stay inside the project by default.
 // AllowWrite lists extra directories writers may also touch (e.g. a sibling repo
-// or a temp dir). ForbidRead lists directories the agent may not read or list at all
+// or a temp dir). ForbidRead lists files or directories the agent may not read or list
 // (e.g. ~/.ssh for secrets). Both support ${VAR} / ${VAR:-default} expansion. Reads are
 // unrestricted; confining `bash` is Phase 1 (OS-level sandbox).
 type SandboxConfig struct {
@@ -982,7 +982,7 @@ func (c *Config) AllowWriteRoots() []string {
 	return roots
 }
 
-// ForbidReadRoots returns the directories the agent is forbidden from reading
+// ForbidReadRoots returns the paths the agent is forbidden from reading
 // or listing, with ${VAR} expanded. Relative roots are resolved against the
 // current working directory; the confiner resolves them to symlink-free paths.
 // Empty when no forbid_read entries are configured.

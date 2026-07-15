@@ -168,6 +168,21 @@ func TestProcessEnvUnfilteredByDefault(t *testing.T) {
 	}
 }
 
+func TestProcessEnvAlwaysFiltersRegisteredCredentialKeys(t *testing.T) {
+	const key = "REASONIX_TEST_CUSTOM_PROVIDER_CREDENTIAL"
+	t.Setenv(key, "opaque-provider-value")
+	t.Setenv("REASONIX_TEST_BENIGN_ENV", "visible")
+	RegisterCredentialEnvKeys([]string{key})
+
+	joined := strings.Join(ProcessEnv(), "\n")
+	if strings.Contains(joined, key+"=") || strings.Contains(joined, "opaque-provider-value") {
+		t.Fatalf("registered provider credential survived in subprocess env:\n%s", joined)
+	}
+	if !strings.Contains(joined, "REASONIX_TEST_BENIGN_ENV=visible") {
+		t.Fatalf("ordinary env was removed with opt-in filtering off:\n%s", joined)
+	}
+}
+
 func TestRedactToolOutputHonorsToggle(t *testing.T) {
 	const in = "DEEPSEEK_API_KEY=sk-real-secret-value-123456"
 	if got := RedactToolOutput(in); strings.Contains(got, "sk-real-secret-value-123456") {

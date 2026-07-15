@@ -77,8 +77,8 @@ func Available() bool {
 
 // bwrapArgs builds the bubblewrap command-line arguments that confine the
 // shell command to the write roots, deny network unless allowed, and overlay
-// forbid-read directories with tmpfs so they appear empty. The rest of the
-// filesystem is mounted read-only (matching the macOS Seatbelt profile).
+// forbid-read paths so directories appear empty and files read as empty. The
+// rest of the filesystem is mounted read-only (matching macOS Seatbelt).
 func bwrapArgs(spec Spec, sh Shell, command string) []string {
 	args := []string{
 		"--unshare-net", // deny network by default
@@ -99,9 +99,7 @@ func bwrapArgs(spec Spec, sh Shell, command string) []string {
 			args = append(args, "--bind", root, root)
 		}
 	}
-	for _, root := range spec.ForbidReadRoots {
-		args = append(args, "--tmpfs", root)
-	}
+	args = append(args, bwrapForbidReadArgs(spec.ForbidReadRoots)...)
 	return append(args, sh.argv(command)...)
 }
 
@@ -128,9 +126,7 @@ func bwrapArgsForArgs(spec Spec, args []string) []string {
 			out = append(out, "--bind", root, root)
 		}
 	}
-	for _, root := range spec.ForbidReadRoots {
-		out = append(out, "--tmpfs", root)
-	}
+	out = append(out, bwrapForbidReadArgs(spec.ForbidReadRoots)...)
 	// /tmp is intentionally replaced with an empty filesystem above so MCP
 	// servers cannot inspect unrelated host temporary files. A configured
 	// executable may itself live below /tmp, though (for example a downloaded
@@ -139,6 +135,58 @@ func bwrapArgsForArgs(spec Spec, args []string) []string {
 	// revealing its siblings.
 	out = append(out, bwrapExecutableMountArgs(args)...)
 	return append(out, args...)
+}
+
+// bwrapForbidReadArgs returns mounts suitable for both configured directory
+// roots and Reasonix-owned credential files. bubblewrap cannot mount tmpfs on a
+// file, so an existing file is replaced by a read-only /dev/null bind instead.
+// Missing paths are ignored: there are no bytes to protect and passing a
+// missing mount destination would make an otherwise valid sandbox fail closed.
+func bwrapForbidReadArgs(roots []string) []string {
+	type forbiddenPath struct {
+		path  string
+		isDir bool
+	}
+	paths := make([]forbiddenPath, 0, len(roots))
+	for _, root := range roots {
+		root, err := filepath.Abs(root)
+		if err != nil {
+			continue
+		}
+		if real, err := filepath.EvalSymlinks(root); err == nil {
+			root = real
+		}
+		info, err := os.Stat(root)
+		if err != nil {
+			continue
+		}
+		paths = append(paths, forbiddenPath{path: root, isDir: info.IsDir()})
+	}
+
+	var out []string
+	seen := map[string]bool{}
+	for _, entry := range paths {
+		if seen[entry.path] {
+			continue
+		}
+		covered := false
+		for _, parent := range paths {
+			if parent.isDir && parent.path != entry.path && pathWithin(entry.path, parent.path) {
+				covered = true
+				break
+			}
+		}
+		if covered {
+			continue
+		}
+		seen[entry.path] = true
+		if entry.isDir {
+			out = append(out, "--tmpfs", entry.path)
+			continue
+		}
+		out = append(out, "--ro-bind", "/dev/null", entry.path)
+	}
+	return out
 }
 
 func bwrapExecutableMountArgs(args []string) []string {

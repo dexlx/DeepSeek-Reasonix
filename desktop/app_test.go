@@ -5748,8 +5748,8 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	}
 
 	grace := 500 * time.Millisecond
-	slack := 300 * time.Millisecond
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
+	teardownNotices := make(chan event.Event, 2)
+	jm := jobs.NewManager(teardownNoticeSink(teardownNotices), jobs.WithTeardownGrace(grace))
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: path, Label: "test", Jobs: jm})
 	keepCtrl := control.New(control.Options{SessionDir: dir, SessionPath: keepPath, Label: "keep"})
 	releaseJob := startNonCooperativeSessionJob(t, jm, path)
@@ -5769,9 +5769,10 @@ func TestDeleteSessionWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		t.Fatalf("DeleteSession(stuck job): %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > grace+slack {
-		t.Fatalf("DeleteSession took %s, want one teardown grace plus scheduling slack", elapsed)
+	if elapsed > grace+2*time.Second {
+		t.Fatalf("DeleteSession took %s, want one teardown grace plus bounded metadata I/O", elapsed)
 	}
+	assertSingleTeardownTimeoutNotice(t, teardownNotices, grace)
 	if !agent.IsCleanupPending(path) {
 		t.Fatalf("stuck delete should mark cleanup pending")
 	}
@@ -6083,8 +6084,8 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 	sessionPath := writeTopicSession(t, dir, "stuck-topic.jsonl", topicID, "Stuck trash", projectRoot)
 
 	grace := 500 * time.Millisecond
-	slack := 300 * time.Millisecond
-	jm := jobs.NewManager(event.Discard, jobs.WithTeardownGrace(grace))
+	teardownNotices := make(chan event.Event, 2)
+	jm := jobs.NewManager(teardownNoticeSink(teardownNotices), jobs.WithTeardownGrace(grace))
 	ctrl := control.New(control.Options{SessionDir: dir, SessionPath: sessionPath, Label: "test", Jobs: jm, WorkspaceRoot: projectRoot})
 	releaseJob := startNonCooperativeSessionJob(t, jm, sessionPath)
 	defer func() {
@@ -6123,14 +6124,90 @@ func TestTrashTopicWithStuckJobReturnsAfterSingleGrace(t *testing.T) {
 		t.Fatalf("TrashTopic(stuck job): %v", err)
 	}
 	elapsed := time.Since(start)
-	if elapsed > grace+slack {
-		t.Fatalf("TrashTopic took %s, want one teardown grace plus scheduling slack", elapsed)
+	if elapsed > grace+2*time.Second {
+		t.Fatalf("TrashTopic took %s, want one teardown grace plus bounded metadata I/O", elapsed)
 	}
+	assertSingleTeardownTimeoutNotice(t, teardownNotices, grace)
 	if !agent.IsCleanupPending(sessionPath) {
 		t.Fatalf("stuck topic trash should mark cleanup pending")
 	}
 	if _, err := os.Stat(sessionPath); err != nil {
 		t.Fatalf("stuck topic session should remain until delayed trash: %v", err)
+	}
+}
+
+func teardownNoticeSink(out chan<- event.Event) event.Sink {
+	return event.FuncSink(func(e event.Event) {
+		if e.Kind == event.Notice && strings.Contains(e.Detail, "background job teardown timed out") {
+			out <- e
+		}
+	})
+}
+
+func assertSingleTeardownTimeoutNotice(t *testing.T, notices <-chan event.Event, grace time.Duration) {
+	t.Helper()
+	var notice event.Event
+	select {
+	case notice = <-notices:
+	default:
+		t.Fatal("missing background-job teardown timeout notice")
+	}
+	var waited time.Duration
+	for _, field := range strings.Fields(notice.Detail) {
+		if !strings.HasPrefix(field, "waited=") {
+			continue
+		}
+		parsed, err := time.ParseDuration(strings.TrimSuffix(strings.TrimPrefix(field, "waited="), ";"))
+		if err != nil {
+			t.Fatalf("parse teardown waited field %q: %v", field, err)
+		}
+		waited = parsed
+		break
+	}
+	if waited < grace-10*time.Millisecond || waited > grace+250*time.Millisecond {
+		t.Fatalf("teardown notice waited %s, want one %s grace; detail: %s", waited, grace, notice.Detail)
+	}
+	select {
+	case extra := <-notices:
+		t.Fatalf("duplicate teardown timeout notice: %+v", extra)
+	default:
+	}
+}
+
+func TestWaitDestroyHandlesWaitsConcurrently(t *testing.T) {
+	started := make(chan int, 2)
+	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	defer releaseAll()
+
+	handle := func(id int) control.SessionDestroyHandle {
+		return control.SessionDestroyHandle{Wait: func() jobs.TeardownResult {
+			started <- id
+			<-release
+			return jobs.TeardownResult{TimedOut: []jobs.TeardownJob{{ID: strconv.Itoa(id)}}}
+		}}
+	}
+	done := make(chan bool, 1)
+	go func() { done <- waitDestroyHandles([]control.SessionDestroyHandle{handle(1), handle(2)}) }()
+
+	seen := map[int]bool{}
+	for len(seen) < 2 {
+		select {
+		case id := <-started:
+			seen[id] = true
+		case <-time.After(2 * time.Second):
+			t.Fatalf("destroy waits did not start concurrently; started=%v", seen)
+		}
+	}
+	releaseAll()
+	select {
+	case timedOut := <-done:
+		if !timedOut {
+			t.Fatal("waitDestroyHandles lost timed-out result")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("waitDestroyHandles did not return after all waits completed")
 	}
 }
 
