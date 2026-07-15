@@ -73,7 +73,6 @@ provider_access = ["deepseek"]
 
 [agent]
 auto_plan = "off"
-max_steps = 0
 
 [[providers]]
 name        = "deepseek"

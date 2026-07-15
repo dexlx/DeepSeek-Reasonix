@@ -75,15 +75,16 @@ func agentKeepPolicy(keep []string) agent.KeepPolicy {
 
 // Options carries the per-run knobs a frontend chooses; everything else is read
 // from configuration. Model "" falls back to the configured default_model;
-// MaxSteps 0 uses the config/default. RequireKey forces the executor's API key to
+// MaxSteps 0 uses automatic execution. RequireKey forces the executor's API key to
 // be present (run/serve pass true so a missing key fails fast; chat/desktop pass
 // false so the UI is reachable before a key is set). Sink receives the agent's
 // typed event stream.
 type Options struct {
-	Model      string
-	MaxSteps   int
-	RequireKey bool
-	Sink       event.Sink
+	Model       string
+	MaxSteps    int
+	MaxStepsKey string
+	RequireKey  bool
+	Sink        event.Sink
 	// EffortOverride is a session-local reasoning effort override. Nil means use
 	// the resolved provider config; a non-nil empty string means provider default.
 	EffortOverride *string
@@ -171,8 +172,11 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	// before config-only commands; this call stays as the shared frontend fallback.
 	var migrated *config.MigrationResult
 	var migErr error
+	var stepLimitsMigrated bool
+	var stepLimitMigErr error
 	if !config.SafeModeRequested() {
 		migrated, migErr = config.MigrateLegacyIfNeededForRoot(root)
+		stepLimitsMigrated, stepLimitMigErr = config.MigrateLegacyAgentStepLimitsForRoot(root)
 	}
 	cfg, err := config.LoadForRoot(root)
 	if err != nil {
@@ -249,6 +253,25 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Config migration did not complete.", Detail: "config migration from ~/.reasonix failed: " + migErr.Error()})
 	} else if migrated != nil {
 		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Text: migrated.Notice()})
+	}
+	if stepLimitsMigrated || cfg.IgnoredLegacyAgentStepLimits() {
+		level := event.LevelInfo
+		text := "Deprecated agent step limits were removed."
+		detail := "[agent].max_steps and planner_max_steps are no longer used; Reasonix now manages interactive progress automatically. " +
+			"Use the CLI --max-steps flag for a one-off run or [bot].max_steps for unattended bot sessions."
+		if stepLimitMigErr != nil {
+			level = event.LevelWarn
+			text = "Deprecated agent step limits were ignored."
+			detail += " The old keys were ignored but could not be removed: " + stepLimitMigErr.Error()
+		}
+		sink.Emit(event.Event{
+			Kind:   event.Notice,
+			Level:  level,
+			Text:   text,
+			Detail: detail,
+		})
+	} else if stepLimitMigErr != nil {
+		sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelWarn, Text: "Deprecated agent step-limit migration did not complete.", Detail: stepLimitMigErr.Error()})
 	}
 	// Safe Mode is a recovery boundary: it must not rewrite memory or session
 	// state that a crash may have corrupted, so the legacy-store imports run
@@ -622,7 +645,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		cleanup = func() { prev(); lspMgr.Close() }
 	}
 
-	maxSteps := cfg.Agent.MaxSteps
+	maxSteps := 0
 	if opts.MaxSteps > 0 {
 		maxSteps = opts.MaxSteps
 	}
@@ -1324,6 +1347,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	executor := agent.New(execProv, reg, execSess, agent.Options{
 		MaxSteps:                           maxSteps,
+		MaxStepsKey:                        opts.MaxStepsKey,
 		Temperature:                        cfg.Agent.Temperature,
 		Pricing:                            entry.Price,
 		Gate:                               headlessGate,
@@ -1385,8 +1409,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			plannerSess := agent.NewSession(agent.PlannerPromptWithContext(mem.Block()))
 			plannerTools := agent.PlannerToolRegistry(reg)
 			runner = agent.NewCoordinator(plannerProv, plannerSess, pe.Price, plannerTools, agent.Options{
-				MaxSteps:                 cfg.Agent.PlannerMaxSteps,
-				MaxStepsKey:              "agent.planner_max_steps",
+				MaxSteps:                 0,
 				Gate:                     headlessGate,
 				ContextWindow:            pe.ContextWindow,
 				SoftCompactRatio:         cfg.Agent.SoftCompactRatio,

@@ -5,12 +5,63 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"testing"
 	"time"
 
 	"reasonix/internal/event"
 	"reasonix/internal/plugin"
 )
+
+func TestBuildSafeModeLeavesDeprecatedStepLimitsUntouched(t *testing.T) {
+	isolateConfigHome(t)
+	project := robustTempDir(t)
+	t.Setenv("REASONIX_SAFE_MODE", "1")
+	raw := []byte(`default_model = "broken-model"
+
+[agent]
+max_steps = 2
+planner_max_steps = 3
+
+[[providers]]
+name = "broken-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+`)
+	path := filepath.Join(project, "reasonix.toml")
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	var notices []event.Event
+	ctrl, err := Build(context.Background(), Options{
+		WorkspaceRoot: project,
+		SessionDir:    filepath.Join(t.TempDir(), "sessions"),
+		Sink: event.FuncSink(func(e event.Event) {
+			if e.Kind == event.Notice {
+				notices = append(notices, e)
+			}
+		}),
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	ctrl.Close()
+
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(raw) {
+		t.Fatalf("Safe Mode rewrote project config:\n--- got ---\n%s\n--- want ---\n%s", got, raw)
+	}
+	for _, notice := range notices {
+		if strings.Contains(notice.Text, "Deprecated agent step") {
+			t.Fatalf("Safe Mode reported a migration that it must not run: %+v", notice)
+		}
+	}
+}
 
 // TestBuildNormalModeKeepsSourceConnectorAndSkillTools is the inverse of
 // TestBuildSafeModeOmitsSourceConnectorAndSkillTools: it pins the normal-mode

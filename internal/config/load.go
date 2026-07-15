@@ -7,7 +7,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
+	"reasonix/internal/fileutil"
 	fileencoding "reasonix/internal/fileutil/encoding"
 	"reasonix/internal/provider"
 )
@@ -69,8 +71,6 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 		}
 		userDefaultModelExplicit = tomlFileDefinesKey(uc, "default_model")
 	}
-	globalMaxSteps := cfg.Agent.MaxSteps
-	globalPlannerMaxSteps := cfg.Agent.PlannerMaxSteps
 	globalMemoryCompiler := cfg.Agent.MemoryCompiler
 	userDefaultModel := cfg.DefaultModel
 	// Deep-copy: TOML decoding writes through an existing *bool rather than
@@ -86,11 +86,6 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	if err := mergeTOML(cfg, projectTOML); err != nil {
 		return nil, err
 	}
-	// Runtime step caps are user/global controls, not project policy. Keep the
-	// project config's other fields, but do not let ./reasonix.toml override
-	// the user's execution and planner round limits.
-	cfg.Agent.MaxSteps = globalMaxSteps
-	cfg.Agent.PlannerMaxSteps = globalPlannerMaxSteps
 	cfg.Agent.MemoryCompiler = globalMemoryCompiler
 	// Secret protection is a user-global security control: a cloned repo's
 	// reasonix.toml must not be able to disable redaction or flip on the
@@ -141,6 +136,7 @@ func loadForRoot(root string, migrateOnDisk bool) (*Config, error) {
 	_ = mergeInstalledPluginPackages(cfg, root)
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
+	cfg.ignoredLegacyStepLimits = normalizeLegacyAgentStepLimits(cfg)
 	normalizeLegacyMCPTiers(cfg)
 	normalizeLegacyStepFunBaseURLs(cfg)
 	normalizeLegacyMimoCustomProviders(cfg)
@@ -625,6 +621,7 @@ func loadForEditStrict(path string, loadCredentials, persistMigrations bool) (*C
 func normalizeConfigForEdit(cfg *Config) bool {
 	normalizePluginCommandLines(cfg)
 	normalizeLegacyEffort(cfg)
+	normalizeLegacyAgentStepLimits(cfg)
 	normalizeLegacyMCPTiers(cfg)
 	changed := normalizeLegacyStepFunBaseURLs(cfg)
 	changed = normalizeLegacyMimoCustomProviders(cfg) || changed
@@ -677,6 +674,100 @@ func normalizeLegacyMCPTiers(c *Config) {
 	}
 }
 
+// normalizeLegacyAgentStepLimits keeps old TOML readable without allowing a
+// stale hidden value to override the adaptive progress policy. The fields stay
+// in AgentConfig for decoder and cross-version desktop compatibility only.
+func normalizeLegacyAgentStepLimits(c *Config) bool {
+	if c == nil {
+		return false
+	}
+	found := c.Agent.MaxSteps != 0 || c.Agent.PlannerMaxSteps != 0
+	c.Agent.MaxSteps = 0
+	c.Agent.PlannerMaxSteps = 0
+	return found
+}
+
+var legacyAgentStepLimitMigrationMu sync.Mutex
+
+// MigrateLegacyAgentStepLimitsForRoot removes retired [agent] step-limit keys
+// from the user and project config selected for root. Boot calls it immediately
+// before LoadForRoot, so config-only/read-only commands never rewrite files and
+// the runtime can surface exactly one migration notice.
+func MigrateLegacyAgentStepLimitsForRoot(root string) (bool, error) {
+	root = resolveRoot(root)
+	paths := make([]string, 0, 2)
+	if userPath := userConfigLoadPath(); userPath != "" {
+		paths = append(paths, userPath)
+	}
+	projectPath := "reasonix.toml"
+	if root != "." {
+		projectPath = filepath.Join(root, "reasonix.toml")
+	}
+	paths = append(paths, projectPath)
+
+	changedAny := false
+	seen := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		clean := filepath.Clean(path)
+		if _, ok := seen[clean]; ok {
+			continue
+		}
+		seen[clean] = struct{}{}
+		changed, err := migrateLegacyAgentStepLimitsFile(path)
+		if err != nil {
+			return changedAny, fmt.Errorf("migrate deprecated agent step limits in %s: %w", path, err)
+		}
+		changedAny = changedAny || changed
+	}
+	return changedAny, nil
+}
+
+// migrateLegacyAgentStepLimitsFile removes retired [agent] step-limit keys
+// before runtime decoding. A process-wide lock makes concurrent desktop tab
+// builds observe a single migration; the atomic rewrite protects other readers.
+func migrateLegacyAgentStepLimitsFile(path string) (bool, error) {
+	legacyAgentStepLimitMigrationMu.Lock()
+	defer legacyAgentStepLimitMigrationMu.Unlock()
+
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	raw, err := fileencoding.ReadFileUTF8(path)
+	if err != nil {
+		return false, err
+	}
+	next, changed := stripLegacyAgentStepLimitLines(string(raw))
+	if !changed {
+		return false, nil
+	}
+	if err := fileutil.AtomicWriteFile(path, []byte(next), info.Mode().Perm()); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func stripLegacyAgentStepLimitLines(raw string) (string, bool) {
+	lines := strings.Split(raw, "\n")
+	section := ""
+	changed := false
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		if header := tomlSectionHeader(line); header != "" {
+			section = header
+		}
+		if section == "agent" && (isTOMLKeyAssignment(line, "max_steps") || isTOMLKeyAssignment(line, "planner_max_steps")) {
+			changed = true
+			continue
+		}
+		out = append(out, line)
+	}
+	return strings.Join(out, "\n"), changed
+}
+
 func migrateLegacyMCPTiersFile(path string) error {
 	info, err := os.Stat(path)
 	if err != nil {
@@ -719,12 +810,13 @@ func tomlSectionHeader(line string) string {
 	if i := strings.Index(trimmed, "#"); i >= 0 {
 		trimmed = strings.TrimSpace(trimmed[:i])
 	}
-	switch trimmed {
-	case "[[plugins]]":
-		return "plugins"
-	default:
-		return "other"
+	if strings.HasPrefix(trimmed, "[[") && strings.HasSuffix(trimmed, "]]") {
+		return strings.TrimSpace(trimmed[2 : len(trimmed)-2])
 	}
+	if strings.HasSuffix(trimmed, "]") {
+		return strings.TrimSpace(trimmed[1 : len(trimmed)-1])
+	}
+	return "other"
 }
 
 func isTOMLKeyAssignment(line, key string) bool {

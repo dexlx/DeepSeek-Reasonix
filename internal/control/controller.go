@@ -5028,6 +5028,11 @@ func PlanTodosJSON(plan string) string {
 	if len(items) == 0 {
 		return ""
 	}
+	// Host-generated state must obey the same contract as a model todo_write.
+	// Returning no seed is safer than showing a list the agent cannot advance.
+	if err := evidence.ValidateSerialTodos(seedTodoEvidenceState(items)); err != nil {
+		return ""
+	}
 	b, err := json.Marshal(map[string]any{"todos": items})
 	if err != nil {
 		return ""
@@ -5053,8 +5058,10 @@ func completedPlanTodosJSON(args string) string {
 }
 
 // parsePlanTodos extracts a starter task list from an approved plan's markdown
-// list items (bulleted or numbered): the first is in_progress, the rest pending,
-// capped so a long plan can't flood the panel. It understands ONLY markdown lists
+// list items (bulleted or numbered), capped so a long plan can't flood the panel.
+// A flat list starts its first item; a layered list starts the first sub-step and
+// keeps its phase pending until every child is complete, matching todo_write's
+// serial state machine. It understands ONLY markdown lists
 // — an unambiguous, standard structure — and deliberately does not guess at prose,
 // tables, or arrow sequences (those need brittle, language-specific heuristics).
 // The plan-mode marker steers the model to present its plan as a list, so this
@@ -5067,16 +5074,37 @@ func parsePlanTodos(plan string) []seedTodo {
 		if !ok {
 			continue
 		}
-		status := "pending"
-		if len(todos) == 0 {
-			status = "in_progress"
-		}
-		todos = append(todos, seedTodo{Content: item, Status: status, Level: level})
+		todos = append(todos, seedTodo{Content: item, Status: "pending", Level: level})
 		if len(todos) >= 20 {
 			break
 		}
 	}
+	if len(todos) == 0 {
+		return nil
+	}
+	// Be tolerant of a model that emits an indented bullet before a phase
+	// heading: promote the first item so the host never seeds an orphan L1.
+	if todos[0].Level == 1 {
+		todos[0].Level = 0
+	}
+	normalized := evidence.NormalizeSerialTodos(seedTodoEvidenceState(todos))
+	for i := range todos {
+		todos[i].Status = normalized[i].Status
+		todos[i].Level = normalized[i].Level
+	}
 	return todos
+}
+
+func seedTodoEvidenceState(todos []seedTodo) []evidence.TodoItem {
+	state := make([]evidence.TodoItem, len(todos))
+	for i, todo := range todos {
+		state[i] = evidence.TodoItem{
+			Content: todo.Content,
+			Status:  todo.Status,
+			Level:   todo.Level,
+		}
+	}
+	return state
 }
 
 func (c *Controller) sessionMessageCount() int {

@@ -240,6 +240,8 @@ await act(async () => {
 
 const compactButton = Array.from(document.querySelectorAll("button")).find((button) => button.textContent?.trim() === "Compact") as HTMLButtonElement | undefined;
 if (!compactButton) throw new Error("compact display mode button did not render");
+eq(document.querySelectorAll(".step-limit-control").length, 0, "general settings hide executor and planner step-limit controls");
+ok(!document.body.textContent?.includes("step limit"), "general settings keep automatic progress free of step-limit copy");
 
 await act(async () => {
   compactButton.click();

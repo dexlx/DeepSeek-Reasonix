@@ -249,6 +249,7 @@ func setupProfileWithOverrides(ctx context.Context, modelName string, maxStepsOv
 	return boot.Build(ctx, boot.Options{
 		Model:                modelName,
 		MaxSteps:             maxStepsOverride,
+		MaxStepsKey:          "--max-steps",
 		RequireKey:           requireKey,
 		Sink:                 sink,
 		TokenMode:            profile,
@@ -319,6 +320,7 @@ func setupQuietProfile(ctx context.Context, modelName string, maxStepsOverride i
 	return boot.Build(ctx, boot.Options{
 		Model:           modelName,
 		MaxSteps:        maxStepsOverride,
+		MaxStepsKey:     "--max-steps",
 		RequireKey:      requireKey,
 		Sink:            sink,
 		Stderr:          io.Discard,
@@ -414,7 +416,7 @@ func runAgent(args []string) int {
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
-	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds (0 = use config/default)")
+	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	showThinking := fs.Bool("show-thinking", false, "show thinking text instead of the collapsed thinking marker")
 	metricsPath := fs.String("metrics", "", "write a JSON token/cache/cost summary of the run to this path")
 	dir := fs.String("dir", "", "change to this directory first (project root); config, sandbox and file tools resolve from here")
@@ -664,7 +666,7 @@ func runServe(args []string) int {
 	fs := flag.NewFlagSet("serve", flag.ContinueOnError)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
-	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds (0 = use config/default)")
+	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	addr := fs.String("addr", "127.0.0.1:8787", "listen address")
 	resume := fs.String("resume", "", "resume a saved session file")
 	auth := fs.String("auth", "", "auth mode: none, token, or password (default: none)")
@@ -823,7 +825,7 @@ func chatREPL(args []string) int {
 	fs.SetInterspersed(true)
 	model := fs.String("model", "", "provider name (default: config default_model)")
 	profileFlag := fs.String("profile", "balanced", "runtime profile: economy | balanced | delivery")
-	maxSteps := fs.Int("max-steps", 0, "max tool-call rounds (0 = use config/default)")
+	maxSteps := fs.Int("max-steps", 0, "one-off max tool-call rounds (0 = automatic)")
 	cont := fs.Bool("continue", false, "resume the most recent saved session")
 	fs.BoolVar(cont, "c", false, "shorthand for --continue")
 	resume := fs.StringP("resume", "r", "", "resume by session ID/query, or open the picker when no value is given")

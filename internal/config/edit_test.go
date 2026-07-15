@@ -1,6 +1,7 @@
 package config
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -1256,7 +1257,7 @@ api_key_env = "PROJECT_ONLY_KEY"
 	}
 }
 
-func TestLoadForRootKeepsGlobalAgentStepLimitsOverProject(t *testing.T) {
+func TestMigrateDeprecatedAgentStepLimitsForRootRunsOnce(t *testing.T) {
 	isolateUserConfigHome(t)
 	root := t.TempDir()
 	userPath := UserConfigPath()
@@ -1268,6 +1269,9 @@ func TestLoadForRootKeepsGlobalAgentStepLimitsOverProject(t *testing.T) {
 max_steps = 17
 planner_max_steps = 9
 temperature = 0.4
+
+[bot]
+max_steps = 21
 `), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -1282,30 +1286,12 @@ temperature = 0.8
 		t.Fatal(err)
 	}
 
-	cfg, err := LoadForRoot(root)
+	changed, err := MigrateLegacyAgentStepLimitsForRoot(root)
 	if err != nil {
-		t.Fatalf("LoadForRoot: %v", err)
+		t.Fatalf("MigrateLegacyAgentStepLimitsForRoot: %v", err)
 	}
-	if cfg.Agent.MaxSteps != 17 || cfg.Agent.PlannerMaxSteps != 9 {
-		t.Fatalf("agent steps = max:%d planner:%d, want global 17/9", cfg.Agent.MaxSteps, cfg.Agent.PlannerMaxSteps)
-	}
-	if cfg.Agent.Temperature != 0.8 {
-		t.Fatalf("agent temperature = %v, want project override to keep working for other agent settings", cfg.Agent.Temperature)
-	}
-	if cfg.DefaultModel != "deepseek-pro" {
-		t.Fatalf("default_model = %q, want project config to keep overriding unrelated fields", cfg.DefaultModel)
-	}
-}
-
-func TestLoadForRootIgnoresProjectAgentStepLimitsWithoutUserConfig(t *testing.T) {
-	isolateUserConfigHome(t)
-	root := t.TempDir()
-	if err := os.WriteFile(filepath.Join(root, "reasonix.toml"), []byte(`
-[agent]
-max_steps = 3
-planner_max_steps = 4
-`), 0o644); err != nil {
-		t.Fatal(err)
+	if !changed {
+		t.Fatal("first migration should remove deprecated step-limit keys")
 	}
 
 	cfg, err := LoadForRoot(root)
@@ -1313,7 +1299,75 @@ planner_max_steps = 4
 		t.Fatalf("LoadForRoot: %v", err)
 	}
 	if cfg.Agent.MaxSteps != 0 || cfg.Agent.PlannerMaxSteps != 0 {
-		t.Fatalf("agent steps = max:%d planner:%d, want built-in global defaults 0/0", cfg.Agent.MaxSteps, cfg.Agent.PlannerMaxSteps)
+		t.Fatalf("deprecated agent steps = max:%d planner:%d, want automatic 0/0", cfg.Agent.MaxSteps, cfg.Agent.PlannerMaxSteps)
+	}
+	if cfg.IgnoredLegacyAgentStepLimits() {
+		t.Fatal("migrated config should no longer report legacy step limits")
+	}
+	if cfg.Agent.Temperature != 0.8 {
+		t.Fatalf("agent temperature = %v, want project override to keep working for other agent settings", cfg.Agent.Temperature)
+	}
+	if cfg.DefaultModel != "deepseek-pro" {
+		t.Fatalf("default_model = %q, want project config to keep overriding unrelated fields", cfg.DefaultModel)
+	}
+	if cfg.Bot.MaxSteps != 21 {
+		t.Fatalf("bot.max_steps = %d, want independent bot limit preserved", cfg.Bot.MaxSteps)
+	}
+	for _, path := range []string{userPath, filepath.Join(root, "reasonix.toml")} {
+		raw, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, changed := stripLegacyAgentStepLimitLines(string(raw)); changed {
+			t.Fatalf("runtime migration left deprecated [agent] step limits in %s:\n%s", path, raw)
+		}
+	}
+	userRaw, err := os.ReadFile(userPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(userRaw), "[bot]\nmax_steps = 21") {
+		t.Fatalf("migration removed independent bot.max_steps:\n%s", userRaw)
+	}
+
+	again, err := MigrateLegacyAgentStepLimitsForRoot(root)
+	if err != nil {
+		t.Fatalf("second migration: %v", err)
+	}
+	if again {
+		t.Fatal("migration notice should be one-shot after deprecated keys are removed")
+	}
+}
+
+func TestLoadForRootReadOnlyIgnoresDeprecatedAgentStepLimitsWithoutRewriting(t *testing.T) {
+	isolateUserConfigHome(t)
+	root := t.TempDir()
+	path := filepath.Join(root, "reasonix.toml")
+	original := []byte(`
+[agent]
+max_steps = 3
+planner_max_steps = 4
+`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg, err := LoadForRootReadOnly(root)
+	if err != nil {
+		t.Fatalf("LoadForRootReadOnly: %v", err)
+	}
+	if cfg.Agent.MaxSteps != 0 || cfg.Agent.PlannerMaxSteps != 0 {
+		t.Fatalf("deprecated steps = max:%d planner:%d, want automatic 0/0", cfg.Agent.MaxSteps, cfg.Agent.PlannerMaxSteps)
+	}
+	if !cfg.IgnoredLegacyAgentStepLimits() {
+		t.Fatal("read-only load should report ignored deprecated step limits")
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(raw, original) {
+		t.Fatalf("read-only load rewrote config:\n%s", raw)
 	}
 }
 

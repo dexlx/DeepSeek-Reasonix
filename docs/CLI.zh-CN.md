@@ -26,7 +26,7 @@ reasonix --dir /path/to/project
 | `--model NAME` | 选择已配置的 provider 或 `provider/model` 引用。 |
 | `--profile economy\|balanced\|delivery` | 选择运行时工作模式。 |
 | `--effort LEVEL` | 覆盖当前会话的 reasoning effort。 |
-| `--max-steps N` | 覆盖工具调用轮数上限；`0` 使用配置默认值。 |
+| `--max-steps N` | 为本次运行设置工具调用轮数上限；`0` 使用自动执行。 |
 | `--dir PATH` | 加载配置和工具前切换 workspace 根目录。 |
 | `--add-dir PATH` | 增加一个允许工具写入的目录；可重复传入。 |
 | `-c`、`--continue` | 恢复最近一次会话。 |

@@ -205,8 +205,6 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Notifications.TurnDone = true
 	orig.Notifications.ApprovalRequest = true
 	orig.Notifications.AskRequest = true
-	orig.Agent.MaxSteps = 30
-	orig.Agent.PlannerMaxSteps = 0
 	orig.Agent.AutoPlanClassifier = "deepseek-flash"
 	orig.Agent.ReasoningLanguage = "zh"
 	orig.Agent.ToolResultSnipRatio = 0.65
@@ -1074,20 +1072,13 @@ func TestRenderTOMLPreservesDesktopDisplayMode(t *testing.T) {
 	}
 }
 
-func TestRenderTOMLDefaultStepsCommentedOut(t *testing.T) {
+func TestRenderTOMLDefaultStepsOmitted(t *testing.T) {
 	isolateUserConfigHome(t)
 	out := RenderTOML(Default())
 	agentLines := extractSectionLines(out, "[agent]")
 	for _, line := range agentLines {
-		if strings.HasPrefix(line, "max_steps ") || strings.HasPrefix(line, "max_steps=") {
-			if !strings.HasPrefix(line, "#") {
-				t.Errorf("default max_steps should be commented out in [agent], got: %s", line)
-			}
-		}
-		if strings.HasPrefix(line, "planner_max_steps ") || strings.HasPrefix(line, "planner_max_steps=") {
-			if !strings.HasPrefix(line, "#") {
-				t.Errorf("default planner_max_steps should be commented out in [agent], got: %s", line)
-			}
+		if strings.Contains(line, "max_steps") || strings.Contains(line, "planner_max_steps") {
+			t.Errorf("default step limits should be hidden from generated config, got: %s", line)
 		}
 	}
 }
@@ -1128,67 +1119,45 @@ func extractSectionLines(toml, section string) []string {
 	return lines
 }
 
-func TestRenderTOMLNonDefaultStepsWrittenExplicitly(t *testing.T) {
+func TestRenderTOMLOmitsDeprecatedAgentStepLimits(t *testing.T) {
 	isolateUserConfigHome(t)
 	c := Default()
 	c.Agent.MaxSteps = 5
 	c.Agent.PlannerMaxSteps = 7
 	out := RenderTOML(c)
-	agentLines := extractSectionLines(out, "[agent]")
-	foundMax, foundPlanner := false, false
-	for _, line := range agentLines {
-		if !strings.HasPrefix(line, "#") && strings.HasPrefix(line, "max_steps ") {
-			foundMax = true
+	for _, line := range extractSectionLines(out, "[agent]") {
+		if strings.Contains(line, "max_steps") || strings.Contains(line, "planner_max_steps") {
+			t.Fatalf("deprecated step limit should never be rendered, got: %s", line)
 		}
-		if !strings.HasPrefix(line, "#") && strings.HasPrefix(line, "planner_max_steps ") {
-			foundPlanner = true
-		}
-	}
-	if !foundMax {
-		t.Error("non-default max_steps should be written explicitly in [agent]")
-	}
-	if !foundPlanner {
-		t.Error("non-default planner_max_steps should be written explicitly in [agent]")
 	}
 }
 
-func TestRenderTOMLDefaultStepsDoNotOverrideGlobalConfig(t *testing.T) {
+func TestLoadForEditIgnoresAndDropsDeprecatedAgentStepLimitsOnSave(t *testing.T) {
 	isolateUserConfigHome(t)
-	globalDir := filepath.Dir(UserConfigPath())
-	if err := os.MkdirAll(globalDir, 0o755); err != nil {
+	path := UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	globalPath := filepath.Join(globalDir, "config.toml")
-	if err := os.WriteFile(globalPath, []byte("[agent]\nplanner_max_steps = 9\nmax_steps = 100\n"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	projectDir := t.TempDir()
-	projectTOML := RenderTOML(Default())
-	projectPath := filepath.Join(projectDir, "reasonix.toml")
-	if err := os.WriteFile(projectPath, []byte(projectTOML), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("[agent]\nplanner_max_steps = 9\nmax_steps = 100\ntemperature = 0.4\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
-	cfg := Default()
-	if err := mergeFile(cfg, globalPath); err != nil {
-		t.Fatalf("global merge failed: %v", err)
+	cfg := LoadForEdit(path)
+	if cfg.Agent.MaxSteps != 0 || cfg.Agent.PlannerMaxSteps != 0 {
+		t.Fatalf("deprecated limits should normalize to zero, got max=%d planner=%d", cfg.Agent.MaxSteps, cfg.Agent.PlannerMaxSteps)
 	}
-	if cfg.Agent.PlannerMaxSteps != 9 {
-		t.Fatalf("after global: planner_max_steps = %d, want 9", cfg.Agent.PlannerMaxSteps)
+	if cfg.Agent.Temperature != 0.4 {
+		t.Fatalf("unrelated agent setting changed: temperature=%v", cfg.Agent.Temperature)
 	}
-	if cfg.Agent.MaxSteps != 100 {
-		t.Fatalf("after global: max_steps = %d, want 100", cfg.Agent.MaxSteps)
+	if err := cfg.SaveTo(path); err != nil {
+		t.Fatal(err)
 	}
-
-	if err := mergeFile(cfg, projectPath); err != nil {
-		t.Fatalf("project merge failed: %v", err)
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
 	}
-	if cfg.Agent.PlannerMaxSteps != 9 {
-		t.Errorf("after project: planner_max_steps = %d, want 9 (global should not be overridden by commented-out default)", cfg.Agent.PlannerMaxSteps)
-	}
-	if cfg.Agent.MaxSteps != 100 {
-		t.Errorf("after project: max_steps = %d, want 100 (global should not be overridden by commented-out default)", cfg.Agent.MaxSteps)
+	if _, changed := stripLegacyAgentStepLimitLines(string(raw)); changed {
+		t.Fatalf("saved config retained deprecated step limits:\n%s", raw)
 	}
 }
 

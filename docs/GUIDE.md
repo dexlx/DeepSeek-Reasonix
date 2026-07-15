@@ -35,8 +35,7 @@ built-in defaults**. Starting with **Reasonix v1.8.1**, the user config lives at
 `~/.reasonix/config.toml` on macOS/Linux and
 `%AppData%\reasonix\config.toml` on Windows; see
 [Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
-Fields marked user/global only, including agent step limits, are not overridden
-by `./reasonix.toml`.
+Fields marked user/global only are not overridden by `./reasonix.toml`.
 Provider entries name secrets with `api_key_env`, while the secret values live in
 Reasonix's global `<Reasonix home>/.env`, shared by CLI and desktop. Project
 `.env`, home `.env`, inherited shell environment variables, legacy credentials,
@@ -59,8 +58,6 @@ default_model = "deepseek-flash"   # executor; set [agent].planner_model to add 
 # cursor_shape = "underline"       # block|underline|bar; CLI/TUI text cursor
 
 [agent]
-max_steps = 0                    # user/global only; executor tool-call rounds; 0 = no limit
-planner_max_steps = 0            # user/global only; planner read-only tool-call rounds; 0 = no limit
 reasoning_language = "auto"      # visible reasoning text: auto|zh|en
 # plan_mode_allowed_tools = ["custom_reader"]   # extra read-only custom tools only;
 #                                                # does not unlock blocked tools or unsafe bash
@@ -879,12 +876,22 @@ planner_model = "deepseek-pro"   # used as the low-frequency planner
 
 The planner sees loaded `REASONIX.md` / `AGENTS.md` memory and a small read-only
 research tool set, so it can inspect relevant files before handing a plan to the
-executor. Writer and workflow tools remain executor-only. `max_steps` limits the
-executor; `planner_max_steps` limits only the planner, and either can be set to
-`0` for no round limit.
+executor. Writer and workflow tools remain executor-only. Reasonix manages
+normal execution automatically: if an active todo produces no new completion,
+unique read, command, or mutation for 8 tool-call rounds, the host asks the
+executor to reassess. After 16 no-progress rounds it pauses with saved work that
+can be resumed in the next user turn. Exact repeats do not count as progress;
+new host-observed work renews the lease. Two-level task lists keep the same
+single-current contract: the active level-1 sub-step is the one `in_progress`
+item while its level-0 phase stays `pending`; sub-steps are worked and signed
+off in order, and once every sub-step has completed the phase itself becomes
+`in_progress` for its own final sign-off.
 
-Keep step-limit preferences in the user config. Project `./reasonix.toml` files
-do not override `max_steps` or `planner_max_steps`.
+Existing `[agent].max_steps` and `planner_max_steps` keys remain syntactically
+accepted during upgrades, but their values are ignored and removed with a
+one-time notice. This prevents a stale hidden limit from truncating automatic
+progress or inherited subagent work. Use the one-off CLI `--max-steps` flag when
+an explicit run budget is needed; unattended bots retain `[bot].max_steps`.
 
 Subagent skills inherit the executor model by default. Set `subagent_model` to
 run them on another configured model, or use `subagent_models` to override only

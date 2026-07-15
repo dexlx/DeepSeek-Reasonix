@@ -13465,27 +13465,6 @@ body > .mermaid-diagram--fullscreen {
   cursor: not-allowed;
 }
 
-.step-limit-control {
-  display: flex;
-  align-items: center;
-  justify-content: flex-end;
-  gap: 8px;
-  width: 100%;
-  max-width: 640px;
-  min-width: 0;
-}
-
-.step-limit-control .set-seg {
-  min-width: 0;
-  overflow-x: auto;
-}
-
-.step-limit-control__custom {
-  width: 82px;
-  flex: 0 0 82px;
-  text-align: center;
-}
-
 .settings-sound-editor {
   display: grid;
   grid-template-columns: minmax(0, 1fr);
@@ -14069,14 +14048,6 @@ body > .mermaid-diagram--fullscreen {
     min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-  }
-
-  .step-limit-control {
-    justify-content: flex-start;
-  }
-
-  .step-limit-control .set-seg {
-    flex-shrink: 0;
   }
 
   .settings-subtabs {

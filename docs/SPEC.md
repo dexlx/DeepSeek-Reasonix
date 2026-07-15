@@ -173,8 +173,8 @@ prefix cache-stable:
 - The **planner** (low-frequency) runs in its own session with the same standing
   memory context plus a filtered read-only research tool set, then produces a
   concise plan. It can inspect files/docs before planning, but writer and
-  workflow tools are not exposed to it. `agent.planner_max_steps` bounds this
-  read-only exploration independently from the executor's `agent.max_steps`.
+  workflow tools are not exposed to it. It has no user-configured total-round
+  cap; caller cancellation and context safeguards remain available.
 - The plan is handed off as structured text to the **executor** — a full
   tool-using `Agent` in its own session — which carries it out.
 - The sessions never mix, so neither model's prefix is disturbed by the other's
@@ -544,18 +544,14 @@ Resolution order: **flag > project `./reasonix.toml` > the user config file
 at `~/.reasonix/config.toml` on macOS/Linux and
 `%AppData%\reasonix\config.toml` on Windows. See
 [Configuration paths](./CONFIG_PATHS.md) for migration and related data paths.
-Fields marked user/global only, including agent step limits, are not overridden
-by project `reasonix.toml`.
+Fields marked user/global only are not overridden by project `reasonix.toml`.
 Provider entries name secrets with `api_key_env`; saved key values live in
 Reasonix's global `<Reasonix home>/.env`, shared by CLI and desktop. Project
 `.env`, home `.env`, inherited shell environment variables, legacy credentials,
 and the OS keyring are not provider-key runtime fallbacks. Project `.env` still
 feeds workspace-scoped, non-provider `${VAR}` expansion for MCP/plugin settings
-without importing provider keys or Reasonix control variables. Step-limit
-preferences belong in the user config.
-Project `reasonix.toml` does not override `agent.max_steps` or
-`agent.planner_max_steps`, and it does not override the user-level Memory v5
-compiler switch.
+without importing provider keys or Reasonix control variables. Project
+`reasonix.toml` does not override the user-level Memory v5 compiler switch.
 
 ```toml
 default_model = "deepseek"   # provider name (→ its default model) or "provider/model"
@@ -567,8 +563,6 @@ default_model = "deepseek"   # provider name (→ its default model) or "provide
 
 [agent]
 system_prompt = "You are Reasonix, a coding agent..."  # or system_prompt_file = "..."
-max_steps         = 0    # user/global only; executor tool-call rounds; 0 = no limit
-planner_max_steps = 0    # user/global only; planner read-only tool-call rounds; 0 = no limit
 temperature       = 0.0
 memory_compiler = { enabled = true, verbosity = "observe" }   # user/global only; observe|compact; CLI: reasonix config memory-v5 off|observe|compact|on|status
 reasoning_language = "auto"       # visible reasoning text: auto|zh|en
@@ -649,6 +643,20 @@ args    = []
 # url     = "https://mcp.stripe.com"
 # headers = { Authorization = "Bearer ${STRIPE_KEY}" }   # ${VAR} / ${VAR:-default} expanded
 ```
+
+The executor tracks an adaptive progress lease while a todo is active. A new
+completion, unique successful read, command, or mutation renews the lease;
+exact repeats do not. After 8 no-progress tool-call rounds the host appends a
+one-shot reassessment nudge. After 16 it pauses and preserves work for a later
+user turn. The serial contract is level-aware while preserving the
+single-in_progress rule: in a two-level list the active level-1 sub-step is
+the only `in_progress` item and its level-0 phase stays `pending`; sub-steps
+complete in order, and the phase becomes `in_progress` — and signs off — only
+after all of its sub-steps have completed. A level-1 item with no phase above
+it is rejected. Retired `[agent].max_steps` and `planner_max_steps` keys remain
+parseable for upgrade compatibility, but are ignored and removed by a one-time
+migration. The CLI `--max-steps` flag and `[bot].max_steps` remain separate,
+explicit controls for one-off and unattended execution.
 
 `reasonix setup` writes this default config so the CLI is usable out of the box.
 

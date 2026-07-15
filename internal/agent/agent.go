@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
@@ -974,8 +975,8 @@ func (a *Agent) CompactNow(ctx context.Context, instructions string) error {
 // Options configures an Agent.
 type Options struct {
 	MaxSteps int
-	// MaxStepsKey names the configuration knob shown when the MaxSteps guard is
-	// hit. Empty defaults to agent.max_steps.
+	// MaxStepsKey names the explicit runtime control shown when the MaxSteps guard
+	// is hit. Empty defaults to the generic max_steps tool/runtime parameter.
 	MaxStepsKey string
 	Temperature float64
 	Pricing     *provider.Pricing // optional, for per-turn cost display
@@ -1121,7 +1122,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 	}
 	maxStepsKey := opts.MaxStepsKey
 	if strings.TrimSpace(maxStepsKey) == "" {
-		maxStepsKey = "agent.max_steps"
+		maxStepsKey = "max_steps"
 	}
 	maxSubagentDepth := opts.MaxSubagentDepth
 	if maxSubagentDepth == 0 {
@@ -1357,6 +1358,14 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	usedAnyTool := false
 	streamRecoveries := 0
 	graceRound := false
+	todoProgress, trackingTodoProgress := a.canonicalTodoProgress()
+	todoStallRounds := 0
+	seenTodoProgress := make(map[string]struct{})
+	if a.evidence != nil {
+		for _, sig := range a.evidence.SuccessfulProgressSignaturesSince(0) {
+			seenTodoProgress[sig] = struct{}{}
+		}
+	}
 	executorHandoff := a.executorHandoffGuard && strings.Contains(input, executorHandoffMarker)
 	for step := 0; a.maxSteps <= 0 || step < a.maxSteps || graceRound; step++ {
 		// Consume a queued steer and persist it to the session so it
@@ -1431,6 +1440,10 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		if len(calls) == 0 {
 			finalizeTask := !a.deliveryScopeActive || deliveryDisposition(text) == deliveryGoalFinal
 			readiness := a.finalReadinessCheckFor(finalizeTask)
+			if graceRound && (readiness.reason != "" || !hasVisibleFinalAnswer(text)) {
+				a.maybeCompact(ctx, usage)
+				return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
+			}
 			if readiness.reason != "" {
 				// A block only counts against the base budget when the model made
 				// no host-observable progress since the previous block. A turn that
@@ -1494,6 +1507,10 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 			return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
 		}
 
+		receiptMark := 0
+		if a.evidence != nil {
+			receiptMark = a.evidence.Len()
+		}
 		results, images := a.executeBatch(ctx, calls)
 		for i, call := range calls {
 			a.session.Add(provider.Message{
@@ -1508,6 +1525,44 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		// the batch results so the session keeps paired tool-call history.
 		if ctx.Err() != nil {
 			return ctx.Err()
+		}
+		if !a.planMode.Load() {
+			nextProgress, nextTracking := a.canonicalTodoProgress()
+			hostProgress := false
+			if a.evidence != nil {
+				for _, sig := range a.evidence.SuccessfulProgressSignaturesSince(receiptMark) {
+					if _, seen := seenTodoProgress[sig]; !seen {
+						hostProgress = true
+						seenTodoProgress[sig] = struct{}{}
+					}
+				}
+			}
+			switch {
+			case !nextTracking:
+				todoStallRounds = 0
+			case !trackingTodoProgress || nextProgress > todoProgress || hostProgress:
+				todoStallRounds = 0
+			default:
+				todoStallRounds++
+			}
+			todoProgress, trackingTodoProgress = nextProgress, nextTracking
+			if todoStallRounds == todoProgressNudgeRounds {
+				nudge := todoProgressNudgeMessage(todoStallRounds)
+				a.session.Add(provider.Message{Role: provider.RoleUser, Content: a.withTurnPreferences(nudge)})
+				a.sink.Emit(event.Event{
+					Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard,
+					Text:   loopGuardNoticeText(),
+					Detail: fmt.Sprintf("the current todo has no new completion, unique read, command, or mutation for %d consecutive tool-call rounds; asking the assistant to reassess", todoStallRounds),
+				})
+			}
+			if todoStallRounds >= maxTodoStallRounds {
+				a.sink.Emit(event.Event{
+					Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeLoopGuard,
+					Text:   "Task progress stalled; pausing before more tools are called.",
+					Detail: fmt.Sprintf("the current todo has no new completion, unique read, command, or mutation for %d consecutive tool-call rounds after a host reassessment; work is saved and can be resumed", todoStallRounds),
+				})
+				return &todoStallPause{rounds: todoStallRounds}
+			}
 		}
 
 		// The prompt only grows from here; compact before the next turn so it
@@ -1566,6 +1621,20 @@ type maxStepsPause struct {
 
 func (e *maxStepsPause) Error() string {
 	return fmt.Sprintf("paused after %d tool-call rounds (%s) — the work so far is saved; send another message to continue, or set %s higher or to 0 for no limit", e.steps, e.key, e.key)
+}
+
+type todoStallPause struct {
+	rounds int
+}
+
+func (e *todoStallPause) Error() string {
+	return fmt.Sprintf("paused after %d tool-call rounds without advancing the current todo — the work so far is saved; inspect the blocker or send another message to continue", e.rounds)
+}
+
+func isToolLoopPause(err error) bool {
+	var maxPause *maxStepsPause
+	var stallPause *todoStallPause
+	return errors.As(err, &maxPause) || errors.As(err, &stallPause)
 }
 
 func (a *Agent) emitMemoryCompilerStats(turn *memorycompiler.Turn) {
@@ -1875,7 +1944,7 @@ func finalReadinessNoticeText() string {
 
 func (a *Agent) setTodoState(todos []evidence.TodoItem) {
 	a.todoMu.Lock()
-	a.todoState = append([]evidence.TodoItem(nil), todos...)
+	a.todoState = evidence.NormalizeSerialTodos(todos)
 	a.todoMu.Unlock()
 }
 
@@ -1893,7 +1962,7 @@ func (a *Agent) SeedTodoState(todos []evidence.TodoItem) {
 // It is used when the host, rather than the model, owns the full state transition.
 func (a *Agent) ReplaceTodoState(todos []evidence.TodoItem) {
 	a.setTodoState(todos)
-	a.recordTodoState(todos)
+	a.recordTodoState(a.CanonicalTodoState())
 }
 
 // CanonicalTodoState returns a copy of the host-reconstructed task list.
@@ -1916,6 +1985,22 @@ func (a *Agent) hasIncompleteCanonicalCriteria() bool {
 	a.todoMu.Lock()
 	defer a.todoMu.Unlock()
 	return len(a.todoState) > 0 && len(evidence.IncompleteTodos(a.todoState)) > 0
+}
+
+func (a *Agent) canonicalTodoProgress() (int, bool) {
+	a.todoMu.Lock()
+	defer a.todoMu.Unlock()
+	completed := 0
+	incomplete := false
+	for _, todo := range a.todoState {
+		status := canonicalTodoStatus(todo.Status)
+		if status == "completed" {
+			completed++
+		} else {
+			incomplete = true
+		}
+	}
+	return completed, incomplete
 }
 
 // registryHasWriterTools reports whether any registered tool can mutate state.
@@ -1973,12 +2058,10 @@ func (a *Agent) advanceCanonicalTodo(step string) {
 		return
 	}
 	m, ok := evidence.MatchStep(step, a.todoState)
-	if !ok || canonicalTodoStatus(a.todoState[m.Index-1].Status) == "completed" {
+	if !ok || !evidence.AdvanceSerialTodo(a.todoState, m.Index-1) {
 		a.todoMu.Unlock()
 		return
 	}
-	a.todoState[m.Index-1].Status = "completed"
-	promoteNextPendingTodo(a.todoState)
 	snapshot := append([]evidence.TodoItem(nil), a.todoState...)
 	a.todoMu.Unlock()
 	a.recordTodoState(snapshot)
@@ -1999,20 +2082,6 @@ func (a *Agent) recordTodoState(todos []evidence.TodoItem) {
 		return
 	}
 	a.evidence.Record(evidence.ReceiptFromToolCall("todo_write", json.RawMessage(args), true, true))
-}
-
-func promoteNextPendingTodo(todos []evidence.TodoItem) {
-	for _, t := range todos {
-		if canonicalTodoStatus(t.Status) == "in_progress" {
-			return
-		}
-	}
-	for i := range todos {
-		if canonicalTodoStatus(todos[i].Status) == "pending" {
-			todos[i].Status = "in_progress"
-			return
-		}
-	}
 }
 
 func canonicalTodoStatus(s string) string {
@@ -2062,7 +2131,7 @@ func (a *Agent) rebuildTodoState(msgs []provider.Message) {
 			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
 			// A successful empty todo_write is an explicit clear. Preserve it as the
 			// latest base so history reloads do not resurrect an older non-empty list.
-			todos = append([]evidence.TodoItem(nil), rec.Todos...)
+			todos = evidence.NormalizeSerialTodos(rec.Todos)
 			baseIdx = i
 		}
 	}
@@ -2076,9 +2145,8 @@ func (a *Agent) rebuildTodoState(msgs []provider.Message) {
 				continue
 			}
 			rec := evidence.ReceiptFromToolCall(tc.Name, json.RawMessage(tc.Arguments), true, true)
-			if m, ok := evidence.MatchStep(rec.Step, todos); ok && canonicalTodoStatus(todos[m.Index-1].Status) != "completed" {
-				todos[m.Index-1].Status = "completed"
-				promoteNextPendingTodo(todos)
+			if m, ok := evidence.MatchStep(rec.Step, todos); ok {
+				evidence.AdvanceSerialTodo(todos, m.Index-1)
 			}
 		}
 	}
@@ -2480,6 +2548,7 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 	results := make([]string, len(calls))
 	outcomes := make([]toolOutcome, len(calls))
 	durations := make([]int64, len(calls))
+	completedStepInBatch := false
 	// Snapshot the receipt count before the batch runs: if a loop guard fires
 	// for this batch, successes recorded during it (a mixed batch where only one
 	// call was guard-blocked) must already count as progress against the pass.
@@ -2489,7 +2558,20 @@ func (a *Agent) executeBatch(ctx context.Context, calls []provider.ToolCall) ([]
 	}
 	run := func(i int) {
 		start := time.Now()
+		if calls[i].Name == "complete_step" && completedStepInBatch {
+			output := "blocked: only one successful complete_step is allowed per tool-call round. Continue from the newly promoted in_progress todo in the next round instead of batching sign-offs."
+			outcomes[i] = toolOutcome{output: output, blocked: true, errMsg: "blocked: complete_step sign-offs must be serial"}
+			if a.evidence != nil {
+				a.evidence.Record(evidence.ReceiptFromToolCall(calls[i].Name, json.RawMessage(calls[i].Arguments), false, true))
+			}
+			durations[i] = time.Since(start).Milliseconds()
+			results[i] = output
+			return
+		}
 		outcomes[i] = a.executeOne(ctx, calls[i])
+		if calls[i].Name == "complete_step" && outcomes[i].errMsg == "" {
+			completedStepInBatch = true
+		}
 		durations[i] = time.Since(start).Milliseconds()
 		results[i] = outcomes[i].output
 	}
@@ -2700,6 +2782,19 @@ const stormBreakThreshold = 3
 // no-op/write loop and should be redirected to a different tool or final answer.
 const repeatSuccessBreakThreshold = 2
 
+const (
+	// todoProgressNudgeRounds is the first adaptive checkpoint. The host asks
+	// the model to reassess, but keeps the turn alive so it can recover.
+	todoProgressNudgeRounds = 8
+	// maxTodoStallRounds pauses only after the reassessment also failed to
+	// produce a new completion or unique host-observed work receipt.
+	maxTodoStallRounds = 16
+)
+
+func todoProgressNudgeMessage(rounds int) string {
+	return fmt.Sprintf("Host progress check: the current todo has produced no new completion, unique read, command, or mutation for %d tool-call rounds. Reassess before using more tools: sign off the current item if it is done, narrow the remaining work without replacing the active item, or explain/ask about a real blocker. Do not repeat reads, commands, or writes just to reset this guard.", rounds)
+}
+
 // loopGuardBlockErrMsg is the errMsg carried by a repeat-success loop-guard
 // block. applyStormBreaker matches it to arm the final-readiness loop-guard
 // pass, since that guard also invites the model to report the blocker.
@@ -2798,7 +2893,7 @@ func (a *Agent) applyStormBreaker(calls []provider.ToolCall, outcomes []toolOutc
 }
 
 func loopGuardNoticeText() string {
-	return "The assistant is stuck retrying a blocked action; asking it to change approach."
+	return "The assistant is not making progress; asking it to change approach."
 }
 
 // batchStormSignature returns a per-turn fixation signature — each call's
@@ -3065,6 +3160,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 		if a.deliveryProfile {
 			cctx = evidence.WithDeliveryProfile(cctx)
 		}
+	}
+	if !a.planMode.Load() {
+		cctx = evidence.WithTodoState(cctx, a.CanonicalTodoState())
 	}
 	if len(a.projectChecks) > 0 {
 		cctx = instruction.WithChecks(cctx, a.projectChecks)
