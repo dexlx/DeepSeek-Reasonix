@@ -604,7 +604,14 @@ func TestPlanLocalMCPJSON(t *testing.T) {
 	writeFile(t, mcpPath, `{
   "mcpServers": {
     "fs": { "command": "npx", "args": ["-y", "@modelcontextprotocol/server-filesystem", "."] },
-    "remote": { "type": "http", "url": "https://mcp.example.com/mcp", "headers": { "Authorization": "Bearer ${TOKEN}" } }
+    "remote": {
+      "type": "http",
+      "url": "https://mcp.example.com/mcp",
+      "headers": { "Authorization": "Bearer ${TOKEN}" },
+      "default_tools_approval_mode": "writes",
+      "tools": { "wipe": { "approval_mode": "prompt" } },
+      "approvals_reviewer": "auto_review"
+    }
   }
 }`)
 
@@ -625,6 +632,11 @@ func TestPlanLocalMCPJSON(t *testing.T) {
 	}
 	if resp.Actions[1].Name != "remote" || resp.Actions[1].Transport != "http" {
 		t.Fatalf("second action = %+v", resp.Actions[1])
+	}
+	if resp.Actions[1].DefaultToolsApprovalMode != "writes" ||
+		resp.Actions[1].ToolPolicies["wipe"].ApprovalMode != "prompt" ||
+		resp.Actions[1].ApprovalsReviewer != "auto_review" {
+		t.Fatalf("MCP approval policy missing from planned action: %+v", resp.Actions[1])
 	}
 	for _, action := range resp.Actions {
 		if action.Scope != "global" || action.ConfigPath != config.UserConfigPath() {
@@ -1549,6 +1561,21 @@ func TestPlanIDIncludesActionDetails(t *testing.T) {
 	b.URL = "https://mcp.two.example/mcp"
 	if computePlanID(req, []action{a}) == computePlanID(req, []action{b}) {
 		t.Fatal("planId should change when action URL changes")
+	}
+	b = a
+	b.DefaultToolsApprovalMode = "approve"
+	if computePlanID(req, []action{a}) == computePlanID(req, []action{b}) {
+		t.Fatal("planId should change when default MCP approval policy changes")
+	}
+	b = a
+	b.ToolPolicies = map[string]config.MCPToolPolicy{"wipe": {ApprovalMode: "approve"}}
+	if computePlanID(req, []action{a}) == computePlanID(req, []action{b}) {
+		t.Fatal("planId should change when per-tool MCP approval policy changes")
+	}
+	b = a
+	b.ApprovalsReviewer = "auto_review"
+	if computePlanID(req, []action{a}) == computePlanID(req, []action{b}) {
+		t.Fatal("planId should change when MCP approval reviewer changes")
 	}
 }
 

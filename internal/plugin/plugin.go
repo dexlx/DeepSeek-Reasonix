@@ -151,8 +151,9 @@ type Host struct {
 	// Close cancels those startup contexts and waits for their goroutines before
 	// taking the client snapshot, so a just-connected stdio child cannot escape
 	// teardown and keep a Windows workspace directory locked.
-	deferredCancels []context.CancelFunc
-	deferredWG      sync.WaitGroup
+	deferredCancels     map[string][]context.CancelFunc
+	deferredGenerations map[string]uint64
+	deferredWG          sync.WaitGroup
 
 	// spawningMu + spawning prevent concurrent spawns of the same server from
 	// multiple callers (e.g. several controller tabs sharing one Host). The
@@ -450,7 +451,11 @@ func (h *Host) Close() {
 		return
 	}
 	h.closed = true
-	cancels := append([]context.CancelFunc(nil), h.deferredCancels...)
+	var cancels []context.CancelFunc
+	for _, serverCancels := range h.deferredCancels {
+		cancels = append(cancels, serverCancels...)
+	}
+	h.deferredCancels = nil
 	h.mu.Unlock()
 
 	for _, cancel := range cancels {
@@ -1010,14 +1015,26 @@ func (h *Host) clearFailure(name string) {
 // command), which keeps the controller's host pointer stable for the session.
 func NewHost() *Host { return &Host{} }
 
-func (h *Host) registerDeferredCancel(cancel context.CancelFunc) {
+func (h *Host) registerDeferredCancel(name string, cancel context.CancelFunc) uint64 {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.closed {
 		cancel()
-		return
+		return 0
 	}
-	h.deferredCancels = append(h.deferredCancels, cancel)
+	if h.deferredCancels == nil {
+		h.deferredCancels = make(map[string][]context.CancelFunc)
+	}
+	if h.deferredGenerations == nil {
+		h.deferredGenerations = make(map[string]uint64)
+	}
+	generation := h.deferredGenerations[name]
+	if generation == 0 {
+		generation = 1
+		h.deferredGenerations[name] = generation
+	}
+	h.deferredCancels[name] = append(h.deferredCancels[name], cancel)
+	return generation
 }
 
 func (h *Host) beginDeferredSpawn() bool {
@@ -1133,42 +1150,35 @@ func (h *Host) client(name string) *Client {
 // stdio child's lifetime, so pass the session-scoped context — not a per-turn one
 // — or the subprocess dies when that turn ends. Errors if the name is taken.
 func (h *Host) Add(ctx context.Context, s Spec) ([]tool.Tool, error) {
-	if h.has(s.Name) {
-		return nil, serverAlreadyConnectedError(s.Name)
-	}
-	attempt, owner := h.beginSpawn(s.Name)
-	if !owner {
-		select {
-		case <-attempt.done:
-			if attempt.err != nil {
-				return nil, attempt.err
-			}
-			return append([]tool.Tool(nil), attempt.tools...), nil
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		}
-	}
-	var tools []tool.Tool
-	var err error
-	defer func() { h.endSpawn(s.Name, tools, err) }()
-	// Double-check after acquiring the spawn token: another caller may have
-	// connected the server between our h.has check and beginSpawn.
-	if h.has(s.Name) {
-		err = serverAlreadyConnectedError(s.Name)
-		return nil, err
-	}
-	tools, err = h.addConnected(ctx, s)
-	return tools, err
+	return h.addWithLifecycle(ctx, ctx, s, 0)
+}
+
+// addDeferred connects a lazy/background server only while the generation
+// registered by LazyToolset remains current. Remove invalidates that generation
+// before cancelling startup, so a late handshake cannot resurrect the server.
+func (h *Host) addDeferred(ctx context.Context, s Spec, generation uint64) ([]tool.Tool, error) {
+	return h.addWithLifecycle(ctx, ctx, s, generation)
 }
 
 // AddWithLifecycle connects one server live, allowing caller to specify separate
 // contexts for the subprocess lifecycle (lifeCtx, session-scoped) and the startup
 // handshake/list calls (callCtx, turn-scoped/timeout-bound).
 func (h *Host) AddWithLifecycle(lifeCtx, callCtx context.Context, s Spec) ([]tool.Tool, error) {
+	return h.addWithLifecycle(lifeCtx, callCtx, s, 0)
+}
+
+func (h *Host) addWithLifecycle(lifeCtx, callCtx context.Context, s Spec, deferredGeneration uint64) ([]tool.Tool, error) {
+	if deferredGeneration != 0 && !h.deferredGenerationCurrent(s.Name, deferredGeneration) {
+		return nil, ErrDeferredSpawnCancelled
+	}
 	if h.has(s.Name) {
 		return nil, serverAlreadyConnectedError(s.Name)
 	}
-	attempt, owner := h.beginSpawn(s.Name)
+	spawnKey := s.Name
+	if deferredGeneration != 0 {
+		spawnKey = fmt.Sprintf("%s#%d", s.Name, deferredGeneration)
+	}
+	attempt, owner := h.beginSpawn(spawnKey)
 	if !owner {
 		select {
 		case <-attempt.done:
@@ -1184,22 +1194,22 @@ func (h *Host) AddWithLifecycle(lifeCtx, callCtx context.Context, s Spec) ([]too
 	}
 	var tools []tool.Tool
 	var err error
-	defer func() { h.endSpawn(s.Name, tools, err) }()
+	defer func() { h.endSpawn(spawnKey, tools, err) }()
 	// Double-check after acquiring the spawn token: another caller may have
 	// connected the server between our h.has check and beginSpawn.
 	if h.has(s.Name) {
 		err = serverAlreadyConnectedError(s.Name)
 		return nil, err
 	}
-	tools, err = h.addConnectedWithLifecycle(lifeCtx, callCtx, s)
+	tools, err = h.addConnectedWithLifecycle(lifeCtx, callCtx, s, deferredGeneration)
 	return tools, err
 }
 
 func (h *Host) addConnected(ctx context.Context, s Spec) ([]tool.Tool, error) {
-	return h.addConnectedWithLifecycle(ctx, ctx, s)
+	return h.addConnectedWithLifecycle(ctx, ctx, s, 0)
 }
 
-func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spec) ([]tool.Tool, error) {
+func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spec, deferredGeneration uint64) ([]tool.Tool, error) {
 	h.mu.RLock()
 	if h.closed {
 		h.mu.RUnlock()
@@ -1222,6 +1232,11 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 		h.mu.Unlock()
 		c.close()
 		return nil, fmt.Errorf("plugin host is closed")
+	}
+	if deferredGeneration != 0 && h.deferredGenerations[s.Name] != deferredGeneration {
+		h.mu.Unlock()
+		c.close()
+		return nil, ErrDeferredSpawnCancelled
 	}
 	if h.hasLocked(s.Name) {
 		h.mu.Unlock()
@@ -1249,6 +1264,15 @@ func (h *Host) addConnectedWithLifecycle(lifeCtx, callCtx context.Context, s Spe
 // the tool registry, and whether the server was connected.
 func (h *Host) Remove(name string) (toolPrefix string, found bool) {
 	h.mu.Lock()
+	cancels := append([]context.CancelFunc(nil), h.deferredCancels[name]...)
+	delete(h.deferredCancels, name)
+	if h.deferredGenerations == nil {
+		h.deferredGenerations = make(map[string]uint64)
+	}
+	h.deferredGenerations[name]++
+	if h.deferredGenerations[name] == 0 {
+		h.deferredGenerations[name] = 1
+	}
 	idx := -1
 	for i, c := range h.clients {
 		if c.name == name {
@@ -1258,7 +1282,13 @@ func (h *Host) Remove(name string) (toolPrefix string, found bool) {
 	}
 	if idx < 0 {
 		h.mu.Unlock()
-		return "", false
+		for _, cancel := range cancels {
+			cancel()
+		}
+		if len(cancels) == 0 {
+			return "", false
+		}
+		return ToolPrefix(name), true
 	}
 	removed := h.clients[idx]
 	h.clients = append(h.clients[:idx], h.clients[idx+1:]...)
@@ -1281,10 +1311,23 @@ func (h *Host) Remove(name string) (toolPrefix string, found bool) {
 	h.clearFailure(name)
 	h.mu.Unlock()
 
+	for _, cancel := range cancels {
+		cancel()
+	}
 	removed.close() // kills the subprocess: outside the lock
 
 	return "mcp__" + normalizeName(name) + "__", true
 }
+
+func (h *Host) deferredGenerationCurrent(name string, generation uint64) bool {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return !h.closed && generation != 0 && h.deferredGenerations[name] == generation
+}
+
+// ErrDeferredSpawnCancelled marks a lazy generation invalidated by remove or
+// host shutdown before it could publish a client.
+var ErrDeferredSpawnCancelled = errors.New("deferred MCP spawn cancelled")
 
 // start opens the transport on lifeCtx (whose cancellation later closes the
 // subprocess) and uses callCtx for the initialize round-trip (whose cancellation
@@ -1482,10 +1525,6 @@ type mcpTool struct {
 		ReadOnlyHint    bool `json:"readOnlyHint"`
 		DestructiveHint bool `json:"destructiveHint"`
 	} `json:"annotations"`
-}
-
-func (s Spec) toolReadOnly(rawName, visibleName string, hinted bool) bool {
-	return hinted || s.toolReadOnlyOverride(rawName, visibleName)
 }
 
 // toolReadOnlyOverride keeps legacy trusted_read_only_tools and first-party

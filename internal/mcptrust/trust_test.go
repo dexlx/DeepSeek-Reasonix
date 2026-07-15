@@ -56,6 +56,32 @@ func TestIdentityFingerprintCanonicalizesOrderingAndPaths(t *testing.T) {
 	}
 }
 
+func TestIdentityFingerprintPreservesArgumentSemantics(t *testing.T) {
+	base := Identity{Server: "srv", Transport: "stdio", CommandPath: "/bin/server", Args: []string{"--allow", "read", "read"}}
+	baseFP, err := IdentityFingerprint(base)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for name, args := range map[string][]string{
+		"reordered":    {"read", "--allow", "read"},
+		"deduplicated": {"--allow", "read"},
+		"trimmed":      {"--allow", "read", " read "},
+	} {
+		t.Run(name, func(t *testing.T) {
+			changed := base
+			changed.Args = args
+			changedFP, err := IdentityFingerprint(changed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if changedFP == baseFP {
+				t.Fatalf("argument change %q did not alter identity fingerprint", name)
+			}
+		})
+	}
+}
+
 func TestTrustScopesAndFineGrainedDrift(t *testing.T) {
 	path := filepath.Join(t.TempDir(), StateFilename)
 	m := NewManager(path, "/workspace/a")
@@ -271,6 +297,46 @@ func TestPersistentStoreRecoversStaleProcessLock(t *testing.T) {
 	}
 	if _, err := os.Stat(lockPath); !os.IsNotExist(err) {
 		t.Fatalf("stale lock remains after update: %v", err)
+	}
+}
+
+func TestPersistentStoreDoesNotStealStaleLiveProcessLock(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), StateFilename+".lock")
+	owner := []byte(fmt.Sprintf("%d live-owner\n", os.Getpid()))
+	if err := os.WriteFile(lockPath, owner, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	stale := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(lockPath, stale, stale); err != nil {
+		t.Fatal(err)
+	}
+	if unlock, err := acquireFileLock(lockPath, 50*time.Millisecond); err == nil {
+		unlock()
+		t.Fatal("acquired a stale-looking lock owned by a live process")
+	}
+	got, err := os.ReadFile(lockPath)
+	if err != nil || string(got) != string(owner) {
+		t.Fatalf("live owner lock changed: %q, %v", got, err)
+	}
+}
+
+func TestFileLockUnlockPreservesReplacementOwner(t *testing.T) {
+	lockPath := filepath.Join(t.TempDir(), StateFilename+".lock")
+	unlock, err := acquireFileLock(lockPath, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(lockPath); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte(fmt.Sprintf("%d replacement-owner\n", os.Getpid()))
+	if err := os.WriteFile(lockPath, replacement, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	unlock()
+	got, err := os.ReadFile(lockPath)
+	if err != nil || string(got) != string(replacement) {
+		t.Fatalf("old unlock removed replacement owner: %q, %v", got, err)
 	}
 }
 

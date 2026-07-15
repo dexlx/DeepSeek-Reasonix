@@ -5,6 +5,7 @@
 package mcptrust
 
 import (
+	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -205,7 +207,10 @@ func IdentityFingerprint(identity Identity) (string, error) {
 	identity.Dir = canonicalPath(identity.Dir)
 	identity.URL = strings.TrimSpace(identity.URL)
 	identity.ConfigSource = strings.TrimSpace(identity.ConfigSource)
-	identity.Args = cleanStrings(identity.Args, false)
+	// Command arguments are an ordered vector, not a set. Preserve both order
+	// and duplicates (including intentional whitespace) so changing launcher
+	// semantics always invalidates the saved identity.
+	identity.Args = append([]string(nil), identity.Args...)
 	identity.EnvKeys = cleanStrings(identity.EnvKeys, true)
 	identity.HeaderKeys = cleanStrings(identity.HeaderKeys, true)
 	identity.WriteRoots = canonicalPaths(identity.WriteRoots)
@@ -886,6 +891,11 @@ func digestBytes(body []byte) string {
 // AtomicWriteFile still provides crash-safe replacement; the lock serializes
 // independent Reasonix processes performing read-modify-write cycles.
 func acquireFileLock(path string, wait time.Duration) (func(), error) {
+	token := make([]byte, 16)
+	if _, err := rand.Read(token); err != nil {
+		return nil, fmt.Errorf("generate MCP trust lock owner: %w", err)
+	}
+	owner := []byte(fmt.Sprintf("%d %s\n", os.Getpid(), hex.EncodeToString(token)))
 	deadline := time.Now().Add(wait)
 	for {
 		if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -893,20 +903,49 @@ func acquireFileLock(path string, wait time.Duration) (func(), error) {
 		}
 		f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 		if err == nil {
-			_, _ = fmt.Fprintf(f, "%d\n", os.Getpid())
-			_ = f.Close()
-			return func() { _ = os.Remove(path) }, nil
+			_, writeErr := f.Write(owner)
+			closeErr := f.Close()
+			if writeErr != nil || closeErr != nil {
+				_ = os.Remove(path)
+				if writeErr != nil {
+					return nil, writeErr
+				}
+				return nil, closeErr
+			}
+			return func() { removeOwnedFileLock(path, owner) }, nil
 		}
 		if !errors.Is(err, os.ErrExist) {
 			return nil, err
 		}
 		if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) > 30*time.Second {
-			_ = os.Remove(path)
-			continue
+			current, readErr := os.ReadFile(path)
+			if readErr == nil && !fileLockOwnerAlive(current) {
+				removeOwnedFileLock(path, current)
+				continue
+			}
 		}
 		if time.Now().After(deadline) {
 			return nil, fmt.Errorf("timed out waiting for MCP trust state lock")
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func fileLockOwnerAlive(owner []byte) bool {
+	fields := strings.Fields(string(owner))
+	if len(fields) == 0 {
+		return false
+	}
+	pid, err := strconv.Atoi(fields[0])
+	return err == nil && trustLockProcessAlive(pid)
+}
+
+// removeOwnedFileLock prevents an old holder from deleting a replacement lock
+// after a stale-takeover race. The exact owner payload is the generation token.
+func removeOwnedFileLock(path string, owner []byte) {
+	current, err := os.ReadFile(path)
+	if err != nil || string(current) != string(owner) {
+		return
+	}
+	_ = os.Remove(path)
 }

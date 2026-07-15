@@ -441,6 +441,88 @@ command = "local-bin"
 	}
 }
 
+func TestLoadForRootRestrictsProjectMCPApprovalEscalation(t *testing.T) {
+	isolateUserConfigHome(t)
+	writeConfigTestFile(t, UserConfigPath(), `
+[[plugins]]
+name = "user-global"
+command = "global-server"
+default_tools_approval_mode = "approve"
+approvals_reviewer = "auto_review"
+
+[plugins.tools.wipe]
+approval_mode = "approve"
+
+[[plugins]]
+name = "shared"
+command = "global-shared"
+default_tools_approval_mode = "prompt"
+approvals_reviewer = "user"
+
+[plugins.tools.wipe]
+approval_mode = "prompt"
+`)
+	root := t.TempDir()
+	writeConfigTestFile(t, filepath.Join(root, "reasonix.toml"), `
+[[plugins]]
+name = "project-toml"
+command = "project-server"
+default_tools_approval_mode = "approve"
+approvals_reviewer = "auto_review"
+
+[plugins.tools.wipe]
+approval_mode = "approve"
+
+[[plugins]]
+name = "shared"
+command = "project-shared"
+default_tools_approval_mode = "auto"
+approvals_reviewer = "auto_review"
+
+[plugins.tools.wipe]
+approval_mode = "approve"
+`)
+	writeConfigTestFile(t, filepath.Join(root, ".mcp.json"), `{
+  "mcpServers": {
+    "project-json": {
+      "command": "json-server",
+      "default_tools_approval_mode": "approve",
+      "approvals_reviewer": "auto_review",
+      "tools": {"wipe": {"approval_mode": "approve"}}
+    }
+  }
+}`)
+
+	cfg, err := LoadForRootReadOnly(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	byName := make(map[string]PluginEntry, len(cfg.Plugins))
+	for _, entry := range cfg.Plugins {
+		byName[entry.Name] = entry
+	}
+	for _, name := range []string{"project-toml", "project-json"} {
+		entry, ok := byName[name]
+		if !ok {
+			t.Fatalf("plugin %q missing from %+v", name, cfg.Plugins)
+		}
+		if entry.DefaultToolsApprovalMode != "auto" || entry.ApprovalsReviewer != "user" || entry.Tools["wipe"].ApprovalMode != "auto" {
+			t.Fatalf("project plugin %q retained approval escalation: %+v", name, entry)
+		}
+	}
+	global := byName["user-global"]
+	if global.DefaultToolsApprovalMode != "approve" || global.ApprovalsReviewer != "auto_review" || global.Tools["wipe"].ApprovalMode != "approve" {
+		t.Fatalf("user-global approval policy was restricted: %+v", global)
+	}
+	shared := byName["shared"]
+	if shared.Command != "project-shared" {
+		t.Fatalf("project connection settings did not win for shared plugin: %+v", shared)
+	}
+	if shared.DefaultToolsApprovalMode != "prompt" || shared.ApprovalsReviewer != "user" || shared.Tools["wipe"].ApprovalMode != "prompt" {
+		t.Fatalf("project downgraded user-global approval policy for shared plugin: %+v", shared)
+	}
+}
+
 func TestLoadMergesPluginsAcrossTOMLSources(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("HOME", root)

@@ -52,10 +52,11 @@ const (
 // server: they all observe the same state machine and trigger at most one
 // handshake.
 type lazySpawn struct {
-	spec Spec
-	host *Host
-	reg  *tool.Registry
-	ctx  context.Context // session-scoped — outlives any single turn
+	spec       Spec
+	host       *Host
+	reg        *tool.Registry
+	ctx        context.Context // session-scoped — outlives any single turn
+	generation uint64
 
 	mu       sync.Mutex
 	state    spawnState
@@ -93,10 +94,16 @@ func (s *lazySpawn) kick() {
 // run does the handshake without holding mu (host.Add can take seconds), then
 // reacquires mu to publish the result.
 func (s *lazySpawn) run() {
-	real, err := s.host.Add(s.ctx, s.spec)
+	real, err := s.host.addDeferred(s.ctx, s.spec, s.generation)
 	var cacheTools []tool.Tool
 	s.mu.Lock()
 	if err != nil {
+		if errors.Is(err, ErrDeferredSpawnCancelled) || errors.Is(err, context.Canceled) {
+			s.state = spawnFailed
+			s.spawnErr = err
+			s.mu.Unlock()
+			return
+		}
 		if errors.Is(err, ErrSpawningInFlight) {
 			// Another tab is already spawning this server; reset to idle so
 			// the next call retries instead of recording a spurious failure.
@@ -451,13 +458,13 @@ func destructiveHintChangedError(server, rawTool string) error {
 // kill the stdio child between turns.
 func LazyToolset(spec Spec, cs *CachedSchema, host *Host, reg *tool.Registry, sessionCtx context.Context, kick bool) []tool.Tool {
 	spawnCtx, cancel := context.WithCancel(sessionCtx)
-	host.registerDeferredCancel(cancel)
 	shared := &lazySpawn{
 		spec: spec,
 		host: host,
 		reg:  reg,
 		ctx:  spawnCtx,
 	}
+	shared.generation = host.registerDeferredCancel(spec.Name, cancel)
 
 	trustedReaders := map[string]bool{}
 	cachedCapabilities := map[string]mcptrust.Capability{}

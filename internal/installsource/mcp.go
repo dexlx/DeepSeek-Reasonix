@@ -25,19 +25,22 @@ func (t *installSourceTool) mcpEntryAction(req request, e config.PluginEntry, so
 	norm, ok := normalizeTier(desired)
 	e.Tier = norm
 	a := action{
-		Kind:       "mcp",
-		Action:     "install_mcp_server",
-		Name:       e.Name,
-		Source:     source,
-		ConfigPath: t.configPath(scope),
-		Scope:      scope,
-		Transport:  pluginTransport(e),
-		URL:        e.URL,
-		Command:    e.Command,
-		Args:       e.Args,
-		Env:        e.Env,
-		Headers:    e.Headers,
-		entry:      e,
+		Kind:                     "mcp",
+		Action:                   "install_mcp_server",
+		Name:                     e.Name,
+		Source:                   source,
+		ConfigPath:               t.configPath(scope),
+		Scope:                    scope,
+		Transport:                pluginTransport(e),
+		URL:                      e.URL,
+		Command:                  e.Command,
+		Args:                     e.Args,
+		Env:                      e.Env,
+		Headers:                  e.Headers,
+		DefaultToolsApprovalMode: e.DefaultToolsApprovalMode,
+		ToolPolicies:             mcpToolPoliciesWithApprovalMode(e.Tools),
+		ApprovalsReviewer:        e.ApprovalsReviewer,
+		entry:                    e,
 	}
 	if !ok && strings.TrimSpace(desired) != "" {
 		a.RiskReasons = append(a.RiskReasons, fmt.Sprintf("tier %q is unknown; treating as background", desired))

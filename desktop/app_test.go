@@ -26,6 +26,7 @@ import (
 	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/jobs"
+	"reasonix/internal/mcptrust"
 	"reasonix/internal/memory"
 	"reasonix/internal/plugin"
 	"reasonix/internal/pluginpkg"
@@ -82,6 +83,47 @@ func desktopMCPHTTPServer(t *testing.T) *httptest.Server {
 		w.Header().Set("Content-Type", "application/json")
 		_ = json.NewEncoder(w).Encode(resp)
 	}))
+}
+
+func TestDesktopMCPHelperProcess(t *testing.T) {
+	if os.Getenv("GO_WANT_DESKTOP_MCP_HELPER") != "1" {
+		return
+	}
+	dec := json.NewDecoder(os.Stdin)
+	enc := json.NewEncoder(os.Stdout)
+	for {
+		var req struct {
+			ID     *int   `json:"id"`
+			Method string `json:"method"`
+		}
+		if err := dec.Decode(&req); err != nil {
+			if errors.Is(err, io.EOF) {
+				return
+			}
+			t.Fatalf("decode helper request: %v", err)
+		}
+		if req.ID == nil {
+			continue
+		}
+		var result any
+		switch req.Method {
+		case "initialize":
+			result = map[string]any{
+				"protocolVersion": "2024-11-05",
+				"serverInfo":      map[string]any{"name": "desktop-helper", "version": "0"},
+			}
+		case "tools/list":
+			result = map[string]any{"tools": []map[string]any{{
+				"name": "greet", "description": "Greet someone.",
+				"inputSchema": map[string]any{"type": "object"},
+			}}}
+		default:
+			result = map[string]any{}
+		}
+		if err := enc.Encode(map[string]any{"jsonrpc": "2.0", "id": *req.ID, "result": result}); err != nil {
+			t.Fatalf("encode helper response: %v", err)
+		}
+	}
 }
 
 // setTestCtrl creates a minimal workspace tab (if needed) and sets its
@@ -6968,6 +7010,126 @@ url = %q
 	view = app.Capabilities()
 	if len(view.Servers) != 1 || view.Servers[0].Name != "h" || view.Servers[0].Status != "connected" {
 		t.Fatalf("Capabilities after re-enable = %+v, want h connected for the active tab", view.Servers)
+	}
+}
+
+func TestSetMCPTrustWorkspaceRefreshesEverySharedHostRegistry(t *testing.T) {
+	isolateDesktopUserDirs(t)
+	dir := robustTempDir(t)
+	t.Chdir(dir)
+
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	helperArgs := []string{"-test.run=TestDesktopMCPHelperProcess", "--"}
+	if err := os.WriteFile(filepath.Join(dir, "reasonix.toml"), []byte(fmt.Sprintf(`
+[[plugins]]
+name = "h"
+command = %q
+args = ["-test.run=TestDesktopMCPHelperProcess", "--"]
+
+[plugins.env]
+GO_WANT_DESKTOP_MCP_HELPER = "1"
+`, exe)), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	manager := mcptrust.ForWorkspace(config.ReasonixHomeDir(), dir)
+	entry := config.PluginEntry{
+		Name: "h", Command: exe, Args: helperArgs,
+		Env: map[string]string{"GO_WANT_DESKTOP_MCP_HELPER": "1"},
+	}
+	cfg, err := config.LoadForRoot(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	runtimeSpecs := boot.PluginSpecsForRootWithOptions([]config.PluginEntry{entry}, dir, boot.PluginSpecOptions{
+		DefaultCallTimeout: time.Duration(cfg.MCPCallTimeoutSeconds()) * time.Second,
+		TrustManager:       manager,
+		ConfigSource:       "workspace_config",
+		StateHome:          config.ReasonixHomeDir(),
+		WriterRoots:        cfg.WriteRootsForRoot(dir),
+		ForbidReadRoots:    cfg.ForbidReadRootsForRoot(dir),
+		Network:            cfg.Sandbox.Network,
+	})
+	if len(runtimeSpecs) != 1 {
+		t.Fatalf("runtime specs = %d, want 1", len(runtimeSpecs))
+	}
+	runtimeSpec := runtimeSpecs[0]
+	configure := func(spec *plugin.Spec) {
+		*spec = runtimeSpec
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	sharedHost := plugin.NewHost()
+	defer sharedHost.Close()
+	tools, err := sharedHost.Add(ctx, runtimeSpec)
+	if err != nil {
+		t.Fatalf("sharedHost.Add: %v", err)
+	}
+
+	activeRegistry := tool.NewRegistry()
+	siblingRegistry := tool.NewRegistry()
+	disabledRegistry := tool.NewRegistry()
+	for _, mt := range tools {
+		activeRegistry.Add(mt)
+		siblingRegistry.Add(mt)
+		disabledRegistry.Add(mt)
+	}
+	oldSiblingTool, found := siblingRegistry.Get("mcp__h__greet")
+	if !found {
+		t.Fatal("sibling registry missing initial h tool")
+	}
+	activeCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: activeRegistry, PluginCtx: context.Background(),
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	siblingCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: siblingRegistry, PluginCtx: context.Background(),
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	disabledCtrl := control.New(control.Options{
+		Host: sharedHost, Registry: disabledRegistry, PluginCtx: context.Background(),
+		MCPConfigureSpec: configure, WorkspaceRoot: dir,
+	})
+	disabledCtrl.UnregisterMCPServerTools("h")
+	app := NewApp()
+	app.tabs = map[string]*WorkspaceTab{
+		"active": {
+			ID: "active", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: activeCtrl, SharedHostKey: dir, disabledMCP: map[string]ServerView{},
+		},
+		"sibling": {
+			ID: "sibling", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: siblingCtrl, SharedHostKey: dir, disabledMCP: map[string]ServerView{},
+		},
+		"disabled": {
+			ID: "disabled", Scope: "global", WorkspaceRoot: dir, Ready: true,
+			Ctrl: disabledCtrl, SharedHostKey: dir,
+			disabledMCP: map[string]ServerView{"h": {Name: "h", Status: "disabled"}},
+		},
+	}
+	app.activeTabID = "active"
+
+	if err := app.SetMCPTrust("h", "workspace"); err != nil {
+		t.Fatalf("SetMCPTrust(h,workspace): %v", err)
+	}
+	if !sharedHost.HasClient("h") {
+		t.Fatal("shared host did not reconnect h after workspace trust")
+	}
+	if _, found := activeRegistry.Get("mcp__h__greet"); !found {
+		t.Fatal("active registry was not refreshed after workspace trust")
+	}
+	newSiblingTool, found := siblingRegistry.Get("mcp__h__greet")
+	if !found {
+		t.Fatal("sibling registry was not refreshed after workspace trust")
+	}
+	if newSiblingTool == oldSiblingTool {
+		t.Fatal("sibling registry retained a tool backed by the disconnected client")
+	}
+	if _, found := disabledRegistry.Get("mcp__h__greet"); found {
+		t.Fatal("workspace trust re-enabled h in a tab where the user disabled it")
 	}
 }
 

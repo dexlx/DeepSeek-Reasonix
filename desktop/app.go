@@ -6126,15 +6126,21 @@ func (a *App) InspectMCPTrust(name string) (MCPTrustInspectionView, error) {
 // SetMCPTrust grants session/workspace trust or revokes it. The receipt remains
 // host-local and never modifies the project MCP configuration.
 func (a *App) SetMCPTrust(name, decision string) error {
+	a.runtimeRebuildMu.Lock()
+	defer a.runtimeRebuildMu.Unlock()
+
 	ctrl := a.activeCtrl()
 	if ctrl == nil {
 		return fmt.Errorf("no active session")
 	}
-	if controllerHasActiveRuntimeWork(ctrl) {
-		return rebuildControllerActiveWorkError("MCP trust")
-	}
 	decision = strings.ToLower(strings.TrimSpace(decision))
 	host := ctrl.Host()
+	controllers := a.mcpControllersSharingHost(host, name, ctrl)
+	for _, target := range controllers {
+		if controllerHasActiveRuntimeWork(target.ctrl) {
+			return rebuildControllerActiveWorkError("MCP trust")
+		}
+	}
 	if decision != "workspace" && host != nil && host.HasClient(name) {
 		if err := host.SetTrust(name, decision); err != nil {
 			return err
@@ -6162,13 +6168,103 @@ func (a *App) SetMCPTrust(name, decision string) error {
 	if !found {
 		return fmt.Errorf("trusted MCP server %q but could not reload its configuration", name)
 	}
+	// Every controller sharing this Host has its own provider-visible Registry.
+	// Hide the old tools in all of them before replacing the one shared client;
+	// otherwise sibling tabs keep remoteTool values backed by the closed client.
+	for _, target := range controllers {
+		target.ctrl.UnregisterMCPServerTools(name)
+	}
 	ctrl.DisconnectMCPServer(name)
-	if _, err := ctrl.ConnectMCPServer(entry); err != nil {
+
+	// Establish the exact locked server once, then have every enabled sibling
+	// attach to that shared client and refresh its own Registry. Per-tab disabled
+	// state is preserved: those registries remain suspended.
+	var startErrors []error
+	connectedTarget := -1
+	for i, target := range controllers {
+		if !target.enabled {
+			continue
+		}
+		if _, err := target.ctrl.ConnectMCPServer(entry); err != nil {
+			startErrors = append(startErrors, err)
+			continue
+		}
+		connectedTarget = i
+		break
+	}
+	if connectedTarget < 0 {
+		if len(startErrors) == 0 {
+			// All tabs disabled this server. Keeping it disconnected preserves
+			// their explicit UI state; enabling a tab will reconnect on demand.
+			a.recordMCPSecurityMetric("mcp_trust_source", decision)
+			return nil
+		}
+		err := errors.Join(startErrors...)
 		recordMCPFailure(ctrl, entry, err)
 		return fmt.Errorf("MCP trust was saved, but reconnecting the exact locked server failed: %w", err)
 	}
+
+	var refreshErrors []error
+	for i, target := range controllers {
+		if !target.enabled || i == connectedTarget {
+			continue
+		}
+		if _, err := target.ctrl.ConnectMCPServer(entry); err != nil {
+			refreshErrors = append(refreshErrors, err)
+		}
+	}
+	if len(refreshErrors) > 0 {
+		err := errors.Join(refreshErrors...)
+		recordMCPFailure(ctrl, entry, err)
+		return fmt.Errorf("MCP trust was saved, but refreshing one or more tabs failed: %w", err)
+	}
 	a.recordMCPSecurityMetric("mcp_trust_source", decision)
 	return nil
+}
+
+type mcpControllerTarget struct {
+	ctrl    control.SessionAPI
+	enabled bool
+}
+
+// mcpControllersSharingHost snapshots visible and detached runtimes before
+// calling controller methods. App.mu is never held across Host/controller
+// locks or network work. preferred (normally the active tab) is returned first.
+func (a *App) mcpControllersSharingHost(host *plugin.Host, name string, preferred control.SessionAPI) []mcpControllerTarget {
+	if host == nil {
+		return []mcpControllerTarget{{ctrl: preferred, enabled: true}}
+	}
+	a.mu.RLock()
+	candidates := make([]mcpControllerTarget, 0, len(a.tabs)+len(a.detachedSessions))
+	for _, tab := range a.runtimeTabsLocked() {
+		if tab == nil || tab.Ctrl == nil {
+			continue
+		}
+		_, disabled := tab.disabledMCP[name]
+		candidates = append(candidates, mcpControllerTarget{ctrl: tab.Ctrl, enabled: !disabled})
+	}
+	a.mu.RUnlock()
+
+	byController := make(map[control.SessionAPI]int, len(candidates))
+	targets := make([]mcpControllerTarget, 0, len(candidates))
+	for _, candidate := range candidates {
+		if candidate.ctrl.Host() != host {
+			continue
+		}
+		if idx, ok := byController[candidate.ctrl]; ok {
+			targets[idx].enabled = targets[idx].enabled || candidate.enabled
+			continue
+		}
+		byController[candidate.ctrl] = len(targets)
+		targets = append(targets, candidate)
+	}
+	if len(targets) == 0 {
+		return []mcpControllerTarget{{ctrl: preferred, enabled: true}}
+	}
+	if idx, ok := byController[preferred]; ok && idx > 0 {
+		targets[0], targets[idx] = targets[idx], targets[0]
+	}
+	return targets
 }
 
 func (a *App) RefreshMCPCatalog() (MCPCatalogRefreshView, error) {

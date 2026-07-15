@@ -3,10 +3,35 @@
 package sandbox
 
 import (
+	"context"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sync"
+	"time"
 )
+
+var bwrapUsability sync.Map // resolved executable path -> bool
+
+// usableBwrap distinguishes an installed binary from a usable sandbox backend.
+// Hardened Linux hosts (including some CI runners) may expose bwrap on PATH but
+// deny the user namespace it needs; treating that as available makes enforce
+// fail later with a misleading launch error and overstates MCP isolation.
+func usableBwrap() (string, bool) {
+	bwrap, err := exec.LookPath("bwrap")
+	if err != nil {
+		return "", false
+	}
+	if cached, ok := bwrapUsability.Load(bwrap); ok {
+		return bwrap, cached.(bool)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	err = exec.CommandContext(ctx, bwrap, "--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--", "true").Run()
+	usable := err == nil
+	actual, _ := bwrapUsability.LoadOrStore(bwrap, usable)
+	return bwrap, actual.(bool)
+}
 
 // When spec.Mode is "enforce" and bubblewrap (bwrap) is available on PATH,
 // the command is wrapped in a bubblewrap sandbox with a profile analogous to
@@ -17,7 +42,7 @@ func Command(spec Spec, sh Shell, command string) ([]string, bool) {
 	if !spec.Enforce() {
 		return sh.argv(command), false
 	}
-	if bwrap, err := exec.LookPath("bwrap"); err == nil {
+	if bwrap, ok := usableBwrap(); ok {
 		argv := append([]string{bwrap}, bwrapArgs(spec, sh, command)...)
 		return argv, true
 	}
@@ -34,7 +59,7 @@ func CommandArgs(spec Spec, args []string) ([]string, bool) {
 	if !spec.Enforce() {
 		return args, false
 	}
-	if bwrap, err := exec.LookPath("bwrap"); err == nil {
+	if bwrap, ok := usableBwrap(); ok {
 		argv := append([]string{bwrap}, bwrapArgsForArgs(spec, args)...)
 		return argv, true
 	}
@@ -42,10 +67,11 @@ func CommandArgs(spec Spec, args []string) ([]string, bool) {
 }
 
 // Available reports whether an OS sandbox is available on this platform.
-// On Linux, this checks for bubblewrap (bwrap) on PATH.
+// On Linux, this verifies that bubblewrap can actually enter its namespace;
+// binary presence alone is insufficient on hardened hosts.
 func Available() bool {
-	_, err := exec.LookPath("bwrap")
-	return err == nil
+	_, ok := usableBwrap()
+	return ok
 }
 
 // bwrapArgs builds the bubblewrap command-line arguments that confine the

@@ -238,6 +238,66 @@ func TestLazyCacheHitReusesExistingSharedHostClient(t *testing.T) {
 	}
 }
 
+func TestLazyRemoveCancelsInFlightGenerationWithoutResurrection(t *testing.T) {
+	redirectCache(t)
+	spec := helperSpec()
+	spec.Env["GO_WANT_HELPER_INIT_MS"] = "500"
+	host := NewHost()
+	defer host.Close()
+	reg := tool.NewRegistry()
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for _, placeholder := range LazyToolset(spec, nil, host, reg, ctx, true) {
+		reg.Add(placeholder)
+	}
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		host.spawningMu.Lock()
+		spawning := len(host.spawning) > 0
+		host.spawningMu.Unlock()
+		if spawning {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("lazy spawn never entered the in-flight state")
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+
+	prefix, found := host.Remove(spec.Name)
+	if !found {
+		t.Fatal("Host.Remove did not cancel the in-flight lazy generation")
+	}
+	reg.RemovePrefix(prefix)
+	done := make(chan struct{})
+	go func() {
+		host.deferredWG.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("cancelled lazy generation did not finish")
+	}
+	if host.HasClient(spec.Name) || len(host.ServerNames()) != 0 {
+		t.Fatalf("removed lazy server was resurrected: %v", host.ServerNames())
+	}
+	if _, ok := reg.Get(ToolPrefix(spec.Name) + "connect"); ok {
+		t.Fatal("removed lazy placeholder was re-registered")
+	}
+	if _, ok := LoadCachedSchema(spec.Name, SpecFingerprint(spec)); ok {
+		t.Fatal("cancelled lazy generation wrote a new schema cache")
+	}
+	tools, err := host.Add(ctx, spec)
+	if err != nil {
+		t.Fatalf("re-add after cancelled generation: %v", err)
+	}
+	if len(tools) == 0 || !host.HasClient(spec.Name) {
+		t.Fatalf("new generation did not connect after removal: tools=%d clients=%v", len(tools), host.ServerNames())
+	}
+}
+
 func TestAddWithLifecycleCoalescesConcurrentSameServer(t *testing.T) {
 	spec := helperSpec()
 	spec.Env["GO_WANT_HELPER_INIT_MS"] = "200"
