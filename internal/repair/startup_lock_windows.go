@@ -8,10 +8,11 @@ import (
 	"golang.org/x/sys/windows"
 )
 
-// lockStartupStateFile takes an exclusive cross-process lock guarding the
-// startup-state read-modify-write cycle (LockFileEx releases on process exit,
-// so a crashed holder can never wedge later launches).
-func lockStartupStateFile(path string) (func(), error) {
+// lockRepairStateFile takes an exclusive cross-process lock (on path+".lock")
+// guarding a repair-state read-modify-write cycle, such as the startup tracker
+// record or the pending-update transaction (LockFileEx releases on process
+// exit, so a crashed holder can never wedge later launches).
+func lockRepairStateFile(path string) (func(), error) {
 	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err

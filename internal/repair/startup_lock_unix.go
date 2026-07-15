@@ -8,10 +8,11 @@ import (
 	"golang.org/x/sys/unix"
 )
 
-// lockStartupStateFile takes an exclusive cross-process lock guarding the
-// startup-state read-modify-write cycle. The critical section is a handful of
-// small file operations, so a blocking lock cannot stall startup meaningfully.
-func lockStartupStateFile(path string) (func(), error) {
+// lockRepairStateFile takes an exclusive cross-process lock (on path+".lock")
+// guarding a repair-state read-modify-write cycle, such as the startup tracker
+// record or the pending-update transaction. Critical sections are bounded file
+// operations, so a blocking lock cannot stall startup meaningfully.
+func lockRepairStateFile(path string) (func(), error) {
 	f, err := os.OpenFile(path+".lock", os.O_CREATE|os.O_RDWR, 0o600)
 	if err != nil {
 		return nil, err

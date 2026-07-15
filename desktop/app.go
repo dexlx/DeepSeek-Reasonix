@@ -205,6 +205,11 @@ type App struct {
 	heartbeat *HeartbeatEngine // scheduled heartbeat tasks; nil until startup
 
 	startupTracker *repair.StartupTracker
+	// startupReady records that the window reached domReady. The shutdown path
+	// treats an exit before this point as an incomplete start: it must neither
+	// reset the crash-loop counter nor bless a probationary update, or a build
+	// that boots but never paints would defeat the Guard rollback safety net.
+	startupReady atomic.Bool
 }
 
 type skillRootsCache struct {
@@ -800,7 +805,12 @@ func (a *App) shutdown(context.Context) {
 		it.ctrl.Close()
 		it.tab.releaseSessionLease()
 	}
-	if a.startupTracker != nil {
+	if a.startupTracker != nil && a.startupReady.Load() {
+		// Only a run whose window actually became ready may reset the crash-loop
+		// counter and bless a probationary update. A clean quit before domReady
+		// (e.g. Dock-quitting a build that boots but never paints) keeps the
+		// incomplete startup record, so repeated attempts still reach the Guard
+		// recovery threshold and the update backups stay rollback-ready.
 		_ = a.startupTracker.MarkClean()
 		if !config.SafeModeRequested() {
 			_ = repair.MarkUpdateHealthy(version)
@@ -853,6 +863,7 @@ func (a *App) domReady(_ context.Context) {
 	}
 
 	runtime.WindowShow(a.ctx)
+	a.startupReady.Store(true)
 	if a.startupTracker != nil {
 		_ = a.startupTracker.MarkReady()
 		tracker := a.startupTracker

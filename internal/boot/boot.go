@@ -435,8 +435,15 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	}
 	autoStartEntries := cfg.AutoStartPlugins()
 	eagerEntries, bgEntries := partitionByTier(autoStartEntries)
+	extraPlugins := opts.ExtraPlugins
+	if cfg.SafeMode() {
+		// Safe Mode boots without external integrations: host-supplied MCP
+		// servers (e.g. ACP session servers) are dropped like config-declared
+		// plugins, so a recovery boot never starts external processes.
+		extraPlugins = nil
+	}
 	extraSpecs := applyDefaultMCPCallTimeout(
-		applyPlanModeAllowedMCPToolTrust(applyKnownPluginOverrides(opts.ExtraPlugins, root), cfg.Agent.PlanModeAllowedTools),
+		applyPlanModeAllowedMCPToolTrust(applyKnownPluginOverrides(extraPlugins, root), cfg.Agent.PlanModeAllowedTools),
 		pluginSpecOptions.DefaultCallTimeout,
 	)
 	onDemandMCPSpecs := map[string]plugin.Spec{}
@@ -1310,7 +1317,9 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 
 	execSess := agent.NewSession(sysPrompt)
 	var memCompiler *memorycompiler.Runtime
-	if cfg.MemoryCompilerEnabled() {
+	// Safe Mode is a recovery boundary: Memory v5 learning state stays untouched,
+	// matching the memory/session gates above.
+	if cfg.MemoryCompilerEnabled() && !cfg.SafeMode() {
 		memCompiler = memorycompiler.New(config.MemoryCompilerDir(root))
 	}
 	executor := agent.New(execProv, reg, execSess, agent.Options{

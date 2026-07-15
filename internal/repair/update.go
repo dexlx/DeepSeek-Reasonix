@@ -64,6 +64,28 @@ func PendingUpdatePath() string {
 	return filepath.Join(root, "repair", "pending-update.json")
 }
 
+// lockPendingUpdate serializes cross-process pending-update transitions:
+// prepare, rollback, commit, and cancel. Two launchers can run recovery at
+// once — a failed update makes startup slow, so a double-clicked Guard is
+// realistic — and restoreReleaseUnit's fixed staging/aside paths assume a
+// single restorer; unserialized, the loser's compensation can re-install the
+// new binaries over the winner's completed rollback. Lock failures degrade to
+// the pre-lock lock-free behavior, matching the startup tracker.
+func lockPendingUpdate() func() {
+	path := PendingUpdatePath()
+	if path == "" {
+		return func() {}
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return func() {}
+	}
+	unlock, err := lockRepairStateFile(path)
+	if err != nil {
+		return func() {}
+	}
+	return unlock
+}
+
 // PrepareFileUpdate snapshots the current desktop executable — plus any sibling
 // binaries of the release unit the installer also replaces (Guard, launcher,
 // update helper) — and records an update transaction before an updater applies
@@ -78,6 +100,8 @@ func PrepareFileUpdate(fromVersion, toVersion, targetPath string, siblingPaths .
 	if root == "" {
 		return nil, fmt.Errorf("prepare update: Reasonix state directory is unavailable")
 	}
+	unlock := lockPendingUpdate()
+	defer unlock()
 	backupDir := filepath.Join(root, "repair", "updates")
 	if err := os.MkdirAll(backupDir, 0o700); err != nil {
 		return nil, err
@@ -140,6 +164,8 @@ func PrepareAppBundleUpdate(fromVersion, toVersion, appPath, backupPath string) 
 	if !strings.HasSuffix(strings.ToLower(tx.TargetPath), ".app") || tx.BackupPath != tx.TargetPath+".reasonix-update-backup" {
 		return nil, fmt.Errorf("prepare update: invalid macOS bundle paths")
 	}
+	unlock := lockPendingUpdate()
+	defer unlock()
 	if err := WritePendingUpdate(tx); err != nil {
 		return nil, err
 	}
@@ -188,6 +214,8 @@ func HasPendingUpdate() bool {
 // MarkUpdateHealthy commits a probationary update and removes its backup. A
 // version mismatch is ignored so an older process cannot bless a newer update.
 func MarkUpdateHealthy(runningVersion string) error {
+	unlock := lockPendingUpdate()
+	defer unlock()
 	tx, err := ReadPendingUpdate()
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -208,6 +236,8 @@ func MarkUpdateHealthy(runningVersion string) error {
 // CancelPendingUpdate removes a transaction that failed before control was
 // handed to the replacement build. A version mismatch is intentionally inert.
 func CancelPendingUpdate(toVersion string) error {
+	unlock := lockPendingUpdate()
+	defer unlock()
 	tx, err := ReadPendingUpdate()
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -250,6 +280,10 @@ func RollbackPendingUpdate() (UpdateRollbackResult, error) {
 }
 
 func rollbackPendingUpdate(expectedToVersion, expectedCreatedAt string) (UpdateRollbackResult, error) {
+	// The expected-match checks below re-run under the lock, so a transaction
+	// committed, cancelled, or replaced while waiting here is never acted upon.
+	unlock := lockPendingUpdate()
+	defer unlock()
 	tx, err := ReadPendingUpdate()
 	if err != nil {
 		if os.IsNotExist(err) {

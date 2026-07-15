@@ -89,7 +89,7 @@ func (t *StartupTracker) lock() func() {
 	if err := os.MkdirAll(filepath.Dir(t.path), 0o700); err != nil {
 		return func() {}
 	}
-	unlock, err := lockStartupStateFile(t.path)
+	unlock, err := lockRepairStateFile(t.path)
 	if err != nil {
 		return func() {}
 	}

@@ -2,8 +2,8 @@
 
 package repair
 
-// lockStartupStateFile is a no-op on platforms without file locking; the
-// tracker then behaves as before the cross-process serialization was added.
-func lockStartupStateFile(string) (func(), error) {
+// lockRepairStateFile is a no-op on platforms without file locking; callers
+// then behave as before the cross-process serialization was added.
+func lockRepairStateFile(string) (func(), error) {
 	return func() {}, nil
 }
