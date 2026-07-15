@@ -2084,14 +2084,19 @@ func (c *Controller) ReplayPendingPrompts() {
 // cache-stable system/tool prefix, and remembers the state so Compose can prepend
 // the plan-mode marker to outgoing user turns.
 func (c *Controller) SetPlanMode(v bool) {
+	c.applyPlanMode(v)
+}
+
+func (c *Controller) applyPlanMode(v bool) {
 	c.mu.Lock()
 	c.planMode = v
 	c.mu.Unlock()
-	if c.executor != nil {
-		c.executor.SetPlanMode(v)
-	}
 	if setter, ok := c.runner.(interface{ SetPlanMode(bool) }); ok {
 		setter.SetPlanMode(v)
+		return
+	}
+	if c.executor != nil {
+		c.executor.SetPlanMode(v)
 	}
 }
 
@@ -4630,13 +4635,7 @@ func (c *Controller) SetMode(plan, autoApproveTools bool) {
 // ApplyMode is SetMode reporting which pending approval prompt ids the tool
 // approval switch auto-allowed (see ApplyToolApprovalMode).
 func (c *Controller) ApplyMode(plan, autoApproveTools bool) []string {
-	c.mu.Lock()
-	c.planMode = plan
-	c.mu.Unlock()
-
-	if c.executor != nil {
-		c.executor.SetPlanMode(plan)
-	}
+	c.applyPlanMode(plan)
 	if autoApproveTools {
 		return c.ApplyToolApprovalMode(ToolApprovalYolo)
 	}

@@ -125,21 +125,27 @@ func (t *UseCapabilityTool) ResolveCall(ctx context.Context, args json.RawMessag
 		if reason == "" {
 			return tool.ResolvedCall{}, fmt.Errorf("reason is required for action=decline")
 		}
-		// Decline must not skip require.
+		// Decline must not skip require. The mutation itself is delayed until the
+		// agent has applied its post-resolution host boundary.
 		if t.ledger != nil {
 			if e, ok := t.ledger.Get(id); ok && e.Policy == capability.AutoUseRequire {
 				return tool.ResolvedCall{}, fmt.Errorf("cannot decline a require capability %q", id)
 			}
-			if err := t.ledger.MarkDeclined(id, reason); err != nil {
-				return tool.ResolvedCall{}, err
-			}
-		}
-		if t.audit != nil {
-			t.audit.RecordDecline()
 		}
 		base.SkipExecute = true
 		base.Result = fmt.Sprintf("declined capability %s: %s", id, reason)
 		base.ReadOnly = true
+		base.Commit = func() error {
+			if t.ledger != nil {
+				if err := t.ledger.MarkDeclined(id, reason); err != nil {
+					return err
+				}
+			}
+			if t.audit != nil {
+				t.audit.RecordDecline()
+			}
+			return nil
+		}
 		return base, nil
 	case "call":
 		return t.resolveCall(ctx, id, p.Arguments, base)
@@ -154,6 +160,11 @@ func (t *UseCapabilityTool) Execute(ctx context.Context, args json.RawMessage) (
 		return "", err
 	}
 	if resolved.SkipExecute {
+		if resolved.Commit != nil {
+			if err := resolved.Commit(); err != nil {
+				return "", err
+			}
+		}
 		if resolved.ProxyAction == "call" && !resolved.Unavailable {
 			if t.ledger != nil {
 				t.ledger.MarkSucceeded(resolved.CapabilityID)
@@ -377,11 +388,14 @@ func (t *UseCapabilityTool) resolveUnavailable(base tool.ResolvedCall, id, model
 	base.Result = "capability unavailable: " + reason
 	base.TargetName = modelName
 	base.ReadOnly = false
-	if t.ledger != nil {
-		t.ledger.MarkUnavailable(id, reason)
-	}
-	if t.audit != nil {
-		t.audit.RecordMCPProxy(false, true, true)
+	base.Commit = func() error {
+		if t.ledger != nil {
+			t.ledger.MarkUnavailable(id, reason)
+		}
+		if t.audit != nil {
+			t.audit.RecordMCPProxy(false, true, true)
+		}
+		return nil
 	}
 	return base
 }
@@ -426,6 +440,13 @@ func (o *onDemandMCPTool) Schema() json.RawMessage { return json.RawMessage(`{"t
 func (o *onDemandMCPTool) ReadOnly() bool {
 	return o.spec.ReadOnlyToolNames[o.raw] || o.spec.ReadOnlyModelToolNames[o.modelName]
 }
+
+// PlanModeUntrustedReadOnly is false because ReadOnly() is true only under an
+// explicit user config assertion (trusted_read_only_tools), never a server
+// hint — there is no server yet.
+func (o *onDemandMCPTool) PlanModeUntrustedReadOnly() bool { return false }
+
+func (o *onDemandMCPTool) ReadOnlyExecutionHostMutation() bool { return true }
 
 // MCPServerName/MCPRawToolName expose the deferred target for audit and
 // diagnostics (tool.MCPMetadata).
