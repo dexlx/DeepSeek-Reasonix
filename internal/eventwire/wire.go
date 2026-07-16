@@ -24,6 +24,7 @@ type Event struct {
 	Guardian        *Guardian        `json:"guardian,omitempty"`
 	Err             string           `json:"err,omitempty"`
 	Outcome         string           `json:"outcome,omitempty"`
+	Readiness       *FinalReadiness  `json:"readiness,omitempty"`
 	RetryAttempt    int              `json:"retryAttempt,omitempty"`
 	RetryMax        int              `json:"retryMax,omitempty"`
 }
@@ -110,6 +111,9 @@ func ToWire(e event.Event) Event {
 		w.Guardian = ToWireGuardian(e.Guardian)
 	case event.TurnDone:
 		w.Outcome = e.Outcome
+		if e.Readiness != nil {
+			w.Readiness = &FinalReadiness{Attempts: e.Readiness.Attempts, Missing: append([]string(nil), e.Readiness.Missing...)}
+		}
 		if e.Err != nil {
 			w.Err = e.Err.Error()
 		}
@@ -118,6 +122,11 @@ func ToWire(e event.Event) Event {
 		w.RetryMax = e.RetryMax
 	}
 	return w
+}
+
+type FinalReadiness struct {
+	Attempts int      `json:"attempts,omitempty"`
+	Missing  []string `json:"missing,omitempty"`
 }
 
 // MemoryCitation is the JSON form of provider.MemoryCitation.

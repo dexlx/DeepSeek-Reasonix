@@ -231,6 +231,11 @@ console.log("\nuse controller meta");
     "a stable notice code localizes the main copy even after backend copy edits",
   );
   eq(
+    localizedNoticeText("reworded workspace contention copy", "workspace_lease"),
+    "Another Delivery session is writing to this workspace; this session will continue automatically when it is safe.",
+    "workspace lease contention uses its stable localized notice code",
+  );
+  eq(
     localizedNoticeText("Tool round limit reached; asking the assistant to summarize progress.", "unknown_future_code"),
     "Tool round limit reached; asking the assistant to summarize progress.",
     "an unknown notice code falls back to exact-text matching",

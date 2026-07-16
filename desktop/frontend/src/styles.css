@@ -32281,3 +32281,11 @@ body > .mermaid-diagram--fullscreen {
   font-size: 13px;
   min-width: 0;
 }
+.worktree-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  color: var(--accent, #ff6b35);
+  vertical-align: middle;
+}

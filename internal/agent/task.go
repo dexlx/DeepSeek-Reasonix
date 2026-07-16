@@ -20,6 +20,7 @@ import (
 	"reasonix/internal/planmode"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
+	"reasonix/internal/workspacelease"
 )
 
 // DefaultTaskSystemPrompt steers a sub-agent toward focused, terse delivery —
@@ -231,6 +232,7 @@ type TaskTool struct {
 	identityProfile     func(modelRef, effort string) (string, string)
 	maxSubagentDepth    int
 	deliveryProfile     bool
+	workspaceLease      *workspacelease.Owner
 }
 
 // NewTaskTool wires a task tool to the parent agent's environment so its
@@ -294,6 +296,15 @@ func (t *TaskTool) WithMaxSubagentDepth(depth int) *TaskTool {
 // the mutation gate remains dormant for them.
 func (t *TaskTool) WithDeliveryProfile(enabled bool) *TaskTool {
 	t.deliveryProfile = enabled
+	return t
+}
+
+// WithWorkspaceLease shares the parent's workspace-wide delivery write lease
+// with every spawned sub-agent. A shared owner is required: independent owners
+// in one session would deadlock when a child tries to write while its parent
+// already retains the lease.
+func (t *TaskTool) WithWorkspaceLease(owner *workspacelease.Owner) *TaskTool {
+	t.workspaceLease = owner
 	return t
 }
 
@@ -882,6 +893,7 @@ func (t *TaskTool) subagentOptions(ctx context.Context, maxSteps int, pricing *p
 		SubagentDepth:       childDepth,
 		MaxSubagentDepth:    t.maxDepth(),
 		DeliveryProfile:     t.deliveryProfile,
+		WorkspaceLease:      t.workspaceLease,
 	}
 }
 

@@ -1042,6 +1042,17 @@ func (a *App) SubmitDisplayToTab(tabID, display, input string) error {
 	return nil
 }
 
+func (a *App) SubmitDeliveryRecoveryToTab(tabID, display, input string) error {
+	tab, ctrl, err := a.beginTabTurn(tabID, true)
+	if err != nil {
+		return err
+	}
+	a.ensureTabTopicIndexedForUserTurn(tab)
+	ctrl.SubmitDeliveryRecovery(display, input)
+	a.finishTabTurnStart(tab, ctrl)
+	return nil
+}
+
 // InvocationRequest is the Wails-bound form of a composer invocation entity.
 type InvocationRequest struct {
 	Name   string `json:"name"`

@@ -189,6 +189,7 @@ export interface WireEvent {
   guardian?: WireGuardian;
   err?: string;
   outcome?: "final_readiness";
+  readiness?: WireFinalReadiness;
   retryAttempt?: number;
   retryMax?: number;
   // Tab routing: set by the Go-side tabEventSink so multi-tab frontends
@@ -202,6 +203,11 @@ export interface WireEvent {
   sessionCostUsd?: number;
 }
 
+export interface WireFinalReadiness {
+  attempts?: number;
+  missing?: string[];
+}
+
 // Tab management types (desktop/tabs.go).
 export interface TabMeta {
   id: string;
@@ -211,6 +217,7 @@ export interface TabMeta {
   workspaceName: string;
   workspacePath?: string;
   gitBranch?: string;
+  isolatedWorktree?: boolean;
   topicId: string;
   topicTitle: string;
   sessionPath?: string;
@@ -259,7 +266,25 @@ export interface ProjectNode {
   recoveryReason?: string;
   recoveryDigest?: string;
   recoveryParentId?: string;
+  isolatedWorktree?: boolean;
   children?: ProjectNode[];
+}
+
+export interface DeliveryWorktreeAvailability {
+  available: boolean;
+  reason?: string;
+  repoRoot?: string;
+  branch?: string;
+  sourceDirty?: boolean;
+}
+
+export interface DeliveryWorktreeOpenResult {
+  workspaceRoot: string;
+  worktreeRoot: string;
+  sourceRoot: string;
+  branch: string;
+  sourceDirty: boolean;
+  tab: TabMeta;
 }
 
 export type ProjectTopicStatus = "thinking" | "streaming" | "waiting_confirmation" | "background_job" | "paused" | "error";

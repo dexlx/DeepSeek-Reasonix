@@ -1414,6 +1414,128 @@ func ToolCallRequiresDeliveryCriteria(toolName string, args json.RawMessage, rea
 	return bashCommandIsVerification(stringField(fields, "command"))
 }
 
+// BashToolCallMixesMutationAndVerification reports whether a bash call combines
+// a host-recognized verifier with another segment the host cannot prove is
+// read-only. Delivery mode blocks this shape before execution. Besides avoiding
+// accidental workspace changes during a check, this keeps scratch-file setup
+// (for example, writing /tmp/check.js before node --check) from becoming the
+// latest opaque mutation and invalidating otherwise valid delivery evidence.
+func BashToolCallMixesMutationAndVerification(args json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(args, &fields); err != nil {
+		return false
+	}
+	command := stringField(fields, "command")
+	return bashContainsVerificationSegment(command) && bashMayMutate(command)
+}
+
+// BashToolCallMasksVerificationExit reports the common `check; echo $?` shape.
+// The trailing reporter makes the shell call itself succeed even when the
+// verifier failed, so a successful tool receipt cannot prove the check passed.
+// It is separated from the broader mixed-command classifier so the agent can
+// give a precise recovery instruction instead of inviting repeated rewrites.
+func BashToolCallMasksVerificationExit(args json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(args, &fields); err != nil {
+		return false
+	}
+	command := strings.TrimSpace(stringField(fields, "command"))
+	if command == "" || !bashContainsVerificationSegment(command) {
+		return false
+	}
+	segments, _, ok := shellparse.SplitTopLevel(command)
+	if !ok {
+		return false
+	}
+	seenVerifier := false
+	for _, segment := range segments {
+		normalized, _ := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
+		argv, malformed := shellparse.StaticFields(normalized)
+		if malformed == "" && bashSegmentIsVerification(argv) {
+			seenVerifier = true
+			continue
+		}
+		if !seenVerifier || !strings.Contains(segment, "$?") {
+			continue
+		}
+		lower := strings.ToLower(strings.TrimSpace(segment))
+		if strings.HasPrefix(lower, "echo ") || strings.HasPrefix(lower, "printf ") {
+			return true
+		}
+	}
+	return false
+}
+
+// BashToolCallUsesOpaqueInlineInterpreter reports whether a bash call executes
+// source supplied directly on an interpreter's command line. Delivery mode
+// cannot prove whether snippets such as node -e or python -c only inspect state
+// or also write files. Letting them run and then treating them as opaque
+// mutations invalidates otherwise valid review/verification receipts, while
+// treating them as read-only would create a delivery bypass. The agent blocks
+// this shape before execution and directs callers to auditable file tools,
+// script files, or conventional verifier commands instead.
+func BashToolCallUsesOpaqueInlineInterpreter(args json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(args, &fields); err != nil {
+		return false
+	}
+	command := strings.TrimSpace(stringField(fields, "command"))
+	if command == "" {
+		return false
+	}
+	segments, _, ok := shellparse.SplitTopLevel(command)
+	if !ok {
+		return false
+	}
+	for _, segment := range segments {
+		normalized, _ := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
+		argv, malformed := shellparse.StaticFields(normalized)
+		if malformed != "" || len(argv) == 0 {
+			continue
+		}
+		base := strings.ToLower(filepath.Base(argv[0]))
+		args := argv[1:]
+		switch base {
+		case "node", "bun":
+			if hasCommandArg(args, "-e", "--eval", "-p", "--print") {
+				return true
+			}
+		case "python", "python3", "ruby", "perl":
+			if hasCommandArg(args, "-c", "-e") {
+				return true
+			}
+		case "php":
+			if hasCommandArg(args, "-r") {
+				return true
+			}
+		case "deno":
+			if len(args) > 0 && strings.EqualFold(args[0], "eval") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func bashContainsVerificationSegment(command string) bool {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return false
+	}
+	segments, _, ok := shellparse.SplitTopLevel(command)
+	if !ok {
+		return false
+	}
+	for _, segment := range segments {
+		normalized, _ := shellsafe.NormalizeBashSafeRedirectsForMatch(segment)
+		fields, malformed := shellparse.StaticFields(normalized)
+		if malformed == "" && bashSegmentIsVerification(fields) {
+			return true
+		}
+	}
+	return false
+}
+
 func bashMayMutate(command string) bool {
 	command = strings.TrimSpace(command)
 	if command == "" {

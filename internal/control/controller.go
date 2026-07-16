@@ -771,7 +771,12 @@ func (c *Controller) finishGuardedTurn(err error) {
 		c.mu.Unlock()
 		c.spawnGuardedTurn(ctx, cancel, next)
 	}()
-	c.sink.Emit(event.Event{Kind: event.TurnDone, Err: err, Outcome: turnOutcome(err)})
+	done := event.Event{Kind: event.TurnDone, Err: err, Outcome: turnOutcome(err)}
+	var readinessErr *agent.FinalReadinessError
+	if errors.As(err, &readinessErr) {
+		done.Readiness = &event.FinalReadiness{Attempts: readinessErr.Attempts, Missing: append([]string(nil), readinessErr.Missing...)}
+	}
+	c.sink.Emit(done)
 }
 
 func turnOutcome(err error) string {
@@ -952,6 +957,19 @@ func (c *Controller) SubmitHTTP(input string) {
 // text for transcript replay when controller-side composition expands input.
 func (c *Controller) SubmitDisplay(display, input string) {
 	c.submit(input, display, "")
+}
+
+// SubmitDeliveryRecovery runs the same visible prompt path as SubmitDisplay but
+// first authorizes the executor to retain the immediately preceding exhausted
+// delivery ledger. The agent consumes that authorization once; if the card came
+// from an older/reloaded session this safely degrades to an ordinary turn.
+func (c *Controller) SubmitDeliveryRecovery(display, input string) {
+	c.runGuarded(func(ctx context.Context) error {
+		if c.executor != nil {
+			c.executor.PrepareDeliveryRecovery()
+		}
+		return c.runGoalLoopWithRawDisplay(ctx, input, input, display)
+	})
 }
 
 // SubmitInvocationDisplay executes composer-selected invocation entities

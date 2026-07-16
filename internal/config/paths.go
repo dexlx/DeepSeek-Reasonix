@@ -22,6 +22,13 @@ var (
 		}
 		return dir
 	}
+	osUserCacheDir = func() string {
+		dir, err := os.UserCacheDir()
+		if err != nil {
+			return ""
+		}
+		return dir
+	}
 )
 
 func userConfigPath() string {
@@ -164,8 +171,8 @@ func userCacheDir() string {
 	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
 		return filepath.Join(dir, "cache")
 	}
-	dir, err := os.UserCacheDir()
-	if err != nil {
+	dir := osUserCacheDir()
+	if dir == "" {
 		return ""
 	}
 	return filepath.Join(dir, "reasonix")
@@ -304,6 +311,47 @@ func appendUniquePath(paths []string, path string) []string {
 // Windows, with a %USERPROFILE%/AppData/Roaming fallback when %APPDATA% is
 // unavailable.
 func ReasonixHomeDir() string { return reasonixHomeDir() }
+
+// WorkspaceLeaseDir stores cross-process Delivery writer locks outside user
+// workspaces. It intentionally follows the cache root rather than project or
+// session state: taking a lease must never dirty the repository it protects.
+func WorkspaceLeaseDir() string {
+	// Deliberately ignore REASONIX_HOME/REASONIX_CACHE_HOME here. Two app
+	// instances with different state profiles can still open the same user
+	// workspace, so their safety lock must converge on one OS-user cache root.
+	dir := osUserCacheDir()
+	if strings.TrimSpace(dir) == "" {
+		return ""
+	}
+	return filepath.Join(dir, "reasonix", "workspace-leases")
+}
+
+// DeliveryWorktreeDir is durable storage for user-visible isolated Delivery
+// workspaces. Explicit state/home overrides remain authoritative. Windows uses
+// LocalAppData by default so large Git worktrees do not roam with the user's
+// profile; other platforms keep using Reasonix state storage.
+func DeliveryWorktreeDir() string {
+	if dir := cleanEnvDir("REASONIX_STATE_HOME"); dir != "" {
+		return filepath.Join(dir, "worktrees")
+	}
+	if dir := cleanEnvDir("REASONIX_HOME"); dir != "" {
+		return filepath.Join(dir, "worktrees")
+	}
+	if runtimeGOOS == "windows" {
+		if dir := osUserCacheDir(); dir != "" {
+			return filepath.Join(dir, "reasonix", "worktrees")
+		}
+		if home, err := osUserHomeDir(); err == nil && home != "" {
+			return filepath.Join(home, "AppData", "Local", "reasonix", "worktrees")
+		}
+		return ""
+	}
+	dir := userSupportDir()
+	if dir == "" {
+		return ""
+	}
+	return filepath.Join(dir, "worktrees")
+}
 
 // UserCredentialsPath is the reasonix-owned global .env file under Reasonix
 // home. It is the single source for provider credentials saved by Reasonix, so

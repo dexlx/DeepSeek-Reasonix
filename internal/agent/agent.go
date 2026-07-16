@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/secrets"
 	"reasonix/internal/shellparse"
 	"reasonix/internal/tool"
+	"reasonix/internal/workspacelease"
 )
 
 // maxToolOutputBytes caps a single tool result before it goes into the model's
@@ -360,6 +361,11 @@ type Agent struct {
 	// reach it. nil leaves those tools to degrade gracefully.
 	jobs *jobs.Manager
 
+	// workspaceLease is shared by every writer-capable agent in one Delivery
+	// session. It is acquired lazily on the first mutation and held through the
+	// final participating run/background job so verification remains isolated.
+	workspaceLease *workspacelease.Owner
+
 	// steerQueue holds mid-turn user messages queued while the agent is
 	// running. Each is consumed once per loop iteration, persisted to the
 	// session for history replay, and sent to the model as guidance (not a
@@ -417,6 +423,10 @@ type Agent struct {
 	// review_report completion nudge so the retry can cite the read receipts
 	// the subagent already earned; consumed (cleared) by that Run.
 	preserveEvidenceOnce bool
+	// deliveryRecoveryPending is armed only when this agent exhausts final
+	// readiness. An explicit host recovery action can consume it to preserve the
+	// failed turn's receipts once; an ordinary user turn still resets evidence.
+	deliveryRecoveryPending bool
 
 	// capabilityLedger tracks require/prefer outcomes for this user turn only.
 	// Never serialized into prompts or session state.
@@ -1026,6 +1036,11 @@ type Options struct {
 	// Jobs is the session's background-job manager (nil disables background tools).
 	Jobs *jobs.Manager
 
+	// WorkspaceLease serializes Delivery mutations across sessions that target
+	// the same workspace. nil preserves source compatibility for direct Agent
+	// construction; boot always supplies it for Delivery sessions.
+	WorkspaceLease *workspacelease.Owner
+
 	// ProjectChecks are host-observable structured checks extracted during boot.
 	ProjectChecks []instruction.VerifyCheck
 
@@ -1162,6 +1177,7 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		configWriteApprover:     configWriteApprover,
 		hooks:                   hooks,
 		jobs:                    opts.Jobs,
+		workspaceLease:          opts.WorkspaceLease,
 		evidence:                evidence.NewLedger(),
 		projectChecks:           append([]instruction.VerifyCheck(nil), opts.ProjectChecks...),
 		deliveryProfile:         opts.DeliveryProfile,
@@ -1210,6 +1226,10 @@ func usageSourceOrDefault(source, fallback string) string {
 // a round count. A positive maxSteps imposes an optional hard guard, surfaced as
 // a resumable notice when hit.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	if a.deliveryProfile && a.workspaceLease != nil {
+		a.workspaceLease.BeginRun()
+		defer a.workspaceLease.EndRun()
+	}
 	rawInput := input
 	turnStartedAt := time.Now()
 	workDurationMs := func() int64 {
@@ -1236,6 +1256,9 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 		}
 	}
 	a.preserveEvidenceOnce = false
+	if !preserveEvidence {
+		a.deliveryRecoveryPending = false
+	}
 	if scoped {
 		a.deliveryScopeID = scope.ID
 	} else if !preserveEvidence {
@@ -1362,7 +1385,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	a.session.Add(provider.Message{Role: provider.RoleUser, Content: input, Images: userImages(ctx)})
 
 	finalReadinessBlocks := 0
-	readinessReceiptMark := -1
+	seenReadinessStates := make(map[string]struct{})
 	emptyFinalBlocks := 0
 	handoffNudges := 0
 	usedAnyTool := false
@@ -1455,15 +1478,14 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				return &maxStepsPause{steps: a.maxSteps, key: a.maxStepsKey}
 			}
 			if readiness.reason != "" {
-				// A block only counts against the base budget when the model made
-				// no host-observable progress since the previous block. A turn that
-				// keeps earning receipts (fix → verify → review the newest edit) is
-				// converging and gets extra nudges up to the hard cap; a stalled
-				// turn still fails after maxFinalReadinessBlocks.
-				progressed := readinessReceiptMark >= 0 && a.evidence != nil && a.evidence.Len() > readinessReceiptMark
-				if a.evidence != nil {
-					readinessReceiptMark = a.evidence.Len()
-				}
+				// Extend the base retry budget only when the missing-requirement
+				// state actually changes. Counting ledger length let repeated reads,
+				// failed bookkeeping, or other irrelevant receipts masquerade as
+				// convergence and burn through six expensive model calls.
+				state := readiness.progressSignature()
+				_, repeatedState := seenReadinessStates[state]
+				progressed := finalReadinessBlocks > 0 && !repeatedState
+				seenReadinessStates[state] = struct{}{}
 				finalReadinessBlocks++
 				exhausted := finalReadinessBlocks >= maxFinalReadinessBlocksWithProgress ||
 					(finalReadinessBlocks >= maxFinalReadinessBlocks && !progressed)
@@ -1471,7 +1493,8 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 				if exhausted {
 					result = evidence.ReadinessErrored
 					event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
-					return &FinalReadinessError{Attempts: finalReadinessBlocks, Reason: readiness.reason}
+					a.deliveryRecoveryPending = true
+					return &FinalReadinessError{Attempts: finalReadinessBlocks, Reason: readiness.reason, Missing: readiness.missingIDs()}
 				}
 				event.RecordReadinessAudit(a.sink, readiness.audit(result, false))
 				a.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo, Code: event.NoticeCodeFinalReadiness, Text: finalReadinessNoticeText(), Detail: readiness.reason})
@@ -1692,6 +1715,49 @@ type finalReadinessCheck struct {
 	missingSignoff            int
 	missingActionEvidence     int
 	missingMutation           int
+	missingCapabilities       int
+}
+
+func (c finalReadinessCheck) progressSignature() string {
+	return fmt.Sprintf("%d/%d/%d/%d/%d/%d/%d/%d/%d/%d\x00%s",
+		c.missingProjectChecks,
+		c.incompleteTodos,
+		c.missingAcceptanceCriteria,
+		c.missingVerification,
+		c.missingReview,
+		c.missingSignoff,
+		c.missingActionEvidence,
+		c.missingMutation,
+		c.missingCapabilities,
+		boolInt(c.applies),
+		c.reason,
+	)
+}
+
+func (c finalReadinessCheck) missingIDs() []string {
+	missing := make([]string, 0, 9)
+	add := func(id string, count int) {
+		if count > 0 {
+			missing = append(missing, id)
+		}
+	}
+	add("project_check", c.missingProjectChecks)
+	add("todo", c.incompleteTodos)
+	add("criteria", c.missingAcceptanceCriteria)
+	add("verification", c.missingVerification)
+	add("review", c.missingReview)
+	add("signoff", c.missingSignoff)
+	add("action", c.missingActionEvidence)
+	add("mutation", c.missingMutation)
+	add("capability", c.missingCapabilities)
+	return missing
+}
+
+func boolInt(v bool) int {
+	if v {
+		return 1
+	}
+	return 0
 }
 
 func (c finalReadinessCheck) audit(result evidence.ReadinessAuditResult, recovered bool) evidence.ReadinessAudit {
@@ -1707,6 +1773,7 @@ func (c finalReadinessCheck) audit(result evidence.ReadinessAuditResult, recover
 		MissingSignoff:            c.missingSignoff,
 		MissingActionEvidence:     c.missingActionEvidence,
 		MissingMutation:           c.missingMutation,
+		MissingCapabilities:       c.missingCapabilities,
 	}
 }
 
@@ -1777,6 +1844,7 @@ func (a *Agent) finalReadinessCheckFor(finalizeTask bool) finalReadinessCheck {
 		if finalizeTask {
 			if msg := a.capabilityGateFailure(); msg != "" {
 				out.applies = true
+				out.missingCapabilities++
 				missing = append(missing, msg)
 			}
 		}
@@ -1860,6 +1928,18 @@ func (a *Agent) RestoreDeliveryCheckpoint(checkpoint evidence.DeliveryCheckpoint
 	}
 	a.deliveryCheckpoint = checkpoint
 	a.deliveryScopeID = checkpoint.ScopeID
+}
+
+// PrepareDeliveryRecovery preserves the exhausted turn's evidence for exactly
+// one explicit continuation. It returns false when there is no matching
+// readiness failure, so normal follow-up turns cannot inherit stale mutations.
+func (a *Agent) PrepareDeliveryRecovery() bool {
+	if !a.deliveryProfile || !a.deliveryRecoveryPending {
+		return false
+	}
+	a.preserveEvidenceOnce = true
+	a.deliveryRecoveryPending = false
+	return true
 }
 
 func (a *Agent) updateDeliveryCheckpoint(runErr error) {
@@ -1983,6 +2063,17 @@ func (a *Agent) hasIncompleteCanonicalCriteria() bool {
 	a.todoMu.Lock()
 	defer a.todoMu.Unlock()
 	return len(a.todoState) > 0 && len(evidence.IncompleteTodos(a.todoState)) > 0
+}
+
+func (a *Agent) hasActiveCanonicalTodo() bool {
+	a.todoMu.Lock()
+	defer a.todoMu.Unlock()
+	for _, todo := range a.todoState {
+		if canonicalTodoStatus(todo.Status) == "in_progress" {
+			return true
+		}
+	}
+	return false
 }
 
 func (a *Agent) canonicalTodoProgress() (int, bool) {
@@ -2184,7 +2275,7 @@ func finalReadinessCheckSource(check instruction.VerifyCheck) string {
 }
 
 func finalReadinessRetryMessage(reason string) string {
-	return "Host final-answer readiness check failed. Before giving a final answer, address the missing host-observable receipts: " + reason + ". Run only the required tool calls, then answer when readiness is satisfied. Prefer signing off completed work with complete_step and updating todo_write from existing receipts; do not run exploratory bash commands just to satisfy readiness. If a permission, plan-mode, hook, or loop-guard block prevents the required receipt, do not keep retrying the blocked command with different wording. If the blocked item needs user input, a user-owned choice, or manual review, call the ask tool with concrete options and wait for its tool result; do not ask in prose, and do not claim the user answered unless an actual ask tool result or a new user message says so."
+	return "Host final-answer readiness check failed. Before giving a final answer, address the missing host-observable receipts: " + reason + ". Run only the required tool calls, then answer when readiness is satisfied. Prefer signing off completed work with complete_step and updating todo_write from existing receipts; do not run exploratory bash commands just to satisfy readiness. If every todo is already completed and fresh review or verification makes the prior sign-off stale, renew the sign-off by calling complete_step with the final existing todo's exact text or 1-based step_index; do not invent a new step or rewrite the completed list. If a permission, plan-mode, hook, or loop-guard block prevents the required receipt, do not keep retrying the blocked command with different wording. If the blocked item needs user input, a user-owned choice, or manual review, call the ask tool with concrete options and wait for its tool result; do not ask in prose, and do not claim the user answered unless an actual ask tool result or a new user message says so."
 }
 
 func shouldNudgeExecutorHandoff(input, answer string) bool {
@@ -3123,12 +3214,41 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg:  "blocked: MCP writer is unavailable during planning",
 		}
 	}
+	if a.deliveryProfile && evidenceName == "bash" && evidence.BashToolCallMasksVerificationExit(evidenceArgs) {
+		return toolOutcome{
+			output:  "blocked: the trailing echo/printf of $? masks the verifier's exit status, so this command would look successful even when the check failed. Run the verifier or read-only extraction pipeline by itself and let its exit status be the tool result; for example: tail ... | head ... | node --check -",
+			blocked: true,
+			errMsg:  "blocked: verification exit status masked",
+		}
+	}
+	if a.deliveryProfile && evidenceName == "bash" && evidence.BashToolCallMixesMutationAndVerification(evidenceArgs) {
+		return toolOutcome{
+			output:  "blocked: this command mixes a verification check with a segment that may write state. Run the state-changing preparation separately while a todo is in_progress, then run a read-only verification command. For generated input, prefer a host-recognized read-only pipeline into the verifier (for example: tail ... | head ... | node --check -) instead of writing a temporary file.",
+			blocked: true,
+			errMsg:  "blocked: mixed mutation and verification command",
+		}
+	}
+	if a.deliveryProfile && evidenceName == "bash" && evidence.BashToolCallUsesOpaqueInlineInterpreter(evidenceArgs) {
+		return toolOutcome{
+			output:  "blocked: delivery mode cannot audit inline interpreter source such as node -e or python -c, so executing it would become an opaque mutation and invalidate prior verification. For inspection, use read_file/grep or another host-proven read-only command. For validation, use a conventional verifier such as node --check, a project test/check/lint command, or a read-only extraction pipeline into the verifier. For an intentional state change, use a file tool or a script file under the current in_progress todo.",
+			blocked: true,
+			errMsg:  "blocked: opaque inline interpreter command",
+		}
+	}
 
+	mutates := evidence.ToolCallMutates(evidenceName, evidenceArgs, readOnly)
 	if a.deliveryProfile && evidence.ToolCallRequiresDeliveryCriteria(evidenceName, evidenceArgs, readOnly) && !a.deliveryCriteriaEstablished {
 		return toolOutcome{
 			output:  "blocked: delivery-first mode requires acceptance criteria before state-changing work. Call todo_write with a concrete, verifiable task list, then retry this tool call.",
 			blocked: true,
 			errMsg:  "blocked: delivery acceptance criteria required",
+		}
+	}
+	if a.deliveryProfile && mutates && !a.hasActiveCanonicalTodo() {
+		return toolOutcome{
+			output:  "blocked: delivery-first mode requires every state change to belong to the current in_progress todo. Preserve the completed todo prefix, append a concrete new item if more work was discovered, mark that item in_progress with todo_write, then retry this mutation.",
+			blocked: true,
+			errMsg:  "blocked: active delivery todo required",
 		}
 	}
 	destructive := mcpDestructiveHint(execTool)
@@ -3185,6 +3305,19 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 				output:  "blocked: " + reason,
 				blocked: true,
 				errMsg:  "blocked by permission policy",
+			}
+		}
+	}
+	// Acquire after permission is granted but before PreToolUse: hooks are user
+	// shell code and can themselves change the workspace. This keeps readers
+	// concurrent and avoids holding the workspace during an approval prompt while
+	// still covering every write-side action that follows authorization.
+	if a.deliveryProfile && mutates && a.workspaceLease != nil {
+		if err := a.workspaceLease.AcquireWrite(ctx); err != nil {
+			return toolOutcome{
+				output:  fmt.Sprintf("blocked: the workspace did not become available for Delivery writing: %v", err),
+				blocked: true,
+				errMsg:  "blocked: workspace write lease unavailable",
 			}
 		}
 	}

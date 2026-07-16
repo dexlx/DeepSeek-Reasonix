@@ -183,7 +183,7 @@ func verifyStepEvidence(ctx context.Context, items []stepEvidence) (hostVerified
 			}
 			_, deliveryHasMutation := ledger.LatestSuccessfulMutationIndex()
 			if evidence.DeliveryProfileFromContext(ctx) && deliveryHasMutation && !evidence.IsDeliveryVerificationCommand(command) {
-				return 0, 0, fmt.Errorf("evidence %d: command %q ran successfully but is not a recognized delivery verification; use a project test/check/lint command, or for JavaScript syntax use node --check <file> (a read-only extraction pipeline ending in node --check also works). Arbitrary node -e is treated as an opaque mutation", i+1, command)
+				return 0, 0, fmt.Errorf("evidence %d: command %q ran successfully but is not a recognized delivery verification; do not cite an opaque command as verification. Use a project test/check/lint command, or for JavaScript syntax use node --check <file> (a read-only extraction pipeline ending in node --check also works). If this was only a visible/manual inspection, cite kind manual or files without a command, then rerun and cite a recognized verifier after any opaque mutation", i+1, command)
 			}
 			hostVerified++
 		case "diff":
@@ -272,6 +272,17 @@ func verifyTodoStep(ctx context.Context, step string) (evidence.TodoStepMatch, b
 	}
 	match, found := evidence.MatchStep(step, todos)
 	if !found {
+		allCompleted := true
+		for _, todo := range todos {
+			if strings.TrimSpace(todo.Status) != "completed" {
+				allCompleted = false
+				break
+			}
+		}
+		if allCompleted {
+			last := len(todos) - 1
+			return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q has no matching todo_write item and every current todo is already completed; this is a renewal sign-off, so retry complete_step with step_index %d (the final existing todo %q) and the fresh evidence — do not invent a new step or rewrite the completed list", step, last+1, todos[last].Content)
+		}
 		return evidence.TodoStepMatch{}, true, fmt.Errorf("step %q has no matching todo_write item in the current task list; cite a todo verbatim or by number: %s", step, todoListInventory(todos))
 	}
 	switch match.Status {

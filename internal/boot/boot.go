@@ -53,6 +53,7 @@ import (
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 	"reasonix/internal/tool/sessiontool"
+	"reasonix/internal/workspacelease"
 )
 
 // ErrUnknownModel is returned by Build when the configured model can't be
@@ -272,7 +273,24 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 	if !opts.RequireKey && entry.RequiresAPIKey() && entry.APIKey() == "" {
 		sink.Emit(event.Event{Kind: event.Notice, Text: "Selected model is missing its API key.", Detail: fmt.Sprintf("model %q is selected but its API key %s is not set — requests will fail until you set it", modelName, entry.APIKeyEnv)})
 	}
-	jm := jobs.NewManager(sink, jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds())*time.Second))
+	var workspaceLease *workspacelease.Owner
+	jobOptions := []jobs.Option{jobs.WithStalledWarningAfter(time.Duration(cfg.BackgroundJobStalledWarningSeconds()) * time.Second)}
+	if tokenDelivery {
+		workspaceLease, err = workspacelease.New(root, config.WorkspaceLeaseDir(), func() {
+			sink.Emit(event.Event{
+				Kind:   event.Notice,
+				Level:  event.LevelInfo,
+				Code:   event.NoticeCodeWorkspaceLease,
+				Text:   "Another Delivery session is writing to this workspace; this session will continue automatically when it is safe.",
+				Detail: "workspace write lease is busy; read-only work remains concurrent",
+			})
+		})
+		if err != nil {
+			return nil, fmt.Errorf("initialize Delivery workspace lease: %w", err)
+		}
+		jobOptions = append(jobOptions, jobs.WithJobStartObserver(workspaceLease.RetainUntil))
+	}
+	jm := jobs.NewManager(sink, jobOptions...)
 	sessionDir := opts.SessionDir
 	if sessionDir == "" {
 		sessionDir = config.SessionDir()
@@ -739,7 +757,8 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			WithTranscripts(subagentStore, root, modelName, entry.Effort).
 			WithTranscriptIdentityResolver(subagentIdentity).
 			WithMaxSubagentDepth(maxSubagentDepth).
-			WithDeliveryProfile(tokenDelivery)
+			WithDeliveryProfile(tokenDelivery).
+			WithWorkspaceLease(workspaceLease)
 	}
 	addTaskTool := func() string {
 		if taskToolAdded {
@@ -835,6 +854,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			SubagentDepth:       childDepth,
 			MaxSubagentDepth:    maxSubagentDepth,
 			DeliveryProfile:     tokenDelivery,
+			WorkspaceLease:      workspaceLease,
 		}
 	}
 	readOnlySkillRunner := func(sctx context.Context, sk skill.Skill, task string, runOpts skill.SubagentRunOptions) (string, error) {
@@ -1355,6 +1375,7 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 		Jobs:                               jm,
 		ProjectChecks:                      projectChecks,
 		DeliveryProfile:                    tokenDelivery,
+		WorkspaceLease:                     workspaceLease,
 		CapabilityLedger:                   capLedger,
 		CapabilityAudit:                    capAudit,
 		ContextWindow:                      entry.ContextWindow,

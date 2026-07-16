@@ -13,6 +13,7 @@ import (
 	"reasonix/internal/event"
 	"reasonix/internal/provider"
 	"reasonix/internal/tool"
+	"reasonix/internal/workspacelease"
 )
 
 func TestParallelTasksToolIsReadOnly(t *testing.T) {
@@ -395,5 +396,17 @@ func TestTaskToolPropagatesDeliveryProfileToSubagents(t *testing.T) {
 	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
 	if !opts.DeliveryProfile {
 		t.Fatal("sub-agent options did not inherit delivery profile")
+	}
+}
+
+func TestTaskToolSharesWorkspaceLeaseWithSubagents(t *testing.T) {
+	owner, err := workspacelease.New(t.TempDir(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("New workspace lease: %v", err)
+	}
+	task := (&TaskTool{}).WithWorkspaceLease(owner)
+	opts := task.subagentOptions(context.Background(), 0, nil, 0, 1)
+	if opts.WorkspaceLease != owner {
+		t.Fatal("sub-agent options did not share the parent's workspace lease owner")
 	}
 }

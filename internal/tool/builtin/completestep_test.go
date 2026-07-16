@@ -181,6 +181,26 @@ func TestCompleteStepAllowsManualAsUnverified(t *testing.T) {
 	}
 }
 
+func TestCompleteStepExplainsRenewalAgainstCompletedTodoList(t *testing.T) {
+	ledger := evidence.NewLedger()
+	ledger.Record(evidence.ReceiptFromToolCall("todo_write", json.RawMessage(`{"todos":[{"content":"Implement","status":"completed"},{"content":"Final review","status":"completed"}]}`), true, true))
+	ctx := evidence.WithLedger(context.Background(), ledger)
+
+	_, err := (completeStep{}).Execute(ctx, json.RawMessage(`{
+		"step":"Review and verify again",
+		"result":"ready",
+		"evidence":[{"kind":"manual","summary":"reviewed"}]
+	}`))
+	if err == nil {
+		t.Fatal("invented renewal step should not bypass the canonical todo list")
+	}
+	for _, want := range []string{"renewal sign-off", "step_index 2", "Final review", "do not invent a new step"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("renewal error %q missing %q", err, want)
+		}
+	}
+}
+
 func TestCompleteStepDeliveryRejectsOpaqueEvalVerification(t *testing.T) {
 	ledger := evidence.NewLedger()
 	ledger.Record(evidence.ReceiptFromToolCall("bash", json.RawMessage(`{"command":"node -e 'console.log(1)'"}`), true, false))

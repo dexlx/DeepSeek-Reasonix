@@ -263,6 +263,14 @@ type CacheDiagnostics struct {
 	CacheHitTokens      int
 }
 
+// FinalReadiness carries machine-readable recovery requirements on TurnDone.
+// Missing values are stable category ids; user-facing detail stays localized in
+// the frontend instead of scraping the diagnostic error string.
+type FinalReadiness struct {
+	Attempts int
+	Missing  []string
+}
+
 const (
 	UsageSourceExecutor         = "executor"
 	UsageSourcePlanner          = "planner"
@@ -286,6 +294,7 @@ const (
 	NoticeCodeExecutorHandoff = "executor_handoff"
 	NoticeCodeToolBudget      = "tool_budget"
 	NoticeCodeLoopGuard       = "loop_guard"
+	NoticeCodeWorkspaceLease  = "workspace_lease"
 )
 
 type Event struct {
@@ -306,14 +315,15 @@ type Event struct {
 	// session (Usage events only), so a frontend can show the aggregate hit-rate
 	// — which doesn't crater on a short turn or after compaction — alongside
 	// Usage's single-turn numbers.
-	SessionHit   int        // Usage: cumulative cache-hit prompt tokens this session
-	SessionMiss  int        // Usage: cumulative cache-miss prompt tokens this session
-	Level        Level      // Notice
-	Approval     Approval   // ApprovalRequest
-	Ask          Ask        // AskRequest
-	Err          error      // TurnDone: non-nil on failure
-	Outcome      string     // TurnDone: optional machine-readable recoverable outcome
-	Compaction   Compaction // Compaction
+	SessionHit   int             // Usage: cumulative cache-hit prompt tokens this session
+	SessionMiss  int             // Usage: cumulative cache-miss prompt tokens this session
+	Level        Level           // Notice
+	Approval     Approval        // ApprovalRequest
+	Ask          Ask             // AskRequest
+	Err          error           // TurnDone: non-nil on failure
+	Outcome      string          // TurnDone: optional machine-readable recoverable outcome
+	Readiness    *FinalReadiness // TurnDone: structured final-readiness recovery state
+	Compaction   Compaction      // Compaction
 	Guardian     GuardianResult
 	RetryAttempt int // Retrying: 1-based attempt about to be made
 	RetryMax     int // Retrying: total attempts before giving up

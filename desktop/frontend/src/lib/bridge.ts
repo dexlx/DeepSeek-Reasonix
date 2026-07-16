@@ -34,6 +34,8 @@ import type {
   ContextPanelInfo,
   DirEntry,
   DesktopStartupSettingsView,
+  DeliveryWorktreeAvailability,
+  DeliveryWorktreeOpenResult,
   DroppedItem,
   EffortInfo,
   FilePreview,
@@ -144,6 +146,7 @@ export interface AppBindings {
   SubmitToTab(tabID: string, input: string): Promise<void>;
   SubmitDisplay(display: string, input: string): Promise<void>;
   SubmitDisplayToTab(tabID: string, display: string, input: string): Promise<void>;
+  SubmitDeliveryRecoveryToTab(tabID: string, display: string, input: string): Promise<void>;
   SubmitInvocationsToTab(tabID: string, display: string, input: string, invocations: InvocationRequest[]): Promise<void>;
   SubmitEditedDisplayToTab(tabID: string, display: string, input: string, original: string): Promise<void>;
   RunShell(command: string): Promise<void>;
@@ -395,6 +398,8 @@ export interface AppBindings {
   ReportCrash(kind: string, detail: string): Promise<void>;
   ListTabs(): Promise<TabMeta[]>;
   OpenProjectTab(workspaceRoot: string, topicID: string): Promise<TabMeta>;
+  DeliveryWorktreeAvailability(workspaceRoot: string): Promise<DeliveryWorktreeAvailability>;
+  CreateDeliveryWorktree(workspaceRoot: string): Promise<DeliveryWorktreeOpenResult>;
   OpenGlobalTab(topicID: string): Promise<TabMeta>;
   OpenTopicSession(scope: string, workspaceRoot: string, topicID: string, sessionPath: string): Promise<TabMeta>;
   EnsureBlankTab(scope: string, workspaceRoot: string): Promise<TabMeta>;
@@ -671,7 +676,7 @@ function bridgeBreadcrumb(method: string): string {
   if (/^(AddSkillPath|RemoveSkillPath|RefreshSkills|SetSkillEnabled|AcceptSkillSuggestion|AvailableSubagentTools|CreateSubagentProfile|UpdateSubagentProfile|DeleteSubagentProfile|SetSubagentProfileModel|SetSubagentProfileEffort|TrySubagentProfile|CancelTrySubagentProfile)/.test(method))
     return `skill ${method}`;
   if (/^(MinimiseMainWindow|ToggleMaximiseMainWindow|IsMainWindowMaximised|CloseMainWindow)$/.test(method)) return `window ${method}`;
-  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|EnsureBlankTab|ActivateTopic|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace)/.test(method))
+  if (/^(OpenProjectTab|OpenGlobalTab|OpenTopicSession|EnsureBlankTab|ActivateTopic|EnsureBlankSurface|SetActiveTab|CloseTab|ReorderTabs|CreateTopic|RenameTopic|DeleteTopic|TrashTopic|RenameProject|RemoveWorkspace|SwitchWorkspace|PickWorkspace|DeliveryWorktreeAvailability|CreateDeliveryWorktree)/.test(method))
     return `nav ${method}`;
   return "";
 }
@@ -2143,6 +2148,9 @@ function makeMockApp(): AppBindings {
           await this.Submit(input);
         },
         async SubmitDisplayToTab(_tabID, display, input) {
+          await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
+        },
+        async SubmitDeliveryRecoveryToTab(_tabID, display, input) {
           await withMockTabScope(_tabID, () => this.SubmitDisplay(display, input));
         },
         async SubmitInvocationsToTab(_tabID, display, input, _invocations) {
@@ -3812,6 +3820,29 @@ function makeMockApp(): AppBindings {
       };
       mockTabs = [...mockTabs.map((item) => ({ ...item, active: false })), tab];
       return { ...tab };
+    },
+    async DeliveryWorktreeAvailability(workspaceRoot: string) {
+      return workspaceRoot
+        ? { available: true, repoRoot: workspaceRoot, branch: "main", sourceDirty: false }
+        : { available: false, reason: "project folder is required" };
+    },
+    async CreateDeliveryWorktree(workspaceRoot: string) {
+      if (!workspaceRoot) throw new Error("project folder is required");
+      const suffix = Date.now().toString(36);
+      const isolatedRoot = `/mock/reasonix-worktrees/${suffix}/${workspaceRoot.split("/").filter(Boolean).pop() ?? "project"}`;
+      const topicID = `topic_worktree_${suffix}`;
+      const tab = await this.OpenProjectTab(isolatedRoot, topicID);
+      tab.isolatedWorktree = true;
+      tab.gitBranch = `reasonix/delivery-${suffix}`;
+      mockTabs = mockTabs.map((candidate) => candidate.id === tab.id ? { ...tab } : candidate);
+      return {
+        workspaceRoot: isolatedRoot,
+        worktreeRoot: isolatedRoot,
+        sourceRoot: workspaceRoot,
+        branch: tab.gitBranch,
+        sourceDirty: false,
+        tab,
+      };
     },
     async OpenGlobalTab(_topicID: string) {
       const existing = mockTabs.find((tab) => tab.scope === "global" && tab.topicId === _topicID);

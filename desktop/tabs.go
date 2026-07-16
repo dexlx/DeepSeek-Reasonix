@@ -30,6 +30,7 @@ import (
 	"reasonix/internal/notify"
 	"reasonix/internal/provider"
 	"reasonix/internal/store"
+	"reasonix/internal/worktree"
 )
 
 // --- WorkspaceTab -----------------------------------------------------------
@@ -1502,6 +1503,7 @@ type TabMeta struct {
 	WorkspaceName     string                   `json:"workspaceName"`
 	WorkspacePath     string                   `json:"workspacePath,omitempty"`
 	GitBranch         string                   `json:"gitBranch,omitempty"`
+	IsolatedWorktree  bool                     `json:"isolatedWorktree,omitempty"`
 	TopicID           string                   `json:"topicId"`
 	TopicTitle        string                   `json:"topicTitle"`
 	SessionPath       string                   `json:"sessionPath,omitempty"`
@@ -1570,6 +1572,7 @@ func (a *App) tabMeta(tab *WorkspaceTab, active bool) TabMeta {
 		StartupErr:        tab.StartupErr,
 		Active:            active,
 		Cwd:               tab.WorkspaceRoot,
+		IsolatedWorktree:  worktree.IsManagedPath(tab.WorkspaceRoot, config.DeliveryWorktreeDir()),
 	}
 	switch tab.Scope {
 	case "global":
@@ -1858,10 +1861,14 @@ func (a *App) ActivateTopic(scope, workspaceRoot, topicID, sessionPath string) (
 // creating or reusing a blank session, it removes other visible tabs while
 // preserving running runtimes as detached background sessions.
 func (a *App) EnsureBlankSurface(scope, workspaceRoot string) (TabMeta, error) {
+	return a.ensureBlankSurface(scope, workspaceRoot, "")
+}
+
+func (a *App) ensureBlankSurface(scope, workspaceRoot, tokenMode string) (TabMeta, error) {
 	a.singleSurfaceMu.Lock()
 	defer a.singleSurfaceMu.Unlock()
 
-	meta, err := a.EnsureBlankTab(scope, workspaceRoot)
+	meta, err := a.ensureBlankTab(scope, workspaceRoot, tokenMode)
 	if err != nil {
 		return TabMeta{}, err
 	}
@@ -1888,6 +1895,10 @@ func tabInWorkspace(tab *WorkspaceTab, workspaceRoot string) bool {
 // creates one if none exists. Reusing a blank tab keeps repeated "new session"
 // clicks from piling up empty conversations.
 func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
+	return a.ensureBlankTab(scope, workspaceRoot, "")
+}
+
+func (a *App) ensureBlankTab(scope, workspaceRoot, forcedTokenMode string) (TabMeta, error) {
 	scope = strings.TrimSpace(scope)
 	if scope != "project" {
 		scope = "global"
@@ -1953,6 +1964,9 @@ func (a *App) EnsureBlankTab(scope, workspaceRoot string) (TabMeta, error) {
 		inheritedTokenMode = currentTabTokenMode(active)
 		inheritedDisabledMCP = cloneServerViewMap(active.disabledMCP)
 		inheritedMCPOrder = append([]string(nil), active.mcpOrder...)
+	}
+	if strings.TrimSpace(forcedTokenMode) != "" {
+		inheritedTokenMode = boot.NormalizeTokenMode(forcedTokenMode)
 	}
 
 	if topicID := a.indexedBlankTopicIDLocked(scope, workspaceRoot); topicID != "" {
@@ -5363,6 +5377,7 @@ type ProjectNode struct {
 	RecoveryReason   string        `json:"recoveryReason,omitempty"`
 	RecoveryDigest   string        `json:"recoveryDigest,omitempty"`
 	RecoveryParentID string        `json:"recoveryParentId,omitempty"`
+	IsolatedWorktree bool          `json:"isolatedWorktree,omitempty"`
 	Children         []ProjectNode `json:"children,omitempty"`
 }
 
@@ -6924,10 +6939,11 @@ func (a *App) ListProjectTree() []ProjectNode {
 			title = workspaceName(p.Root)
 		}
 		node := ProjectNode{
-			Key:    "project_" + p.Root,
-			Kind:   "project",
-			Root:   p.Root,
-			Pinned: containsDesktopString(f.PinnedProjects, p.Root),
+			Key:              "project_" + p.Root,
+			Kind:             "project",
+			Root:             p.Root,
+			Pinned:           containsDesktopString(f.PinnedProjects, p.Root),
+			IsolatedWorktree: worktree.IsManagedPath(p.Root, config.DeliveryWorktreeDir()),
 		}
 
 		// Gather topics: explicit topic list + all known topic titles.
