@@ -142,6 +142,9 @@ func TestChannelSelectsDistinctPointers(t *testing.T) {
 	if strings.Contains(downloadPage(), "/releases/latest") {
 		t.Errorf("download page should not use GitHub's repository-wide latest release: %q", downloadPage())
 	}
+	if downloadPage() != "https://reasonix.io/?download=desktop#start" {
+		t.Errorf("download page = %q, want the desktop install deep link", downloadPage())
+	}
 }
 
 func withUpdateCacheDir(t *testing.T) string {

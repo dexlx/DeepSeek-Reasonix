@@ -1,3 +1,5 @@
+import { downloadPaneFromURL } from "./download-link.js";
+
 // Reasonix site — vanilla interactions
 (function () {
   const motionOK = () =>
@@ -81,16 +83,29 @@
     osCard.appendChild(chip);
   }
 
+  const flashOSCard = () => {
+    if (!osCard) return;
+    osCard.classList.remove("flash");
+    void osCard.offsetWidth;
+    setTimeout(() => osCard.classList.add("flash"), 450);
+    setTimeout(() => osCard.classList.remove("flash"), 2600);
+  };
+
+  const requestedPane = downloadPaneFromURL(window.location.href);
+  if (requestedPane) {
+    activatePane(requestedPane);
+    if (requestedPane === "desktop") flashOSCard();
+    requestAnimationFrame(() => {
+      document.getElementById("start")?.scrollIntoView({ block: "start" });
+      queueSweep();
+    });
+  }
+
   /* links that deep-link into a specific download tab */
   document.querySelectorAll("[data-goto]").forEach((a) => {
     a.addEventListener("click", () => {
       activatePane(a.dataset.goto);
-      if (a.hasAttribute("data-os-dl") && osCard) {
-        osCard.classList.remove("flash");
-        void osCard.offsetWidth;
-        setTimeout(() => osCard.classList.add("flash"), 450);
-        setTimeout(() => osCard.classList.remove("flash"), 2600);
-      }
+      if (a.hasAttribute("data-os-dl")) flashOSCard();
       setTimeout(queueSweep, 500);
     });
   });

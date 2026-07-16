@@ -78,7 +78,7 @@ jobs:
           aws configure set region auto
           aws s3 cp "s3://${R2_BUCKET}/latest/latest.json" latest.raw.json \
             --endpoint-url "https://${R2_ACCOUNT_ID}.r2.cloudflarestorage.com"
-          jq '.download_page = "https://reasonix.io/#start"' latest.raw.json > latest.json
+          jq '.download_page = "https://reasonix.io/?download=desktop#start"' latest.raw.json > latest.json
           jq -e '
             ([.platforms[] | (.url, .sig)] |
               all(type == "string" and startswith("https://dl.reasonix.io/") and (contains("/releases/latest/") | not)))

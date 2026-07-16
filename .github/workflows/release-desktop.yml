@@ -390,7 +390,7 @@ jobs:
           f=assets/latest.json
           jq -e --arg version "$VERSION" --arg prefix "https://dl.reasonix.io/${TAG}/" '
             .version == $version and
-            .download_page == "https://reasonix.io/#start" and
+            .download_page == "https://reasonix.io/?download=desktop#start" and
             ([.platforms[] | (.url, .sig)] |
               all(type == "string" and startswith($prefix) and (contains("/releases/latest/") | not)))
           ' "$f" >/dev/null

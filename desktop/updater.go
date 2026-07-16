@@ -43,7 +43,7 @@ import (
 const (
 	r2Base             = "https://dl.reasonix.io"
 	releaseGatewayBase = "https://crash.reasonix.io/v1/desktop/releases"
-	downloadPageURL    = "https://reasonix.io/#start"
+	downloadPageURL    = "https://reasonix.io/?download=desktop#start"
 	httpTimeout        = 15 * time.Second
 )
 
