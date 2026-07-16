@@ -40,6 +40,16 @@ branch.
   but are ignored and removed by a one-time migration so stale hidden limits
   cannot truncate new behavior. One-off CLI and unattended bot limits remain.
 
+### Fixed
+
+- Restored the `0.53` content boundary: model output, tool output, session
+  transcripts, recovery branches, and background-job artifacts retain their
+  original text instead of being rewritten by heuristic secret redaction.
+  Credential masking remains in key-entry summaries and explicit diagnostic or
+  session-cleanup paths. Transcript-bearing session/job sidecars are kept
+  private (`0600`, with private job directories), and the retired
+  `redact_tool_output` setting is removed with a one-time upgrade notice.
+
 ## [1.0.0] — 2026-06-03
 
 First stable release — a **ground-up rewrite in Go**. Not an upgrade of the `0.x`

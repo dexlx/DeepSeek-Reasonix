@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -68,7 +69,7 @@ func TestSaveLoadRoundTrip(t *testing.T) {
 	}
 }
 
-func TestSaveRedactsSecretsOnDisk(t *testing.T) {
+func TestSavePreservesToolContentOnDisk(t *testing.T) {
 	secret := "sk-real-secret-value-123456"
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect"})
@@ -79,7 +80,7 @@ func TestSaveRedactsSecretsOnDisk(t *testing.T) {
 		Content:    "DEEPSEEK_API_KEY=" + secret + "\n",
 	})
 
-	path := filepath.Join(t.TempDir(), "redacted.jsonl")
+	path := filepath.Join(t.TempDir(), "verbatim.jsonl")
 	if err := s.Save(path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -87,21 +88,52 @@ func TestSaveRedactsSecretsOnDisk(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read saved session: %v", err)
 	}
-	if strings.Contains(string(body), secret) {
-		t.Fatalf("session persisted raw secret:\n%s", body)
-	}
-	if !strings.Contains(string(body), "DEEPSEEK_API_KEY=sk-rea") {
-		t.Fatalf("session did not persist a masked credential marker:\n%s", body)
+	if !strings.Contains(string(body), "DEEPSEEK_API_KEY="+secret) {
+		t.Fatalf("session did not persist tool content verbatim:\n%s", body)
 	}
 }
 
-// TestSaveRedactionKeepsSnapshotBaselineStable is the digest-consistency
-// contract behind redact-on-save: because Redact is idempotent, a loaded
-// (already-redacted) transcript re-saves as the exact same bytes, so
-// SaveSnapshot must take the up-to-date path — no rewrite, no revision bump,
-// and above all no bogus snapshot conflict / recovery fork (#6083's failure
-// shape). Appending after the resave must land as a plain append.
-func TestSaveRedactionKeepsSnapshotBaselineStable(t *testing.T) {
+func TestSaveProtectsVerbatimSessionEventLog(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows file ACLs are not represented by Unix permission bits")
+	}
+	s := NewSession("sys")
+	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect"})
+	s.Add(provider.Message{Role: provider.RoleTool, Name: "bash", ToolCallID: "call_1", Content: "API_KEY=raw-secret"})
+	path := filepath.Join(t.TempDir(), "private.jsonl")
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("first SaveSnapshot: %v", err)
+	}
+	eventPath := store.SessionEventLog(path)
+	assertPrivateSessionFile(t, eventPath)
+
+	// Simulate an event log created by a previous release. The next append must
+	// tighten the existing inode before writing any new unredacted content.
+	if err := os.Chmod(eventPath, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	s.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
+	if err := s.SaveSnapshot(path); err != nil {
+		t.Fatalf("append SaveSnapshot: %v", err)
+	}
+	assertPrivateSessionFile(t, eventPath)
+}
+
+func assertPrivateSessionFile(t *testing.T, path string) {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat %s: %v", path, err)
+	}
+	if got := info.Mode().Perm(); got != 0o600 {
+		t.Fatalf("%s mode = %04o, want 0600", path, got)
+	}
+}
+
+// TestSaveVerbatimRoundTripKeepsSnapshotBaselineStable pins digest consistency
+// for byte-preserving transcripts: a loaded transcript re-saves without a
+// rewrite or revision bump, and appending afterward remains a plain append.
+func TestSaveVerbatimRoundTripKeepsSnapshotBaselineStable(t *testing.T) {
 	secret := "sk-real-secret-value-123456"
 	s := NewSession("sys")
 	s.Add(provider.Message{Role: provider.RoleUser, Content: "inspect"})
@@ -125,24 +157,21 @@ func TestSaveRedactionKeepsSnapshotBaselineStable(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadSession: %v", err)
 	}
-	// Re-saving the loaded transcript re-runs RedactMessages over content that
-	// is already masked; idempotence means identical bytes and the up-to-date
-	// skip, not a conflict or a revision bump.
 	if err := loaded.SaveSnapshot(path); err != nil {
-		t.Fatalf("resave of loaded redacted session: %v", err)
+		t.Fatalf("resave of loaded session: %v", err)
 	}
 	rev2, _, err := sessionContentRevision(path)
 	if err != nil {
 		t.Fatalf("read revision after resave: %v", err)
 	}
 	if rev1 != rev2 {
-		t.Fatalf("no-op resave bumped revision %d -> %d; redaction broke digest stability", rev1, rev2)
+		t.Fatalf("no-op resave bumped revision %d -> %d", rev1, rev2)
 	}
 
 	// A continued conversation still append-saves cleanly on top.
 	loaded.Add(provider.Message{Role: provider.RoleAssistant, Content: "done"})
 	if err := loaded.SaveSnapshot(path); err != nil {
-		t.Fatalf("append snapshot after redacted round-trip: %v", err)
+		t.Fatalf("append snapshot after verbatim round-trip: %v", err)
 	}
 	reloaded, err := LoadSession(path)
 	if err != nil {
