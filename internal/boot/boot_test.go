@@ -29,6 +29,7 @@ import (
 	"reasonix/internal/pluginpkg"
 	"reasonix/internal/provider"
 	"reasonix/internal/sandbox"
+	"reasonix/internal/secrets"
 	"reasonix/internal/tool"
 	"reasonix/internal/tool/builtin"
 
@@ -4033,6 +4034,27 @@ func TestRuntimeForbidReadRootsAddsOnlyGlobalCredentialFile(t *testing.T) {
 	}
 	if pathListContains(got, projectEnv) {
 		t.Fatalf("project .env was unexpectedly added to runtime forbid roots: %v", got)
+	}
+}
+
+func TestRuntimeForbidReadRootsFiltersUnconfiguredStoredCredential(t *testing.T) {
+	home := isolateConfigHome(t)
+	t.Setenv("REASONIX_HOME", filepath.Join(home, "reasonix-home"))
+	const staleKey = "REASONIX_TEST_UNCONFIGURED_STORED_CREDENTIAL"
+	t.Setenv(staleKey, "opaque-stale-value")
+
+	credentialPath := config.UserCredentialsPath()
+	if err := os.MkdirAll(filepath.Dir(credentialPath), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(credentialPath, []byte(staleKey+"=opaque-stale-value\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	_ = RuntimeForbidReadRoots(config.Default(), ".")
+	joined := strings.Join(secrets.ProcessEnv(), "\n")
+	if strings.Contains(joined, staleKey+"=") || strings.Contains(joined, "opaque-stale-value") {
+		t.Fatalf("unconfigured stored credential survived in subprocess env")
 	}
 }
 
