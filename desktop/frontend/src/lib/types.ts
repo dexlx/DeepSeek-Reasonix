@@ -736,6 +736,8 @@ export interface ServerView {
   defaultToolsApprovalMode?: MCPApprovalMode;
   toolPolicies?: Record<string, MCPToolPolicy>;
   approvalsReviewer?: MCPApprovalsReviewer;
+  requiresLaunchApproval?: boolean;
+  launchApprovalGoverned?: boolean;
   authStatus?: "none" | "possible" | "required" | string;
   authUrl?: string;
   authConfigured?: boolean;
@@ -783,6 +785,7 @@ export interface MCPTrustInspectionView {
   readers: string[];
   writers: string[];
   destructive: string[];
+  requiresLaunchApproval?: boolean;
 }
 
 export interface MCPCatalogRefreshView {
