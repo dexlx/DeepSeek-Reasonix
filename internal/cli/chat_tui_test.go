@@ -36,6 +36,25 @@ const tinyPNGBase64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42
 func TestMain(m *testing.M) {
 	old := detectTermuxTerminal
 	detectTermuxTerminal = func() bool { return false }
+	home, err := os.MkdirTemp("", "reasonix-cli-test-home-")
+	if err != nil {
+		panic(err)
+	}
+	for key, value := range map[string]string{
+		"HOME":            home,
+		"USERPROFILE":     home,
+		"XDG_CONFIG_HOME": filepath.Join(home, ".config"),
+		"AppData":         filepath.Join(home, "AppData"),
+	} {
+		if err := os.Setenv(key, value); err != nil {
+			panic(err)
+		}
+	}
+	// Keep the package on the default-path code path without allowing an
+	// inherited REASONIX_HOME to escape the temporary test home.
+	if err := os.Unsetenv("REASONIX_HOME"); err != nil {
+		panic(err)
+	}
 
 	// Pin the UI language for the whole cli test binary. Production code
 	// (cli.Run) calls i18n.DetectLanguage("") which resolves the host locale from
@@ -55,6 +74,7 @@ func TestMain(m *testing.M) {
 
 	code := m.Run()
 	detectTermuxTerminal = old
+	_ = os.RemoveAll(home)
 	os.Exit(code)
 }
 
