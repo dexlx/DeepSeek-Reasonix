@@ -587,6 +587,46 @@ func TestWindowsPOSIXShellExecFormUsesDiscoveredBash(t *testing.T) {
 	}
 }
 
+func TestWindowsBatchCommandLinePreservesQuotedPluginPath(t *testing.T) {
+	command := `"C:\Users\Test User\AppData\Roaming\reasonix\plugins\superpowers/hooks/run-hook.cmd" session-start`
+	got, ok := windowsBatchCommandLine(command)
+	if !ok {
+		t.Fatal("quoted plugin batch command was not recognized")
+	}
+	want := `cmd.exe /d /s /c ""C:\Users\Test User\AppData\Roaming\reasonix\plugins\superpowers\hooks\run-hook.cmd" "session-start""`
+	if got != want {
+		t.Fatalf("batch command line = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsBatchArgvCommandLineSupportsNativePluginHooks(t *testing.T) {
+	got, ok := windowsBatchArgvCommandLine(
+		`C:\Program Files\Reasonix\plugins\example/hooks/run-hook.cmd`,
+		[]string{"session-start", "argument with spaces"},
+	)
+	if !ok {
+		t.Fatal("native plugin batch command was not recognized")
+	}
+	want := `cmd.exe /d /s /c ""C:\Program Files\Reasonix\plugins\example\hooks\run-hook.cmd" "session-start" "argument with spaces""`
+	if got != want {
+		t.Fatalf("batch argv command line = %q, want %q", got, want)
+	}
+}
+
+func TestWindowsBatchCommandLineLeavesOtherShellContractsAlone(t *testing.T) {
+	commands := []string{
+		`"C:\plugins\hook.cmd" session-start && echo chained`,
+		`powershell -File "C:\plugins\hook.ps1"`,
+		`node "C:\plugins\hook.js"`,
+		`echo hook.cmd`,
+	}
+	for _, command := range commands {
+		if got, ok := windowsBatchCommandLine(command); ok {
+			t.Errorf("windowsBatchCommandLine(%q) unexpectedly matched as %q", command, got)
+		}
+	}
+}
+
 func TestWindowsPOSIXShellPreservesExplicitInterpreterPaths(t *testing.T) {
 	called := false
 	resolve := func() (string, error) {

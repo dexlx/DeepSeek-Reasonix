@@ -54,6 +54,55 @@ func windowsPOSIXShellInvocationWith(command string, resolve func() (string, err
 	return path, append([]string(nil), fields[1:]...), true, nil
 }
 
+// windowsBatchCommandLine builds the cmd.exe command line for a simple .cmd or
+// .bat hook. Go's default Windows argument encoder follows CommandLineToArgvW,
+// but cmd.exe has different quote rules: passing a command string that starts
+// with a quoted executable can leave the quotes escaped into the command name.
+// /s deliberately strips the outer pair below and leaves the individually
+// quoted batch path and arguments intact.
+func windowsBatchCommandLine(command string) (string, bool) {
+	fields, _, _, ok := parseSimpleHookCommandFields(command)
+	if !ok || len(fields) == 0 {
+		return "", false
+	}
+	return windowsBatchFieldsCommandLine(fields)
+}
+
+func windowsBatchArgvCommandLine(command string, args []string) (string, bool) {
+	fields := make([]string, 1, len(args)+1)
+	fields[0] = command
+	fields = append(fields, args...)
+	return windowsBatchFieldsCommandLine(fields)
+}
+
+func windowsBatchFieldsCommandLine(fields []string) (string, bool) {
+	executable := strings.ReplaceAll(strings.TrimSpace(fields[0]), "/", `\`)
+	lower := strings.ToLower(executable)
+	if !strings.HasSuffix(lower, ".cmd") && !strings.HasSuffix(lower, ".bat") {
+		return "", false
+	}
+	fields[0] = executable
+
+	var b strings.Builder
+	b.WriteString(`cmd.exe /d /s /c "`)
+	for i, field := range fields {
+		// Embedded quotes need cmd.exe-specific escaping that is outside this
+		// narrow compatibility path. Preserve such commands' existing shell
+		// contract instead of guessing.
+		if strings.ContainsAny(field, "\"\r\n") {
+			return "", false
+		}
+		if i > 0 {
+			b.WriteByte(' ')
+		}
+		b.WriteByte('"')
+		b.WriteString(field)
+		b.WriteByte('"')
+	}
+	b.WriteByte('"')
+	return b.String(), true
+}
+
 func isBarePOSIXShellWord(word string) bool {
 	word = strings.TrimSpace(word)
 	if strings.ContainsAny(word, `/\:`) {
