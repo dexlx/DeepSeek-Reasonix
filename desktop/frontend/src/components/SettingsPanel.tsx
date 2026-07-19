@@ -47,6 +47,7 @@ import {
   resetCustomShortcuts,
   resolvedShortcutCombo,
   saveCustomShortcut,
+  shortcutAcceptsCombo,
   shortcutConflict,
   shortcutDefinitions,
   type ShortcutAction,
@@ -587,28 +588,58 @@ function botSettingsMeta(bot: BotSettingsView, t: ReturnType<typeof useT>): stri
   return t("settings.botConnectionCount", { n: connections });
 }
 
-function ShortcutsSection() {
+export function ShortcutsSection() {
   const t = useT();
   const [platform] = useState(() => detectShortcutPlatform());
   const [revision, setRevision] = useState(0);
   const [recording, setRecording] = useState<ShortcutAction | null>(null);
   const [conflict, setConflict] = useState<{ action: ShortcutAction; conflictAction: ShortcutAction } | null>(null);
+  const [unsupportedAction, setUnsupportedAction] = useState<ShortcutAction | null>(null);
 
   useEffect(() => onShortcutsChanged(() => setRevision((value) => value + 1)), []);
 
   const definitions = shortcutDefinitions();
   const commitShortcut = (action: ShortcutAction, event: ReactKeyboardEvent<HTMLButtonElement>) => {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      event.stopPropagation();
+      setConflict(null);
+      setUnsupportedAction(null);
+      setRecording(null);
+      return;
+    }
     const combo = comboFromKeyboardEvent(event.nativeEvent);
     if (!combo) return;
+    if (!shortcutAcceptsCombo(action, combo)) {
+      // Let the browser move focus before onBlur cancels recording. Updating
+      // recording state synchronously here can keep focus on the re-rendered
+      // button in WebKit.
+      if (event.key === "Tab") {
+        const recorder = event.currentTarget;
+        queueMicrotask(() => {
+          // Native Tab normally moves focus first. If this WebView does not,
+          // release focus so the recorder cannot become a keyboard trap.
+          if (document.activeElement === recorder) recorder.blur();
+        });
+        return;
+      }
+      event.preventDefault();
+      event.stopPropagation();
+      setConflict(null);
+      setUnsupportedAction(action);
+      return;
+    }
     event.preventDefault();
     event.stopPropagation();
     const conflictDefinition = shortcutConflict(action, combo, platform);
     if (conflictDefinition) {
+      setUnsupportedAction(null);
       setConflict({ action, conflictAction: conflictDefinition.action });
       return;
     }
     saveCustomShortcut(action, combo);
     setConflict(null);
+    setUnsupportedAction(null);
     setRecording(null);
     setRevision((value) => value + 1);
   };
@@ -626,6 +657,7 @@ function ShortcutsSection() {
           onClick={() => {
             resetCustomShortcuts();
             setConflict(null);
+            setUnsupportedAction(null);
             setRecording(null);
             setRevision((value) => value + 1);
           }}
@@ -640,6 +672,13 @@ function ShortcutsSection() {
             {t("settings.shortcutsConflict", {
               action: t(definitions.find((definition) => definition.action === conflict.action)?.labelKey ?? "settings.tab.shortcuts"),
               conflict: t(definitions.find((definition) => definition.action === conflict.conflictAction)?.labelKey ?? "settings.tab.shortcuts"),
+            })}
+          </div>
+        )}
+        {unsupportedAction && (
+          <div className="shortcuts-settings__conflict" role="alert">
+            {t("settings.shortcutsEnterOnly", {
+              action: t(definitions.find((definition) => definition.action === unsupportedAction)?.labelKey ?? "settings.tab.shortcuts"),
             })}
           </div>
         )}
@@ -659,12 +698,24 @@ function ShortcutsSection() {
                 <button
                   className={`shortcuts-settings__key${isRecording ? " shortcuts-settings__key--recording" : ""}${definition.configurable === false ? " shortcuts-settings__key--locked" : ""}`}
                   type="button"
+                  data-shortcut-action={definition.action}
                   disabled={definition.configurable === false}
                   aria-label={isRecording ? t("settings.shortcutsRecording") : display}
                   aria-pressed={isRecording}
-                  onClick={() => {
+                  onClick={(event) => {
                     setRecording(definition.action);
                     setConflict(null);
+                    setUnsupportedAction(null);
+                    // WebKit (the desktop WKWebView) does not focus buttons on
+                    // click, and the recorder listens for keys on the button —
+                    // without this the recorder never receives any keydown.
+                    event.currentTarget.focus();
+                  }}
+                  onBlur={() => {
+                    if (!isRecording) return;
+                    setConflict(null);
+                    setUnsupportedAction(null);
+                    setRecording(null);
                   }}
                   onKeyDown={(event) => isRecording && commitShortcut(definition.action, event)}
                 >
@@ -677,6 +728,7 @@ function ShortcutsSection() {
                   onClick={() => {
                     saveCustomShortcut(definition.action, null);
                     setConflict(null);
+                    setUnsupportedAction(null);
                     setRecording(null);
                     setRevision((value) => value + 1);
                   }}
