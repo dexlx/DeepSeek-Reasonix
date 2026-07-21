@@ -56,7 +56,9 @@ import type {
   HookConfigView,
   HooksSettingsView,
   JobView,
+  MCPMarketplaceEntry,
   MCPServerInput,
+  MCPMarketplaceView,
   MCPToolView,
   MemorySuggestion,
   MemorySuggestionsView,
@@ -245,6 +247,8 @@ export interface AppBindings {
   Commands(): Promise<CommandInfo[]>;
   Capabilities(): Promise<CapabilitiesView>;
   MCPServers(): Promise<ServerView[]>;
+  MCPMarketplace(query: string): Promise<MCPMarketplaceView>;
+  MCPMarketplaceResolve(registryName: string): Promise<MCPMarketplaceEntry>;
   SkillsSettings(): Promise<SkillsSettingsView>;
   CapabilityDiagnostics(includeSessionRuntime: boolean): Promise<CapabilityDiagnosticsReport>;
   Plugins(): Promise<PluginView[]>;
@@ -1133,7 +1137,6 @@ function makeMockApp(): AppBindings {
       tools: 4,
       prompts: 2,
       resources: 0,
-      trustedReadOnlyTools: ["pull_request_read"],
       toolList: [
         { name: "issue_read", description: "Read GitHub issue details and comments.", readOnlyHint: true },
         { name: "pull_request_read", description: "Read pull request metadata, files, and review threads.", readOnlyHint: true },
@@ -2825,6 +2828,42 @@ function makeMockApp(): AppBindings {
     async MCPServers() {
       return capServers.map((s) => ({ ...s }));
     },
+    async MCPMarketplace(query: string) {
+      const servers = [
+        {
+          name: "io.modelcontextprotocol/server-filesystem",
+          suggestedName: "server-filesystem",
+          title: "Filesystem",
+          description: "Secure file operations through MCP.",
+          version: "1.0.0",
+          installable: true,
+          transport: "stdio",
+          command: "npx",
+          args: ["-y", "@modelcontextprotocol/server-filesystem@1.0.0"],
+        },
+        {
+          name: "io.example/manual",
+          suggestedName: "manual",
+          title: "Manual setup example",
+          description: "Requires an API key before installation.",
+          version: "1.0.0",
+          installable: false,
+          unavailableReason: "package requires environment variables or arguments",
+          args: [],
+        },
+      ];
+      const normalized = query.trim().toLowerCase();
+      return {
+        servers: normalized ? servers.filter((entry) => [entry.name, entry.title, entry.description].join(" ").toLowerCase().includes(normalized)) : servers,
+        cached: false,
+      } as MCPMarketplaceView;
+    },
+    async MCPMarketplaceResolve(registryName: string) {
+      const result = await this.MCPMarketplace(registryName);
+      const entry = result.servers.find((candidate) => candidate.name.toLowerCase() === registryName.trim().toLowerCase());
+      if (!entry) throw new Error(`MCP Registry has no server named ${JSON.stringify(registryName)}`);
+      return entry;
+    },
     async SkillsSettings() {
       return {
         skills: capSkills.map((s) => ({ ...s })),
@@ -3002,7 +3041,6 @@ function makeMockApp(): AppBindings {
           url: input.transport === "stdio" ? "" : input.url,
           envKeys: input.env ? Object.keys(input.env).sort() : s.envKeys,
           headerKeys: input.headers ? Object.keys(input.headers).sort() : s.headerKeys,
-          trustedReadOnlyTools: input.trustedReadOnlyTools ?? s.trustedReadOnlyTools,
           tools: nextTools,
           error: undefined,
           authStatus: nextStatus !== "connected" && input.transport !== "stdio" ? "possible" : undefined,

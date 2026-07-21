@@ -44,6 +44,7 @@ import (
 	"reasonix/internal/jobs"
 	"reasonix/internal/mcpdiag"
 	"reasonix/internal/mcplaunch"
+	"reasonix/internal/mcpregistry"
 	"reasonix/internal/memory"
 	"reasonix/internal/notify"
 	"reasonix/internal/plugin"
@@ -6139,37 +6140,33 @@ type SkillsSettingsView struct {
 // the connection error), "initializing" (background startup in progress), or
 // "disabled".
 type ServerView struct {
-	Name                     string                          `json:"name"`
-	Transport                string                          `json:"transport"`
-	Status                   string                          `json:"status"`
-	StartIntent              string                          `json:"startIntent,omitempty"`
-	RuntimeState             string                          `json:"runtimeState,omitempty"`
-	BuiltIn                  bool                            `json:"builtIn,omitempty"`
-	Configured               bool                            `json:"configured,omitempty"`
-	AutoStart                bool                            `json:"autoStart"`
-	Tier                     string                          `json:"tier,omitempty"`
-	Command                  string                          `json:"command,omitempty"`
-	Args                     []string                        `json:"args,omitempty"`
-	URL                      string                          `json:"url,omitempty"`
-	EnvKeys                  []string                        `json:"envKeys,omitempty"`
-	HeaderKeys               []string                        `json:"headerKeys,omitempty"`
-	Tools                    int                             `json:"tools"`
-	Prompts                  int                             `json:"prompts"`
-	Resources                int                             `json:"resources"`
-	HasTools                 bool                            `json:"hasTools,omitempty"`
-	Error                    string                          `json:"error,omitempty"`
-	ToolList                 []ToolView                      `json:"toolList,omitempty"`
-	TrustedReadOnlyTools     []string                        `json:"trustedReadOnlyTools,omitempty"`
-	CallTimeoutSeconds       int                             `json:"callTimeoutSeconds,omitempty"`
-	ToolTimeoutSeconds       map[string]int                  `json:"toolTimeoutSeconds,omitempty"`
-	DefaultToolsApprovalMode string                          `json:"defaultToolsApprovalMode,omitempty"`
-	ToolPolicies             map[string]config.MCPToolPolicy `json:"toolPolicies,omitempty"`
-	ApprovalsReviewer        string                          `json:"approvalsReviewer,omitempty"`
-	RequiresLaunchApproval   bool                            `json:"requiresLaunchApproval,omitempty"`
-	AuthStatus               string                          `json:"authStatus,omitempty"`
-	AuthURL                  string                          `json:"authUrl,omitempty"`
-	AuthConfigured           bool                            `json:"authConfigured,omitempty"`
-	ManagedByPlugin          string                          `json:"managedByPlugin,omitempty"`
+	Name                   string         `json:"name"`
+	Transport              string         `json:"transport"`
+	Status                 string         `json:"status"`
+	StartIntent            string         `json:"startIntent,omitempty"`
+	RuntimeState           string         `json:"runtimeState,omitempty"`
+	BuiltIn                bool           `json:"builtIn,omitempty"`
+	Configured             bool           `json:"configured,omitempty"`
+	AutoStart              bool           `json:"autoStart"`
+	Tier                   string         `json:"tier,omitempty"`
+	Command                string         `json:"command,omitempty"`
+	Args                   []string       `json:"args,omitempty"`
+	URL                    string         `json:"url,omitempty"`
+	EnvKeys                []string       `json:"envKeys,omitempty"`
+	HeaderKeys             []string       `json:"headerKeys,omitempty"`
+	Tools                  int            `json:"tools"`
+	Prompts                int            `json:"prompts"`
+	Resources              int            `json:"resources"`
+	HasTools               bool           `json:"hasTools,omitempty"`
+	Error                  string         `json:"error,omitempty"`
+	ToolList               []ToolView     `json:"toolList,omitempty"`
+	CallTimeoutSeconds     int            `json:"callTimeoutSeconds,omitempty"`
+	ToolTimeoutSeconds     map[string]int `json:"toolTimeoutSeconds,omitempty"`
+	RequiresLaunchApproval bool           `json:"requiresLaunchApproval,omitempty"`
+	AuthStatus             string         `json:"authStatus,omitempty"`
+	AuthURL                string         `json:"authUrl,omitempty"`
+	AuthConfigured         bool           `json:"authConfigured,omitempty"`
+	ManagedByPlugin        string         `json:"managedByPlugin,omitempty"`
 }
 
 type ToolView struct {
@@ -6255,6 +6252,89 @@ func (a *App) Capabilities() CapabilitiesView {
 // skill discovery.
 func (a *App) MCPServers() []ServerView {
 	return a.mcpServersView()
+}
+
+type MCPMarketplaceEntryView struct {
+	Name              string   `json:"name"`
+	SuggestedName     string   `json:"suggestedName"`
+	Title             string   `json:"title,omitempty"`
+	Description       string   `json:"description,omitempty"`
+	Version           string   `json:"version,omitempty"`
+	RepositoryURL     string   `json:"repositoryUrl,omitempty"`
+	Installable       bool     `json:"installable"`
+	UnavailableReason string   `json:"unavailableReason,omitempty"`
+	Transport         string   `json:"transport,omitempty"`
+	Command           string   `json:"command,omitempty"`
+	Args              []string `json:"args"`
+	URL               string   `json:"url,omitempty"`
+}
+
+type MCPMarketplaceView struct {
+	Servers []MCPMarketplaceEntryView `json:"servers"`
+	Cached  bool                      `json:"cached"`
+	Warning string                    `json:"warning,omitempty"`
+}
+
+// MCPMarketplace explicitly queries the official MCP Registry. It is only
+// called from the settings marketplace; startup and tool discovery never touch
+// the network. A query-specific cache keeps the page useful during a registry
+// outage without treating cached entries as installed servers.
+func (a *App) MCPMarketplace(query string) (MCPMarketplaceView, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	result, err := mcpregistry.New(mcpRegistryCachePath()).Search(ctx, query, 50)
+	if err != nil {
+		return MCPMarketplaceView{Servers: []MCPMarketplaceEntryView{}}, err
+	}
+	view := MCPMarketplaceView{
+		Servers: make([]MCPMarketplaceEntryView, 0, len(result.Entries)),
+		Cached:  result.Cached,
+		Warning: result.Warning,
+	}
+	for _, entry := range result.Entries {
+		view.Servers = append(view.Servers, mcpMarketplaceEntryView(entry))
+	}
+	return view, nil
+}
+
+// MCPMarketplaceResolve re-fetches one Registry entry immediately before the
+// settings UI installs it. Offline cache remains useful for browsing, but it is
+// never accepted as installation metadata.
+func (a *App) MCPMarketplaceResolve(registryName string) (MCPMarketplaceEntryView, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	entry, _, err := mcpregistry.New(mcpRegistryCachePath()).Resolve(ctx, registryName)
+	if err != nil {
+		return MCPMarketplaceEntryView{}, err
+	}
+	if _, err := entry.PluginEntry(""); err != nil {
+		return MCPMarketplaceEntryView{}, err
+	}
+	return mcpMarketplaceEntryView(entry), nil
+}
+
+func mcpRegistryCachePath() string {
+	if cacheDir := config.CacheDir(); cacheDir != "" {
+		return filepath.Join(cacheDir, "mcp-registry-v0.1.json")
+	}
+	return ""
+}
+
+func mcpMarketplaceEntryView(entry mcpregistry.Entry) MCPMarketplaceEntryView {
+	return MCPMarketplaceEntryView{
+		Name:              entry.Name,
+		SuggestedName:     entry.SuggestedName,
+		Title:             entry.Title,
+		Description:       entry.Description,
+		Version:           entry.Version,
+		RepositoryURL:     entry.RepositoryURL,
+		Installable:       entry.Installable,
+		UnavailableReason: entry.UnavailableReason,
+		Transport:         entry.Transport,
+		Command:           entry.Command,
+		Args:              append([]string{}, entry.Args...),
+		URL:               entry.URL,
+	}
 }
 
 // lockRuntimeMutation serializes controller rebuild/teardown operations and
@@ -6559,8 +6639,7 @@ func (a *App) mcpLaunchSpec(root, name string) (plugin.Spec, error) {
 		LaunchManager:      mcplaunch.ForWorkspace(config.ReasonixHomeDir(), root),
 		ConfigSource:       "workspace_config", StateHome: config.ReasonixHomeDir(),
 		WriterRoots: cfg.WriteRootsForRoot(root), ForbidReadRoots: boot.RuntimeForbidReadRoots(cfg, root),
-		Network:         cfg.Sandbox.Network,
-		OfficialServers: boot.LoadVerifiedMCPPackages(context.Background(), cfg),
+		Network: cfg.Sandbox.Network,
 	})
 	if len(specs) != 1 {
 		return plugin.Spec{}, fmt.Errorf("failed to build MCP server %q", name)
@@ -6836,12 +6915,8 @@ func withPluginConfig(v ServerView, p config.PluginEntry) ServerView {
 	v.Command = p.Command
 	v.Args = append([]string(nil), p.Args...)
 	v.URL = p.URL
-	v.TrustedReadOnlyTools = uniqueStrings(p.TrustedReadOnlyTools)
 	v.CallTimeoutSeconds = p.CallTimeoutSeconds
 	v.ToolTimeoutSeconds = cloneStringIntMap(p.ToolTimeoutSeconds)
-	v.DefaultToolsApprovalMode = p.DefaultToolsApprovalMode
-	v.ToolPolicies = cloneMCPToolPolicies(p.Tools)
-	v.ApprovalsReviewer = p.ApprovalsReviewer
 	// Only a current project launch-gate failure exposes the authorization action.
 	v.RequiresLaunchApproval = p.Source.RequiresLaunchApproval() && v.RequiresLaunchApproval
 	v.AuthConfigured = mcpdiag.HasAuthConfig(p.Headers, p.Env, p.URL)
@@ -7267,20 +7342,16 @@ func skillDisplayRoot(sk skill.Skill, roots []skill.Root) string {
 // MCPServerInput is the drawer's "add server" form. Transport is "stdio" (Command
 // + Args + Env) or "http"/"sse" (URL). Mirrors config.PluginEntry's writable shape.
 type MCPServerInput struct {
-	Name                     string                          `json:"name"`
-	Transport                string                          `json:"transport"`
-	Command                  string                          `json:"command"`
-	Args                     []string                        `json:"args"`
-	URL                      string                          `json:"url"`
-	Env                      map[string]string               `json:"env"`
-	Headers                  map[string]string               `json:"headers"`
-	AutoStart                *bool                           `json:"autoStart"`
-	CallTimeoutSeconds       *int                            `json:"callTimeoutSeconds"`
-	ToolTimeoutSeconds       map[string]int                  `json:"toolTimeoutSeconds"`
-	TrustedReadOnlyTools     []string                        `json:"trustedReadOnlyTools"`
-	DefaultToolsApprovalMode *string                         `json:"defaultToolsApprovalMode"`
-	ToolPolicies             map[string]config.MCPToolPolicy `json:"tools"`
-	ApprovalsReviewer        *string                         `json:"approvalsReviewer"`
+	Name               string            `json:"name"`
+	Transport          string            `json:"transport"`
+	Command            string            `json:"command"`
+	Args               []string          `json:"args"`
+	URL                string            `json:"url"`
+	Env                map[string]string `json:"env"`
+	Headers            map[string]string `json:"headers"`
+	AutoStart          *bool             `json:"autoStart"`
+	CallTimeoutSeconds *int              `json:"callTimeoutSeconds"`
+	ToolTimeoutSeconds map[string]int    `json:"toolTimeoutSeconds"`
 }
 
 // AddMCPServer connects a server live and persists it to config (Customize → MCP →
@@ -7296,21 +7367,17 @@ func (a *App) AddMCPServer(in MCPServerInput) (int, error) {
 		return 0, rebuildControllerActiveWorkError("MCP server")
 	}
 	entry := config.PluginEntry{
-		Name:                     in.Name,
-		Type:                     normalizeMCPTransport(in.Transport),
-		Command:                  in.Command,
-		Args:                     in.Args,
-		URL:                      in.URL,
-		Env:                      in.Env,
-		Headers:                  in.Headers,
-		TrustedReadOnlyTools:     nil,
-		AutoStart:                in.AutoStart,
-		CallTimeoutSeconds:       mcpIntValue(in.CallTimeoutSeconds),
-		ToolTimeoutSeconds:       cloneStringIntMap(in.ToolTimeoutSeconds),
-		DefaultToolsApprovalMode: mcpStringValue(in.DefaultToolsApprovalMode),
-		Tools:                    cloneMCPToolPolicies(in.ToolPolicies),
-		ApprovalsReviewer:        mcpStringValue(in.ApprovalsReviewer),
-		Source:                   config.MCPSourceUserConfig,
+		Name:               in.Name,
+		Type:               normalizeMCPTransport(in.Transport),
+		Command:            in.Command,
+		Args:               in.Args,
+		URL:                in.URL,
+		Env:                in.Env,
+		Headers:            in.Headers,
+		AutoStart:          in.AutoStart,
+		CallTimeoutSeconds: mcpIntValue(in.CallTimeoutSeconds),
+		ToolTimeoutSeconds: cloneStringIntMap(in.ToolTimeoutSeconds),
+		Source:             config.MCPSourceUserConfig,
 	}
 	entry, _ = config.NormalizePluginCommandLine(entry)
 	if err := a.saveDesktopMCPServer(root, entry); err != nil {
@@ -7364,15 +7431,6 @@ func (a *App) UpdateMCPServer(name string, in MCPServerInput) error {
 	}
 	if in.ToolTimeoutSeconds != nil {
 		updated.ToolTimeoutSeconds = cloneStringIntMap(in.ToolTimeoutSeconds)
-	}
-	if in.DefaultToolsApprovalMode != nil {
-		updated.DefaultToolsApprovalMode = strings.TrimSpace(*in.DefaultToolsApprovalMode)
-	}
-	if in.ToolPolicies != nil {
-		updated.Tools = cloneMCPToolPolicies(in.ToolPolicies)
-	}
-	if in.ApprovalsReviewer != nil {
-		updated.ApprovalsReviewer = strings.TrimSpace(*in.ApprovalsReviewer)
 	}
 	updated, _ = config.NormalizePluginCommandLine(updated)
 	if updated.Type == "stdio" {
@@ -7806,29 +7864,11 @@ func mcpIntValue(value *int) int {
 	return *value
 }
 
-func mcpStringValue(value *string) string {
-	if value == nil {
-		return ""
-	}
-	return strings.TrimSpace(*value)
-}
-
 func cloneStringIntMap(values map[string]int) map[string]int {
 	if values == nil {
 		return nil
 	}
 	out := make(map[string]int, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
-	return out
-}
-
-func cloneMCPToolPolicies(values map[string]config.MCPToolPolicy) map[string]config.MCPToolPolicy {
-	if values == nil {
-		return nil
-	}
-	out := make(map[string]config.MCPToolPolicy, len(values))
 	for key, value := range values {
 		out[key] = value
 	}

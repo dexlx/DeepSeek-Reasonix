@@ -97,9 +97,11 @@ type Tool interface {
 
 - `stdio`：本地持久子进程，每行一条 JSON 消息。
 - `http` / `streamable-http`：向远程 `url` POST，支持 `application/json` 和 SSE 响应，并复用 `Mcp-Session-Id`。
-- `sse`：识别旧版 2024-11-05 传输，但当前明确拒绝并提示改用 `http`。
+- `sse`：兼容旧版 2024-11-05 HTTP+SSE；持久 GET 接收 server 公布的相对 POST endpoint、JSON-RPC 响应与 server 消息。为避免静态 header 泄漏，会拒绝跨域 endpoint。
 
 `${VAR}` 与 `${VAR:-default}` 可用于 `command`、`args`、`env`、`url` 和 `headers`，使 secret 留在环境中。生命周期为 `initialize` → `notifications/initialized` → `tools/list`，调用使用 `tools/call`。
+
+存在工作区根目录时，初始化会声明 `roots` 能力，并用文件 URI 响应 `roots/list`。`tools/call` 会附带逐调用 `_meta.progressToken`；匹配的 `notifications/progress` 会进入现有工具进度事件链路。
 
 远程工具适配为 `Tool`，命名为 `mcp__<server>__<tool>`。`annotations.readOnlyHint` 映射为 `Tool.ReadOnly()`，默认 false；只有显式声明为只读的工具才进入并行读取与默认只读权限路径。MCP prompt 暴露为 slash command，resource 可通过 `@<server>:<uri>` 引用。
 
@@ -151,7 +153,7 @@ func (p Policy) Decide(toolName string, readOnly bool, args json.RawMessage) Dec
 - rule 可以是 `Tool` 或 `Tool(specifier)`，例如 `Bash(go test:*)`、`Edit(docs/**)`。
 - 优先级为 `deny > ask > allow > fallback`；只读工具 fallback 为 Allow，写工具 fallback 使用 `Mode`。
 - 交互模式中的 Ask 由用户选择单次允许、session scope 允许、持久允许或拒绝；显式 Deny 在所有模式下都不可绕过。
-- MCP 可设置 `auto|prompt|writes|approve`。标记 `destructiveHint: true` 的调用在 `auto`、`prompt` 或 `writes` 下每次都需要人工重新确认。
+- 安装 MCP server 即授权其全部工具，不再有 server、raw tool、writer 或 destructive 的第二套审批策略；显式全局 `deny` 仍然优先。仓库声明的 server 在启动前只确认一次精确身份，身份变化时才重新确认。`readOnlyHint` 与 `destructiveHint` 仅用于调度、Plan/严格只读边界及缓存到实时安全分类复核，不会新增逐调用审批。
 - Plan 是协作流程，不等于全工具只读。普通 built-in 与 Bash 仍走 Ask/Auto/YOLO 和 Sandbox；MCP 写入/破坏性目标及不受信任读取工具在规划阶段保持阻止。
 - Plan 只能由用户显式选择进入，与当前工具审批姿态相互独立；普通聊天不会自动切换到 Plan。Auto/YOLO 不会回答 `ask`，也不会替用户批准 `exit_plan_mode`，获批计划的短期自动执行窗口也不会自动批准后续计划。
 - 桌面端协作模式分为 `normal`、`plan` 和 `goal`。Goal 会持续推进目标，直到完成、同一阻塞状态重复三次、用户停止或达到安全续跑边界。只有用户在输入框中选择 Goal 或运行 `/goal` 显式启动后，长周期研究、调试、优化或实现目标才可启用 AutoResearch；普通聊天不会隐式切换协作模式，也不会创建持久化 AutoResearch 状态。动态状态保存在 `.reasonix/autoresearch/.../`。
