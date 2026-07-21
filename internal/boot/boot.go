@@ -43,6 +43,7 @@ import (
 	"reasonix/internal/permission"
 	"reasonix/internal/plugin"
 	"reasonix/internal/provider"
+	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/secrets"
 	"reasonix/internal/skill"
@@ -155,6 +156,10 @@ type Options struct {
 	// catalog. Remote Workbench injects a Broker resolver so no credential or
 	// provider endpoint has to exist on the Host. Nil preserves local behavior.
 	ProviderResolver provider.Resolver
+}
+
+func recoveryHeadlessMode(opts Options) bool {
+	return strings.TrimSpace(opts.HeadlessApprovalMode) != ""
 }
 
 // Build loads config, resolves the model(s), and returns a Controller wrapping a
@@ -1649,7 +1654,38 @@ func Build(ctx context.Context, opts Options) (*control.Controller, error) {
 			}
 		}
 	}
+	// Recovery reviewer: prefer recovery_model, then guardian_model, then the
+	// active main model with an isolated session/policy.
+	{
+		recoveryModel := strings.TrimSpace(cfg.Agent.RecoveryModel)
+		if recoveryModel == "" {
+			recoveryModel = strings.TrimSpace(cfg.Agent.GuardianModel)
+		}
+		if recoveryModel == "" {
+			recoveryModel = modelRef
+		}
+		if recoveryModel != "" {
+			if re, ok := cfg.ResolveModel(recoveryModel); ok {
+				if rProv, err := NewProviderWithProxy(re, proxySpec); err == nil {
+					ctrlOpts.RecoveryReviewer = recovery.NewSessionWithSink(rProv, re.Price, sink)
+				} else {
+					slog.Warn("recovery reviewer provider construction failed — rule-only recovery", "model", recoveryModel, "err", err)
+				}
+			}
+		}
+		// HeadlessApprovalMode is an explicit declaration that this frontend has
+		// no decision channel (`reasonix run`). ApprovalTimeout is not a proxy for
+		// that capability: bots have a bounded timeout and can still answer cards.
+		ctrlOpts.RecoveryHeadless = recoveryHeadlessMode(opts)
+	}
 	ctrl := control.New(ctrlOpts)
+	// Share the recovery checkpoint with task/fleet sub-agents so background
+	// writers observe the same failure state as the root agent.
+	if taskTool != nil {
+		if g := ctrl.Executor(); g != nil {
+			taskTool.WithRecoveryGate(g.RecoveryGate())
+		}
+	}
 	if tokenDelivery {
 		var router *capability.SemanticRouter
 		// Prefer agent.subagent_models["capability-router"] when configured.

@@ -1112,12 +1112,18 @@ func chatUsesGroupAllowlist(chatType ChatType) bool {
 }
 
 func (gw *BotGateway) normalizeApprovalShortcut(key, text string) (string, bool) {
-	command, ok := approvalShortcutCommand(text)
-	if !ok {
-		return "", false
-	}
 	approvalID := gw.currentPendingApprovalID(key)
 	if approvalID == "" {
+		return "", false
+	}
+	if gw.pendingApprovalIsRecovery(key, approvalID) {
+		if command, ok := recoveryShortcutCommand(text, gw.pendingRecoveryCanGrantTask(key, approvalID)); ok {
+			return command + " " + approvalID, true
+		}
+		return "", false
+	}
+	command, ok := approvalShortcutCommand(text)
+	if !ok {
 		return "", false
 	}
 	return command + " " + approvalID, true
@@ -1132,6 +1138,52 @@ func approvalShortcutCommand(text string) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+func recoveryShortcutCommand(text string, canGrantTask bool) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(text)) {
+	case "1", "y", "yes", "ok", "继续", "继续此变更", "continue":
+		return "/recovery-continue", true
+	case "2", "a", "同类", "本任务允许", "allow similar":
+		if canGrantTask {
+			return "/recovery-continue-task", true
+		}
+		return "/recovery-revise", true
+	case "3":
+		if canGrantTask {
+			return "/recovery-revise", true
+		}
+		return "", false
+	case "修改", "修改方案", "换个办法", "revise":
+		return "/recovery-revise", true
+	default:
+		return "", false
+	}
+}
+
+func (gw *BotGateway) pendingRecoveryCanGrantTask(key, id string) bool {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	state, ok := gw.controllers[key]
+	if !ok || state.pendingApprovals == nil {
+		return false
+	}
+	a, ok := state.pendingApprovals[id]
+	return ok && a.Recovery != nil && a.Recovery.CanGrantTask
+}
+
+func (gw *BotGateway) pendingApprovalIsRecovery(key, id string) bool {
+	gw.mu.Lock()
+	defer gw.mu.Unlock()
+	state, ok := gw.controllers[key]
+	if !ok || state.pendingApprovals == nil {
+		return false
+	}
+	a, ok := state.pendingApprovals[id]
+	if !ok {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(a.Kind), "recovery") || a.Recovery != nil
 }
 
 func decisionShortcutCommand(text string) (string, bool) {
@@ -1285,7 +1337,12 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		state, ok := gw.controllers[key]
 		gw.mu.Unlock()
 		if ok && state.ctrl != nil {
-			state.ctrl.Approve(parts[1], true, false, false)
+			// Recovery cards map allow → continue for older clients that only know Approve.
+			if gw.pendingApprovalIsRecovery(key, parts[1]) {
+				_ = state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinue, "")
+			} else {
+				state.ctrl.Approve(parts[1], true, false, false)
+			}
 			gw.forgetPendingApproval(key, parts[1])
 			_ = gw.sendText(ctx, adapter, msg, "已批准。")
 		} else {
@@ -1305,11 +1362,110 @@ func (gw *BotGateway) handleSlashCommand(ctx context.Context, adapter Adapter, k
 		state, ok := gw.controllers[key]
 		gw.mu.Unlock()
 		if ok && state.ctrl != nil {
-			state.ctrl.Approve(parts[1], false, false, false)
+			if gw.pendingApprovalIsRecovery(key, parts[1]) {
+				_ = state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, "")
+			} else {
+				state.ctrl.Approve(parts[1], false, false, false)
+			}
 			gw.forgetPendingApproval(key, parts[1])
 			_ = gw.sendText(ctx, adapter, msg, "已拒绝。")
 		} else {
 			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待审批操作，请重新触发一次操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-continue-task"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-continue-task <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinueTask, ""); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "确认失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已继续；本任务内同类操作将自动执行，范围扩大或风险升级仍会确认。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待确认操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-continue"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-continue <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionContinue, ""); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "确认失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已继续。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的待确认操作。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-revise"):
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-revise <id> [补充要求]")
+			return
+		}
+		feedback := strings.TrimSpace(strings.Join(parts[2:], " "))
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, feedback); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "修改方案失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已拒绝当前变更并注入修改要求。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的恢复检查点。")
+		}
+
+	case strings.HasPrefix(msg.Text, "/recovery-stop"):
+		// Backward compatibility for cards rendered by an older client: reject
+		// the proposed mutation but leave task cancellation to ordinary /stop.
+		if !gw.requireCommandRole(ctx, adapter, msg, "approver") {
+			return
+		}
+		parts := strings.Fields(msg.Text)
+		if len(parts) < 2 {
+			_ = gw.sendText(ctx, adapter, msg, "用法: /recovery-stop <id>")
+			return
+		}
+		gw.mu.Lock()
+		state, ok := gw.controllers[key]
+		gw.mu.Unlock()
+		if ok && state.ctrl != nil {
+			if err := state.ctrl.ResolveRecovery(parts[1], agent.RecoveryActionRevise, "cancel this proposed action"); err != nil {
+				_ = gw.sendText(ctx, adapter, msg, "取消变更失败: "+err.Error())
+				return
+			}
+			gw.forgetPendingApproval(key, parts[1])
+			_ = gw.sendText(ctx, adapter, msg, "已取消当前变更；如需停止整个任务，请使用 /stop。")
+		} else {
+			_ = gw.sendText(ctx, adapter, msg, "没有找到当前会话中的恢复检查点。")
 		}
 
 	case strings.HasPrefix(msg.Text, "/answer"):

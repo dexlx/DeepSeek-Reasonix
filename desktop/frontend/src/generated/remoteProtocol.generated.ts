@@ -2,7 +2,7 @@
 
 export const REMOTE_SCHEMA_FORMAT = "reasonix.remote.schema.v1" as const;
 export const REMOTE_PROTOCOL_VERSION = "1" as const;
-export const REMOTE_SCHEMA_HASH = "sha256:f86e919b8e5ba14000cd8bf9ad341b27a3d4cf3920fa977ef8cbad3d95e7589d" as const;
+export const REMOTE_SCHEMA_HASH = "sha256:be9ffd48078508809ff65c25890ebbae17ca0703a3bf19d9e46b0afc0987b16f" as const;
 
 export const REMOTE_FIXED_RESOURCES = {
   "protocol": {
@@ -140,7 +140,21 @@ export type RemoteEventRaw = {
   "approval"?: {
     "fresh"?: boolean;
     "id": string;
+    "kind"?: string;
     "reason"?: string | null;
+    "recovery"?: {
+      "can_grant_task"?: boolean;
+      "change_kind"?: string;
+      "change_rationale"?: string;
+      "diagnosis"?: string;
+      "failed_summary"?: string;
+      "failed_tool"?: string;
+      "next_action"?: string;
+      "next_tool"?: string;
+      "review_rationale"?: string;
+      "source_agent"?: string;
+      "task_grant_scope"?: string;
+    };
     "subject": string | null;
     "tool": string;
   };
@@ -271,7 +285,21 @@ export type RemoteEventHydrated = {
   "approval"?: {
     "fresh"?: boolean;
     "id": string;
+    "kind"?: string;
     "reason"?: string;
+    "recovery"?: {
+      "can_grant_task"?: boolean;
+      "change_kind"?: string;
+      "change_rationale"?: string;
+      "diagnosis"?: string;
+      "failed_summary"?: string;
+      "failed_tool"?: string;
+      "next_action"?: string;
+      "next_tool"?: string;
+      "review_rationale"?: string;
+      "source_agent"?: string;
+      "task_grant_scope"?: string;
+    };
     "subject": string;
     "tool": string;
   };
@@ -2989,7 +3017,21 @@ export type SessionEventRaw = {
     "approval"?: {
       "fresh"?: boolean;
       "id": string;
+      "kind"?: string;
       "reason"?: string | null;
+      "recovery"?: {
+        "can_grant_task"?: boolean;
+        "change_kind"?: string;
+        "change_rationale"?: string;
+        "diagnosis"?: string;
+        "failed_summary"?: string;
+        "failed_tool"?: string;
+        "next_action"?: string;
+        "next_tool"?: string;
+        "review_rationale"?: string;
+        "source_agent"?: string;
+        "task_grant_scope"?: string;
+      };
       "subject": string | null;
       "tool": string;
     };
@@ -3141,7 +3183,21 @@ export type SessionEventHydrated = {
     "approval"?: {
       "fresh"?: boolean;
       "id": string;
+      "kind"?: string;
       "reason"?: string;
+      "recovery"?: {
+        "can_grant_task"?: boolean;
+        "change_kind"?: string;
+        "change_rationale"?: string;
+        "diagnosis"?: string;
+        "failed_summary"?: string;
+        "failed_tool"?: string;
+        "next_action"?: string;
+        "next_tool"?: string;
+        "review_rationale"?: string;
+        "source_agent"?: string;
+        "task_grant_scope"?: string;
+      };
       "subject": string;
       "tool": string;
     };
@@ -4194,7 +4250,21 @@ export type SessionSubscribeResultRaw = {
         "approval"?: {
           "fresh"?: boolean;
           "id": string;
+          "kind"?: string;
           "reason"?: string | null;
+          "recovery"?: {
+            "can_grant_task"?: boolean;
+            "change_kind"?: string;
+            "change_rationale"?: string;
+            "diagnosis"?: string;
+            "failed_summary"?: string;
+            "failed_tool"?: string;
+            "next_action"?: string;
+            "next_tool"?: string;
+            "review_rationale"?: string;
+            "source_agent"?: string;
+            "task_grant_scope"?: string;
+          };
           "subject": string | null;
           "tool": string;
         };
@@ -4592,7 +4662,21 @@ export type SessionSubscribeResultHydrated = {
         "approval"?: {
           "fresh"?: boolean;
           "id": string;
+          "kind"?: string;
           "reason"?: string;
+          "recovery"?: {
+            "can_grant_task"?: boolean;
+            "change_kind"?: string;
+            "change_rationale"?: string;
+            "diagnosis"?: string;
+            "failed_summary"?: string;
+            "failed_tool"?: string;
+            "next_action"?: string;
+            "next_tool"?: string;
+            "review_rationale"?: string;
+            "source_agent"?: string;
+            "task_grant_scope"?: string;
+          };
           "subject": string;
           "tool": string;
         };

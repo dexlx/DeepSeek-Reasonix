@@ -992,6 +992,25 @@ func TestSetDefaultToolApprovalModePersistsToUserConfig(t *testing.T) {
 	}
 }
 
+func TestRetiredAutoRecoveryCheckpointSettingsAreNoOps(t *testing.T) {
+	isolateDesktopUserDirs(t)
+
+	cfgPath := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(cfgPath), 0o755); err != nil {
+		t.Fatalf("mkdir config: %v", err)
+	}
+	if err := os.WriteFile(cfgPath, []byte("[agent]\nauto_recovery_checkpoint = \"off\"\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	app := NewApp()
+	if err := app.SetDefaultAutoRecoveryCheckpoint(false); err != nil {
+		t.Fatalf("legacy setter: %v", err)
+	}
+	if !app.RecoveryCheckpointEnabled() || !app.RecoveryCheckpointEnabledTab("legacy") {
+		t.Fatal("retired config or legacy setter disabled built-in Auto Guard")
+	}
+}
+
 func TestSetDesktopMetricsDefaultsOnAndPersistsOff(t *testing.T) {
 	isolateDesktopUserDirs(t)
 

@@ -1172,8 +1172,11 @@ func (c *Config) saveProjectIncremental(path string) error {
 	}
 	removePlugins := len(c.Plugins) == 0 && tomlBodyHasSection(body, "plugins")
 	removeSandboxBash := shouldRemoveIneffectiveProjectSandboxBash(body, c)
+	_, hasLegacyDesktopAutoGuard := tomlSectionKeyValue(body, "desktop", "default_auto_recovery_checkpoint")
+	_, hasRetiredAgentAutoGuard := tomlSectionKeyValue(body, "agent", "auto_recovery_checkpoint")
+	removeRetiredAutoGuard := hasLegacyDesktopAutoGuard || hasRetiredAgentAutoGuard
 	writeProviderAccess := c.Desktop.ProviderAccess != nil
-	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSandboxBash && !writeProviderAccess {
+	if strings.TrimSpace(delta) == "" && !removePlugins && !removeSandboxBash && !removeRetiredAutoGuard && !writeProviderAccess {
 		return nil // no changes to write
 	}
 
@@ -1186,6 +1189,10 @@ func (c *Config) saveProjectIncremental(path string) error {
 	}
 	if removeSandboxBash {
 		body = removeTOMLSectionKey(body, "sandbox", "bash")
+	}
+	if removeRetiredAutoGuard {
+		body = removeTOMLSectionKey(body, "desktop", "default_auto_recovery_checkpoint")
+		body = removeTOMLSectionKey(body, "agent", "auto_recovery_checkpoint")
 	}
 	if writeProviderAccess {
 		body = upsertTOMLSectionKey(body, "desktop", "provider_access", "provider_access = "+renderStringArray(c.Desktop.ProviderAccess))

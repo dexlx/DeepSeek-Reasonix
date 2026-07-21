@@ -212,6 +212,8 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	orig.Notifications.TurnDone = true
 	orig.Notifications.ApprovalRequest = true
 	orig.Notifications.AskRequest = true
+	orig.Agent.RecoveryModel = "mimo-pro"
+	orig.Agent.RecoveryTemperature = 0.15
 	orig.Agent.ReasoningLanguage = "zh"
 	orig.Agent.ToolResultSnipRatio = 0.65
 	orig.Agent.SubagentModel = "mimo-pro"
@@ -366,6 +368,9 @@ func TestRenderTOMLRoundTrips(t *testing.T) {
 	}
 	if got.Desktop.CheckUpdates == nil || *got.Desktop.CheckUpdates {
 		t.Errorf("desktop.check_updates = %+v, want false", got.Desktop.CheckUpdates)
+	}
+	if got.Agent.RecoveryModel != "mimo-pro" || got.Agent.RecoveryTemperature != 0 {
+		t.Errorf("agent recovery settings not preserved: %+v", got.Agent)
 	}
 	if !got.Notifications.Enabled || !got.Notifications.TurnDone || !got.Notifications.ApprovalRequest || !got.Notifications.AskRequest {
 		t.Errorf("notifications not preserved: %+v", got.Notifications)
@@ -757,18 +762,25 @@ func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
 	c.Desktop.StatusBarStyle = "text"
 	c.Desktop.DefaultToolApprovalMode = "auto"
 	c.Desktop.CheckUpdates = boolPtr(false)
+	c.Agent.RecoveryModel = "deepseek-pro"
+	c.Agent.RecoveryTemperature = 0.2
 
 	user := RenderTOMLForScope(c, RenderScopeUser)
-	for _, want := range []string{"config_version = 5", "[desktop]", `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, "[notifications]", "[tools.shell]"} {
+	for _, want := range []string{"config_version = 5", "[desktop]", `theme = "dark"`, `close_behavior = "background"`, `status_bar_style = "text"`, `default_tool_approval_mode = "auto"`, `check_updates = false`, `recovery_model = "deepseek-pro"`, "[notifications]", "[tools.shell]"} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("user render missing %q:\n%s", want, user)
 		}
 	}
 
 	project := RenderTOMLForScope(c, RenderScopeProject)
-	for _, forbidden := range []string{"[desktop]", "[notifications]", "close_behavior =", "default_tool_approval_mode =", "check_updates =", "max_steps", "planner_max_steps"} {
+	for _, forbidden := range []string{"[desktop]", "[notifications]", "close_behavior =", "default_tool_approval_mode =", "default_auto_recovery_checkpoint =", "check_updates =", "max_steps", "planner_max_steps"} {
 		if strings.Contains(project, forbidden) {
 			t.Fatalf("project render should not contain %q:\n%s", forbidden, project)
+		}
+	}
+	for _, retired := range []string{"default_auto_recovery_checkpoint", "auto_recovery_checkpoint"} {
+		if strings.Contains(user, retired) || strings.Contains(project, retired) {
+			t.Fatalf("retired Auto Guard key %q must not be rendered:\nuser:\n%s\nproject:\n%s", retired, user, project)
 		}
 	}
 	if strings.Contains(project, "\nsystem_prompt = \"\"\"") {
@@ -777,8 +789,32 @@ func TestScopedRenderSeparatesUserAndProjectConfig(t *testing.T) {
 	if !strings.Contains(project, "# system_prompt =") {
 		t.Fatalf("project render should leave a system prompt hint:\n%s", project)
 	}
+	for _, want := range []string{`recovery_model = "deepseek-pro"`} {
+		if !strings.Contains(project, want) {
+			t.Fatalf("project render missing %q:\n%s", want, project)
+		}
+	}
 	if strings.Contains(user, "auto_plan") || strings.Contains(project, "auto_plan") {
 		t.Fatalf("retired auto-plan keys must not be rendered:\nuser:\n%s\nproject:\n%s", user, project)
+	}
+	if strings.Contains(user, "recovery_temperature") || strings.Contains(project, "recovery_temperature") {
+		t.Fatalf("deprecated recovery_temperature must not be rendered:\nuser:\n%s\nproject:\n%s", user, project)
+	}
+}
+
+func TestProjectDeltaRendersRecoveryReviewerOverride(t *testing.T) {
+	c := Default()
+	c.Agent.RecoveryModel = "deepseek-pro"
+	c.Agent.RecoveryTemperature = 0.2
+
+	delta := RenderTOMLProjectDelta(c)
+	for _, want := range []string{"[agent]", `recovery_model = "deepseek-pro"`} {
+		if !strings.Contains(delta, want) {
+			t.Fatalf("project delta missing %q:\n%s", want, delta)
+		}
+	}
+	if strings.Contains(delta, "recovery_temperature") {
+		t.Fatalf("deprecated recovery_temperature rendered:\n%s", delta)
 	}
 }
 

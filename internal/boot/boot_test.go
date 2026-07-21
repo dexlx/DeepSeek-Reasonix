@@ -22,6 +22,7 @@ import (
 	"reasonix/internal/agent"
 	"reasonix/internal/agent/testutil"
 	"reasonix/internal/config"
+	"reasonix/internal/control"
 	"reasonix/internal/event"
 	"reasonix/internal/memory"
 	"reasonix/internal/netclient"
@@ -1054,6 +1055,75 @@ model = "x"
 	}
 	if written := runTaskWriteOnce(t, "yolo"); !written {
 		t.Fatal("yolo: task sub-agent did not write sub.txt, want the ask rule bypassed")
+	}
+}
+
+// TestBuildIgnoresRetiredAutoRecoveryKillSwitch freezes the contract that the
+// short-lived global and project keys no longer disable built-in Auto Guard.
+func TestBuildIgnoresRetiredAutoRecoveryKillSwitch(t *testing.T) {
+	isolateConfigHome(t)
+	userCfg := config.UserConfigPath()
+	if err := os.MkdirAll(filepath.Dir(userCfg), 0o755); err != nil {
+		t.Fatalf("mkdir user config: %v", err)
+	}
+	if err := os.WriteFile(userCfg, []byte(`
+default_model = "test-model"
+
+[agent]
+auto_recovery_checkpoint = "on"
+system_prompt = "GLOBAL"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`), 0o644); err != nil {
+		t.Fatalf("write user config: %v", err)
+	}
+
+	dir := robustTempDir(t)
+	writeFile(t, dir, "reasonix.toml", `
+default_model = "test-model"
+
+[agent]
+auto_recovery_checkpoint = "off"
+system_prompt = "PROJECT"
+
+[[providers]]
+name = "test-model"
+kind = "openai"
+base_url = "https://example.invalid"
+model = "x"
+api_key_env = "REASONIX_TEST_KEY_UNSET"
+`)
+
+	ctrl, err := Build(context.Background(), Options{WorkspaceRoot: dir, Sink: event.Discard})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer ctrl.Close()
+	// Retired keys do not block construction or fresh-session rotation.
+	fresh := filepath.Join(dir, "fresh-session.jsonl")
+	ctrl.SetFreshSessionPath(fresh)
+	if got := ctrl.SessionPath(); got != fresh {
+		t.Fatalf("fresh session path = %q, want %q", got, fresh)
+	}
+}
+
+func TestRecoveryHeadlessModeUsesExplicitFrontendCapability(t *testing.T) {
+	if recoveryHeadlessMode(Options{}) {
+		t.Fatal("interactive frontend without HeadlessApprovalMode must remain answerable")
+	}
+	if recoveryHeadlessMode(Options{ApprovalTimeout: time.Minute}) {
+		t.Fatal("a bounded bot approval timeout must not make recovery headless")
+	}
+	if !recoveryHeadlessMode(Options{HeadlessApprovalMode: control.ToolApprovalAuto}) {
+		t.Fatal("reasonix run Auto mode must fail closed instead of waiting for a card")
+	}
+	if !recoveryHeadlessMode(Options{HeadlessApprovalMode: control.ToolApprovalAsk}) {
+		t.Fatal("all explicit headless permission modes must use the non-waiting recovery path")
 	}
 }
 
@@ -3674,16 +3744,18 @@ func TestBuildSkipsLegacySessionMigrationWhenIsolated(t *testing.T) {
 }
 
 // isolateConfigHome redirects os.UserConfigDir() (and the cache subtree under
-// it) at a per-test temp dir by overriding the env vars Go's stdlib reads —
-// HOME on darwin, XDG_CONFIG_HOME on linux. Without this, Build's plugin path
-// would persist startup stats and cached schemas into the developer's real
-// ~/Library/Application Support tree and bleed state across tests. Mirrors the
-// withTempCache helper in internal/plugin/stats_test.go.
+// it) at a per-test temp dir by overriding the env vars Go's stdlib reads on
+// macOS, Linux, and Windows. Without this, Build's config, plugin stats, and
+// cached schemas can bleed across tests. Mirrors the withTempCache helper in
+// internal/plugin/stats_test.go.
 func isolateConfigHome(t *testing.T) string {
 	t.Helper()
 	dir := robustTempDir(t)
 	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
 	t.Setenv("XDG_CONFIG_HOME", dir)
+	t.Setenv("AppData", filepath.Join(dir, "AppData"))
+	t.Setenv("LocalAppData", filepath.Join(dir, "LocalAppData"))
 	t.Setenv("REASONIX_CREDENTIALS_STORE", "file")
 	return dir
 }

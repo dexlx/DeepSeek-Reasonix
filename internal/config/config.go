@@ -1048,12 +1048,18 @@ type AgentConfig struct {
 	// Deprecated compatibility fields. Old TOML and desktop clients may still
 	// send them, but config loading normalizes both to zero and rendering omits
 	// them. One-off CLI and unattended bot limits remain separate controls.
-	MaxSteps            int               `toml:"max_steps"`
-	PlannerMaxSteps     int               `toml:"planner_max_steps"`
-	Temperature         float64           `toml:"temperature"`
-	PlannerModel        string            `toml:"planner_model"`
-	GuardianModel       string            `toml:"guardian_model"`
-	GuardianTemperature float64           `toml:"guardian_temperature"`
+	MaxSteps            int     `toml:"max_steps"`
+	PlannerMaxSteps     int     `toml:"planner_max_steps"`
+	Temperature         float64 `toml:"temperature"`
+	PlannerModel        string  `toml:"planner_model"`
+	GuardianModel       string  `toml:"guardian_model"`
+	GuardianTemperature float64 `toml:"guardian_temperature"`
+	// RecoveryModel optionally names a dedicated model for the independent
+	// recovery reviewer. Empty falls back to GuardianModel, then the main model.
+	RecoveryModel string `toml:"recovery_model"`
+	// RecoveryTemperature is accepted from older configs but ignored. Auto
+	// Guard review is deterministic at temperature zero.
+	RecoveryTemperature float64           `toml:"recovery_temperature"`
 	SubagentModel       string            `toml:"subagent_model"`
 	SubagentModels      map[string]string `toml:"subagent_models"`
 	SubagentEffort      string            `toml:"subagent_effort"`

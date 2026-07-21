@@ -1097,6 +1097,47 @@ func TestSaveToRoundTrips(t *testing.T) {
 	}
 }
 
+func TestRecoveryReviewerSettingsRoundTripThroughUserSave(t *testing.T) {
+	isolateUserConfigHome(t)
+	c := Default()
+	c.Agent.RecoveryModel = "deepseek-pro"
+	c.Agent.RecoveryTemperature = 0.25
+
+	path := UserConfigPath()
+	if err := c.SaveTo(path); err != nil {
+		t.Fatalf("SaveTo: %v", err)
+	}
+	got := LoadForEdit(path)
+	if got.Agent.RecoveryModel != "deepseek-pro" || got.Agent.RecoveryTemperature != 0 {
+		t.Fatalf("agent recovery settings not preserved: %+v", got.Agent)
+	}
+}
+
+func TestRetiredAutoGuardKeysAreIgnoredAndRemovedOnSave(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "reasonix.toml")
+	if err := os.WriteFile(path, []byte("[desktop]\ndefault_auto_recovery_checkpoint = false\n\n[agent]\nauto_recovery_checkpoint = \"off\"\nrecovery_model = \"deepseek-pro\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	c := LoadForEdit(path)
+	if c.Agent.RecoveryModel != "deepseek-pro" {
+		t.Fatalf("unrelated recovery model was not loaded: %+v", c.Agent)
+	}
+	if err := c.SaveTo(path); err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	if strings.Contains(text, "default_auto_recovery_checkpoint") || strings.Contains(text, "auto_recovery_checkpoint") {
+		t.Fatalf("retired Auto Guard keys survived save:\n%s", text)
+	}
+	if !strings.Contains(text, `recovery_model = "deepseek-pro"`) {
+		t.Fatalf("save removed unrelated recovery model:\n%s", text)
+	}
+}
+
 func TestSaveToScopesUserAndProjectFiles(t *testing.T) {
 	home := isolateUserConfigHome(t)
 	t.Setenv("XDG_CONFIG_HOME", filepath.Join(home, "xdg"))

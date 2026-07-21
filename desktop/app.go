@@ -1584,6 +1584,40 @@ func (a *App) ApproveTab(tabID, id string, allow, session, persist bool) {
 	}
 }
 
+// ResolveRecovery answers an Auto Guard card. action is continue|revise. For
+// revise, feedback is steered into the
+// agent and the pending mutation is refused in the same operation.
+func (a *App) ResolveRecovery(id, action, feedback string) error {
+	return a.ResolveRecoveryTab("", id, action, feedback)
+}
+
+// ResolveRecoveryTab is like ResolveRecovery but scoped to a specific tab.
+func (a *App) ResolveRecoveryTab(tabID, id, action, feedback string) error {
+	ctrl := a.ctrlByTabID(tabID)
+	if ctrl == nil {
+		return fmt.Errorf("no active session")
+	}
+	return ctrl.ResolveRecovery(id, agent.RecoveryAction(action), feedback)
+}
+
+// SetRecoveryCheckpointEnabled is retained as a no-op Wails surface for older
+// generated frontends. Auto Guard is always built into Auto.
+func (a *App) SetRecoveryCheckpointEnabled(_ bool) {}
+
+// SetRecoveryCheckpointEnabledTab is retained as a no-op Wails surface.
+func (a *App) SetRecoveryCheckpointEnabledTab(_ string, _ bool) {}
+
+// RecoveryCheckpointEnabled is retained for older generated frontends. Auto
+// Guard is always built into Auto, so it always reports true.
+func (a *App) RecoveryCheckpointEnabled() bool {
+	return true
+}
+
+// RecoveryCheckpointEnabledTab is the tab-scoped compatibility alias.
+func (a *App) RecoveryCheckpointEnabledTab(_ string) bool {
+	return true
+}
+
 // ReplayPendingPrompts asks every tab's controller to re-emit any approval/ask
 // prompt that is currently blocking its run loop. The frontend calls this once
 // its event subscription is live (on load/reconnect) so a session that was
@@ -2150,6 +2184,8 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	newCtrl.EnableInteractiveApproval()
 	applyTabModeToController(newCtrl, snap.mode)
 	applyTabToolApprovalModeToController(newCtrl, snap.toolApprovalMode)
+	// Keep the replacement controller's Auto Guard default from construction
+	// (merged project+user config). Do not re-apply a user-only helper here.
 	// Clearing the session clears the active goal too (same contract as
 	// Controller.ClearSession): the snapshot's goal belongs to the destroyed
 	// conversation and must not seed the replacement.
@@ -2160,7 +2196,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 		// path/pid/writer id out of it.
 		return userFacingSessionLeaseError("", err)
 	}
-	newCtrl.SetSessionPath(path)
+	newCtrl.SetFreshSessionPath(path)
 
 	a.mu.Lock()
 	if current := a.tabs[tab.ID]; current != tab {
@@ -2190,6 +2226,7 @@ func (a *App) clearActiveSessionRuntime(tab *WorkspaceTab, oldCtrl control.Sessi
 	// Same contract as ClearSession's non-running path: the replacement
 	// session starts with zero spend.
 	tab.resetTelemetry(path)
+	a.persistTabSessionPath(tab, path)
 	oldCtrl.CloseAfterDestroy()
 	a.emitProjectTreeChanged()
 	a.notifyTabRuntimeRebuilt(tab)

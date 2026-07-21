@@ -313,6 +313,23 @@ type Agent struct {
 	// Plan workflows. nil disables gating entirely.
 	gate Gate
 
+	// recoveryGate, when non-nil, is the Auto Guard boundary for Auto mode.
+	// Shared by root and sub-agents for the same controller task. nil disables
+	// recovery checks (Ask/YOLO, headless without wiring, or feature off).
+	recoveryGate RecoveryGate
+	// recoveryAgentID labels this agent on recovery cards (empty = root).
+	recoveryAgentID string
+	// recoveryTaskID isolates recovery state across concurrent top-level tasks.
+	// Empty shares the root task bucket.
+	recoveryTaskID string
+	// recoveryTaskSummary is the bounded task text for this Agent.Run. It lets a
+	// shared recovery gate review sub-agent mutations against the child task,
+	// rather than the root controller transcript.
+	recoveryTaskSummary string
+	// recoveryRunSeq gives ordinary (non-goal) runs a collision-free host scope.
+	// Goal runs use their stable delivery scope instead.
+	recoveryRunSeq atomic.Uint64
+
 	// planModeReadOnlyTrust is retained for legacy controller wiring. The main
 	// Plan execution path no longer consults it.
 	planModeReadOnlyTrust PlanModeReadOnlyTrustGate
@@ -564,6 +581,35 @@ func (a *Agent) SetGate(g Gate) {
 		g = nil
 	}
 	a.gate = g
+}
+
+// SetRecoveryGate installs Auto Guard. Safe to call before the run loop starts;
+// nil disables its checks.
+func (a *Agent) SetRecoveryGate(g RecoveryGate) {
+	if a == nil {
+		return
+	}
+	if nilutil.IsNil(g) {
+		g = nil
+	}
+	a.recoveryGate = g
+}
+
+// SetRecoveryIdentity sets the agent/task labels used on recovery cards.
+func (a *Agent) SetRecoveryIdentity(agentID, taskID string) {
+	if a == nil {
+		return
+	}
+	a.recoveryAgentID = strings.TrimSpace(agentID)
+	a.recoveryTaskID = strings.TrimSpace(taskID)
+}
+
+// RecoveryGate returns the attached Auto Guard (may be nil).
+func (a *Agent) RecoveryGate() RecoveryGate {
+	if a == nil {
+		return nil
+	}
+	return a.recoveryGate
 }
 
 // SetPlanModeReadOnlyTrustGate retains the legacy confirmation bridge for old
@@ -905,6 +951,15 @@ type Options struct {
 	// Plan execution classifies bash through Permissions instead.
 	PlanModeReadOnlyCommands []string
 
+	// RecoveryGate is the optional Auto Guard boundary. It checks deterministic
+	// high-risk mutations and failure recovery before permission approval and
+	// write-lock acquisition.
+	RecoveryGate RecoveryGate
+	// RecoveryAgentID labels this agent on recovery cards (empty = root).
+	RecoveryAgentID string
+	// RecoveryTaskID isolates recovery state for this agent (empty = root task).
+	RecoveryTaskID string
+
 	// SubagentDepth is the current nesting depth for this agent. Root sessions are
 	// depth 0; child subagents are depth 1. MaxSubagentDepth caps delegation.
 	SubagentDepth    int
@@ -982,6 +1037,9 @@ func New(prov provider.Provider, tools *tool.Registry, session *Session, opts Op
 		usageSource:           usageSourceOrDefault(opts.UsageSource, event.UsageSourceExecutor),
 		sink:                  sink,
 		gate:                  gate,
+		recoveryGate:          opts.RecoveryGate,
+		recoveryAgentID:       strings.TrimSpace(opts.RecoveryAgentID),
+		recoveryTaskID:        strings.TrimSpace(opts.RecoveryTaskID),
 		readOnlyExecution:     opts.ReadOnlyExecution,
 		planModeReadOnlyTrust: planModeReadOnlyTrust,
 		sandboxEscapeApprover: sandboxEscapeApprover,
@@ -1047,6 +1105,7 @@ func (a *Agent) reserveParentWrite(runTool tool.Tool, args json.RawMessage, read
 // a round count. A positive maxSteps imposes an optional hard guard, surfaced as
 // a resumable notice when hit.
 func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
+	a.recoveryRunSeq.Add(1)
 	if a.deliveryProfile && a.workspaceLease != nil {
 		a.workspaceLease.BeginRun()
 		defer a.workspaceLease.EndRun()
@@ -1148,6 +1207,7 @@ func (a *Agent) Run(ctx context.Context, input string) (runErr error) {
 	}
 	a.deliveryTaskExpected = deliveryTaskNeedsEvidence(classifierInput)
 	a.deliveryMutationExpected = deliveryTaskNeedsMutation(classifierInput) && registryHasWriterTools(a.tools)
+	a.recoveryTaskSummary = boundedRecoveryTaskSummary(classifierInput)
 	// A cancelled/error turn leaves a provider-excluded recovery record at the
 	// transcript tail. Fold its bounded facts into this new user turn exactly
 	// once; the user's raw text remains the classifier source above.
@@ -3076,6 +3136,51 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			errMsg:  "blocked: active delivery todo required",
 		}
 	}
+	// Auto Guard: after resolution/mutation classification, before
+	// permission approval and workspace write-lock acquisition, so a waiting
+	// recovery card never holds a write lease.
+	verification := evidenceName == "bash" && evidence.IsDeliveryVerificationCommand(bashCommandFromArgs(evidenceArgs))
+	if a.recoveryGate != nil && (mutates || verification) {
+		subject := recoverySubject(evidenceName, evidenceArgs)
+		preview := strings.TrimSpace(call.Diff)
+		if preview == "" {
+			preview = subject
+		}
+		dec, rerr := a.recoveryGate.BeforeMutation(ctx, RecoveryProposal{
+			AgentID:      a.recoveryAgentID,
+			TaskID:       a.recoveryTaskID,
+			TaskScopeID:  recoveryTaskScopeID(a.deliveryScopeID, a.recoveryRunSeq.Load()),
+			TaskSummary:  a.recoveryTaskSummary,
+			Tool:         evidenceName,
+			Args:         evidenceArgs,
+			Subject:      subject,
+			Preview:      preview,
+			ReadOnly:     readOnly,
+			Mutates:      mutates,
+			Verification: verification,
+		})
+		if rerr != nil && !dec.Blocked {
+			return toolOutcome{
+				output:  fmt.Sprintf("blocked: Auto Guard error: %v", rerr),
+				blocked: true,
+				errMsg:  "blocked: Auto Guard error",
+			}
+		}
+		if dec.Blocked || !dec.Allow {
+			msg := strings.TrimSpace(dec.Message)
+			if msg == "" {
+				msg = "blocked: Auto Guard declined this mutation"
+			}
+			if !strings.HasPrefix(msg, "blocked:") {
+				msg = "blocked: " + msg
+			}
+			return toolOutcome{
+				output:  msg,
+				blocked: true,
+				errMsg:  "blocked by Auto Guard",
+			}
+		}
+	}
 	if isInstalledMCPTool(execTool) {
 		if !mcpServerAuthorized(execTool) {
 			return toolOutcome{
@@ -3266,6 +3371,9 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 			a.hooks.PostToolUse(ctx, permName, permArgs, result)
 		}
 	}
+	if a.recoveryGate != nil {
+		a.observeRecoveryResult(ctx, evidenceName, evidenceArgs, readOnly, mutates, result, err, false, false)
+	}
 	if err != nil {
 		detail := result
 		// Malformed-args failures are a transient model JSON glitch (e.g. options
@@ -3287,6 +3395,13 @@ func (a *Agent) executeOne(ctx context.Context, call provider.ToolCall) toolOutc
 	}
 	body, truncMsg := truncateToolOutput(result)
 	return toolOutcome{output: body, images: images, truncated: truncMsg != "", truncMsg: truncMsg}
+}
+
+func recoveryTaskScopeID(deliveryScopeID string, runSeq uint64) string {
+	if scope := strings.TrimSpace(deliveryScopeID); scope != "" {
+		return "goal:" + scope
+	}
+	return fmt.Sprintf("turn:%d", runSeq)
 }
 
 func (a *Agent) readOnlyExecutionBlock(visible tool.Tool, resolved *tool.ResolvedCall) (toolOutcome, bool) {

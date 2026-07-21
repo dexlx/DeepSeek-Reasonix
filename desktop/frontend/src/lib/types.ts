@@ -84,12 +84,28 @@ export interface WireUsage {
   costUsd?: number;
 }
 
+export interface WireRecoveryApproval {
+  source_agent?: string;
+  failed_tool?: string;
+  failed_summary?: string;
+  diagnosis?: string;
+  next_tool?: string;
+  next_action?: string;
+  change_kind?: string;
+  change_rationale?: string;
+  review_rationale?: string;
+  can_grant_task?: boolean;
+  task_grant_scope?: string;
+}
+
 export interface WireApproval {
   id: string;
   tool: string;
   subject: string;
   reason?: string;
   fresh?: boolean;
+  kind?: "tool" | "plan" | "recovery" | string;
+  recovery?: WireRecoveryApproval;
 }
 
 export interface WireGuardian {

@@ -978,6 +978,26 @@ func TestApprovalChoicesPreserveDecisionSemantics(t *testing.T) {
 			}
 		})
 	}
+
+	grantable := approvalChoices(&event.Approval{
+		Kind: "recovery", Recovery: &event.RecoveryApproval{CanGrantTask: true},
+	})
+	wantGrantable := []approvalChoice{{allow: true}, {allow: true, allowForSession: true}, {}}
+	if len(grantable) != len(wantGrantable) {
+		t.Fatalf("grantable recovery choices = %d, want %d", len(grantable), len(wantGrantable))
+	}
+	for i := range grantable {
+		grantable[i].label = ""
+		if grantable[i] != wantGrantable[i] {
+			t.Fatalf("grantable recovery choice %d = %+v, want %+v", i, grantable[i], wantGrantable[i])
+		}
+	}
+	labels := approvalChoiceLabels(&event.Approval{Kind: "recovery", Recovery: &event.RecoveryApproval{
+		CanGrantTask: true, TaskGrantScope: "git push origin → feature",
+	}})
+	if len(labels) != 3 || !strings.Contains(labels[1], "git push origin → feature") {
+		t.Fatalf("grantable recovery labels = %v", labels)
+	}
 }
 
 func TestApprovalArrowKeysMoveVisibleSelection(t *testing.T) {

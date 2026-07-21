@@ -274,12 +274,13 @@ type SettingsView struct {
 	StatusBarStyle          string               `json:"statusBarStyle"`
 	StatusBarItems          []string             `json:"statusBarItems"`
 	DefaultToolApprovalMode string               `json:"defaultToolApprovalMode"`
-	CheckUpdates            bool                 `json:"checkUpdates"`
-	Telemetry               bool                 `json:"telemetry"`
-	Metrics                 bool                 `json:"metrics"`
-	ExpandThinking          bool                 `json:"expandThinking"`
-	ConversationWidth       string               `json:"conversationWidth,omitempty"`
-	ConfigPath              string               `json:"configPath"`
+
+	CheckUpdates      bool   `json:"checkUpdates"`
+	Telemetry         bool   `json:"telemetry"`
+	Metrics           bool   `json:"metrics"`
+	ExpandThinking    bool   `json:"expandThinking"`
+	ConversationWidth string `json:"conversationWidth,omitempty"`
+	ConfigPath        string `json:"configPath"`
 	// ProviderKinds lists the provider implementations the kernel actually
 	// registered (provider.Kinds()), so the editor's "kind" picker offers only
 	// kinds that resolve — selecting an unregistered one would fail the rebuild.
@@ -1937,6 +1938,10 @@ func (a *App) SetDefaultToolApprovalMode(mode string) error {
 		return c.SetDesktopDefaultToolApprovalMode(mode)
 	})
 }
+
+// SetDefaultAutoRecoveryCheckpoint is retained as a no-op Wails surface for
+// older generated frontends. Auto Guard is always built into Auto.
+func (a *App) SetDefaultAutoRecoveryCheckpoint(_ bool) error { return nil }
 
 func officialProviderTemplate(kind, pricingLanguage string) ([]config.ProviderEntry, string, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {

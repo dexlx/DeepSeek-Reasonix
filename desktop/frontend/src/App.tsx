@@ -1040,6 +1040,7 @@ export default function App() {
     notice,
     cancel,
     approve,
+    resolveRecovery,
     answerQuestion,
     setControllerMode,
     setCollaborationMode: setControllerCollaborationMode,
@@ -4204,6 +4205,9 @@ export default function App() {
                   // observes the updated state before it unblocks.
                   if (state.approval!.tool === "exit_plan_mode" && allow) await applyCollaborationMode("normal");
                   approve(state.approval!.id, allow, session, persist);
+                }}
+                onResolveRecovery={(action, feedback) => {
+                  resolveRecovery(state.approval!.id, action, feedback ?? "");
                 }}
                 onRevisePlan={(text) => {
                   if (activeTabId) {

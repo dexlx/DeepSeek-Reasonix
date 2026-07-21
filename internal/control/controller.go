@@ -49,6 +49,7 @@ import (
 	"reasonix/internal/plugin"
 	"reasonix/internal/proc"
 	"reasonix/internal/provider"
+	"reasonix/internal/recovery"
 	"reasonix/internal/sandbox"
 	"reasonix/internal/skill"
 	"reasonix/internal/store"
@@ -80,6 +81,9 @@ type Controller struct {
 	executor     *agent.Agent
 	guardianSess *guardian.Session // nil when guardian is disabled
 	guardianPath string            // persisted guardian session file ("" when disabled)
+	// recoveryGate is the shared Auto Guard state for this controller.
+	// nil when the feature is not wired for this controller.
+	recoveryGate *recovery.Gate
 	sink         event.Sink
 	policy       permission.Policy
 	// subagentGate is the shared gate every headless-only sub-agent surface
@@ -249,6 +253,8 @@ type pendingApproval struct {
 	reason    string
 	fresh     bool
 	autoDrain bool
+	kind      string // tool | plan | recovery; empty = tool
+	recovery  *event.RecoveryApproval
 	reply     chan approvalReply
 }
 
@@ -342,8 +348,14 @@ type Options struct {
 	Runner   agent.Runner
 	Executor *agent.Agent
 	Guardian *guardian.Session
-	Sink     event.Sink
-	Policy   permission.Policy
+	// RecoveryReviewer is the optional independent recovery reviewer (nil =
+	// rule-only path with fail-closed human confirmation for ambiguous cases).
+	RecoveryReviewer recovery.Reviewer
+	// RecoveryHeadless blocks mutations that need confirmation instead of
+	// waiting forever when no human decision channel exists.
+	RecoveryHeadless bool
+	Sink             event.Sink
+	Policy           permission.Policy
 	// SubagentGate is the shared, mutable gate every headless-only sub-agent
 	// surface (task, writer-capable skill sub-agents, planner) reads from. Nil
 	// disables gating for those surfaces same as before this field existed.
@@ -505,6 +517,9 @@ func New(opts Options) *Controller {
 		})
 		c.executor.SetMemoryQueue(c)
 	}
+	// Auto Guard is built into Auto. Ask and YOLO bypass it through the mode
+	// provider, so no separate enablement state is needed.
+	c.initRecoveryGate(opts.RecoveryReviewer, opts.RecoveryHeadless)
 	return c
 }
 
@@ -1731,6 +1746,25 @@ func (c *Controller) Turn() int {
 // also remembers a grant for the rest of the session so the same approval scope
 // is not re-prompted. Unknown/expired IDs are ignored.
 func (c *Controller) Approve(id string, allow, session, persist bool) {
+	// Recovery cards are strict fresh decisions. Prefer ResolveRecovery so a
+	// continue/deny from an old client that only knows Approve still maps onto
+	// the recovery state machine (allow=continue, deny=revise without feedback).
+	// Session/persist grants are intentionally ignored for recovery.
+	//
+	// Lookup must use the live waiter table (HasApproval), not Snapshot: pre-
+	// action high-risk prompts park a waiter without an armed taskRuntime, so
+	// they never appear in the persistence snapshot.
+	c.mu.Lock()
+	gate := c.recoveryGate
+	c.mu.Unlock()
+	if gate != nil && gate.HasApproval(id) {
+		action := agent.RecoveryActionRevise
+		if allow {
+			action = agent.RecoveryActionContinue
+		}
+		_ = c.ResolveRecovery(id, action, "")
+		return
+	}
 	pending := c.approval.resolve(id)
 	if pending.reply != nil {
 		pending.reply <- approvalReply{allow: allow, session: session, persist: persist} // buffered, never blocks
@@ -2028,6 +2062,10 @@ func (c *Controller) ReplayPendingPrompts() {
 	}
 	for _, a := range asks {
 		c.sink.Emit(event.Event{Kind: event.AskRequest, Ask: a})
+	}
+	// Retained compatibility hook; live Auto Guard cards are ordinary approvals.
+	if len(approvals) == 0 {
+		c.ReplayUnresolvedRecoveries()
 	}
 }
 
@@ -2528,6 +2566,11 @@ func (c *Controller) NewSession() error {
 		return err
 	}
 	defer c.endRotation()
+	// Retire asynchronous recovery writes before Snapshot publishes the final
+	// old-session checkpoint. Otherwise an earlier write can outlive the path
+	// rotation (or process teardown) and race cleanup of the old session.
+	oldPath := c.SessionPath()
+	c.flushRecoveryPersistence(oldPath)
 	if err := c.Snapshot(); err != nil {
 		return err
 	}
@@ -2547,7 +2590,9 @@ func (c *Controller) NewSession() error {
 		c.guardianSess.Reset()
 	}
 	c.ResetPlannerSession()
-	c.rebindCheckpoints(c.SessionPath())
+	freshPath := c.SessionPath()
+	c.rebindCheckpoints(freshPath)
+	c.resetRecoveryForNewSession(freshPath)
 	c.snapshotMu.Unlock()
 	// A new session starts with no active goal: without this, a running goal's
 	// text kept injecting into the fresh session's first turns. The old
@@ -2588,6 +2633,11 @@ func (c *Controller) ClearSession() error {
 			return err
 		}
 	}
+	// Retire the old recovery state before deleting its artifacts. Async gate
+	// snapshots are path-bound, so wait for every already-scheduled old-path
+	// write; otherwise one can recreate the sidecar after removeSessionArtifacts.
+	c.loadRecoveryState("")
+	c.flushRecoveryPersistence(oldPath)
 	// Hold snapshotMu from artifact removal through the swap: a save slipping
 	// in between would resurrect the just-removed transcript, and one that
 	// overlapped the swap could pair the old path with the fresh session.
@@ -2614,7 +2664,9 @@ func (c *Controller) ClearSession() error {
 		c.guardianSess.Reset()
 	}
 	c.ResetPlannerSession()
-	c.rebindCheckpoints(c.SessionPath())
+	freshPath := c.SessionPath()
+	c.rebindCheckpoints(freshPath)
+	c.resetRecoveryForNewSession(freshPath)
 	c.snapshotMu.Unlock()
 	// Same contract as NewSession: the fresh session starts with no active goal.
 	c.ClearGoal()
@@ -2871,6 +2923,9 @@ func (c *Controller) forkNamed(turn int, name string, switchToFork bool) (string
 		c.mu.Unlock()
 		c.setActiveJobSession(newPath)
 		c.rebindCheckpoints(newPath)
+		// A historical fork rewinds before later failures, so it starts with no
+		// active recovery event even though it inherits the session preference.
+		c.loadRecoveryState(newPath)
 		if c.guardianSess != nil {
 			c.guardianSess.Reset()
 		}
@@ -2953,6 +3008,7 @@ func (c *Controller) Branch(name string) (string, error) {
 	if c.guardianSess != nil {
 		c.guardianSess.Reset()
 	}
+	c.carryRecoveryState(newPath)
 	c.snapshotMu.Unlock()
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("created branch %s", agent.BranchID(newPath))})
@@ -3013,6 +3069,7 @@ func (c *Controller) SwitchBranch(ref string) (agent.BranchInfo, error) {
 	c.rebindCheckpoints(match.Path)
 	c.restoreTerminalGoalTodos(match.Path)
 	c.loadGuardianSession()
+	c.loadRecoveryState(match.Path)
 	c.snapshotMu.Unlock()
 	c.sink.Emit(event.Event{Kind: event.Notice, Level: event.LevelInfo,
 		Text: fmt.Sprintf("switched to branch %s", branchDisplayName(match))})
@@ -3136,6 +3193,7 @@ func (c *Controller) Resume(s *agent.Session, path string) {
 	}
 	c.restoreTerminalGoalTodos(path)
 	c.loadGuardianSession()
+	c.loadRecoveryState(path)
 	c.snapshotMu.Unlock()
 	c.recoverInterruptedTurn(path)
 	c.maybeColdResumePrune(path)
@@ -3364,6 +3422,8 @@ func (c *Controller) snapshot(markActivity, forceRewrite, shutdownRecovery bool)
 			}
 		}
 	}
+	// Persist recovery gate state so unresolved checkpoints survive restart.
+	c.saveRecoveryState(path)
 	// Record the listing-only sidecar fields (model, preview, user-turn count)
 	// straight from the in-memory conversation, so the sidebar and resume picker
 	// never have to decode the whole .jsonl just to show them. markActivity bumps
@@ -4141,9 +4201,20 @@ func (c *Controller) snapshotActivityIfChanged(startMessages int) {
 	}
 }
 
-// SetSessionPath pins where auto-save lands (a fresh session file minted by the
-// caller when no resume path applies).
+// SetSessionPath rebinds auto-save without changing the current session
+// preference. Callers creating a genuinely fresh conversation should use
+// SetFreshSessionPath; callers resuming history should use Resume.
 func (c *Controller) SetSessionPath(p string) {
+	c.setSessionPath(p, false)
+}
+
+// SetFreshSessionPath binds a path that is known to belong to a newly-created
+// session and samples the configured new-session recovery default.
+func (c *Controller) SetFreshSessionPath(p string) {
+	c.setSessionPath(p, true)
+}
+
+func (c *Controller) setSessionPath(p string, fresh bool) {
 	// See snapshotMu: the swap must not interleave with an in-flight save.
 	c.snapshotMu.Lock()
 	defer c.snapshotMu.Unlock()
@@ -4153,6 +4224,11 @@ func (c *Controller) SetSessionPath(p string) {
 	c.mu.Unlock()
 	c.setActiveJobSession(p)
 	c.rebindCheckpoints(p)
+	if fresh {
+		c.resetRecoveryForNewSession(p)
+	} else {
+		c.loadRecoveryState(p)
+	}
 }
 
 // SessionDestroyHandle separates waiting for cancelled jobs from ending the

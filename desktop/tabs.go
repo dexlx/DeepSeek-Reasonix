@@ -1245,6 +1245,10 @@ func (s *tabEventSink) Emit(e event.Event) {
 		if m := app.metrics.Load(); m != nil {
 			m.observe(e)
 			if e.Kind == event.TurnDone {
+				// Content-free recovery counters only (no failure text).
+				if tab := app.tabByID(tabID); tab != nil && tab.Ctrl != nil {
+					observeControllerRecoveryMetrics(m, tab.Ctrl)
+				}
 				m.persist()
 			}
 		}
@@ -2424,6 +2428,9 @@ func createEmptySessionFile(dir, model string) (string, error) {
 			if closeErr := f.Close(); closeErr != nil {
 				return "", closeErr
 			}
+			// Ensure branch meta exists for topic ownership; Auto Guard no longer
+			// stores a per-session toggle (it is built into Auto).
+			_, _ = agent.EnsureBranchMeta(path)
 			return path, nil
 		}
 		if os.IsExist(err) {
